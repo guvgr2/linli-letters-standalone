@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-10-17T11:20:06+08:00",
+  "source": "repo/source/harness",
+  "sourceRepo": "E:/olivia-soul-community-kit",
+  "status": "current",
+  "statusNote": "当前清单：描述 2026-10-16 两端同步（S1–S9、P1–P5）全部落地之后的真源实况。已落地：**S1** 渲染严格化、**S2** 预检十七行 + 三处联动、**S3** 主动来信.md 独立化、**S4** 主动信语料.md（调性锚）、**S5** 行为参数.json、**S6** 人设/写法改显式整份读、**S7** 人设换代（§一 进 林离人设.md / §二 进它的「人格与气质」节 / §四 结构与红线进 写法.md，§三 数值不进来，以 行为参数.json 为单一来源）、**S9** 近况.md + 分档注入（含内容层与调用方接线）；P1–P5 已定案。真源任一文件改动必须同批重出本文件：`node repo/source/tools/gen-harness-manifest.mjs`（同步方案 §6.3；`--check` 只比对不写盘，供测试用）。本文件**不进打包产物**（开发/审计用）。",
+  "pathSemantics": "files 的键是逻辑名；relPath 是相对 harness 目录的真实路径，缺省等于键名。★ 与同步方案 §6.1 的差异（必要修正）：林离人设.md 物理上位于 harness 的上一级（repo/source/），故它必须带 relPath，否则 join(harnessDir, name) 会 ENOENT。★ 行尾：清单记录的 bytes/lines 是真源文件的**确切字节数**（这批 md 是 LF-only、无 CRLF）。⚠️ 林离人设.md 的两端现状由生成器现算：<!--AUTO:sided-林离人设.md-->本侧 7550 B / f43562f9…；姊妹侧 7550 B / f43562f9…；**逐字节相同**<!--/AUTO:sided-林离人设.md-->。同步时**以本清单 files 记录的字节数为准**，不要为了「对齐」在某一侧补换行再比哈希。★ 本字段里的数字**不许手写**：写死就会在对方同步之后变成假话而没人知道（[审查-5] 🟠-7）。★ 解析路径请一律用 join(harnessDir, meta.relPath ?? name)；若消费方根目录命中下面的 pathOverrides，则优先用其中的覆盖值。",
+  "pathOverrides": {
+    "_说明": "按**消费方根目录**给出的 relPath 覆盖表（B6 的定案形态，2026-10-17 落地）。背景：relPath 的语义收敛为「真源侧相对 harness 目录的路径」；而姊妹项目 linli-letters 的 林离人设.md 就在 app/harness/ 里面，照 `../林离人设.md` 解析会得到不存在的 app/林离人设.md ⇒ 那份文件永远不被硬校验（这正是 B6 的静默洞）。消费方解析规则：join(消费方 harness 目录, pathOverrides[消费方根目录]?.[逻辑名] ?? meta.relPath ?? 逻辑名)。★ 硬约定（由 gen-harness-manifest.mjs 的 --check 把守）：**凡是 relPath 含 ../ 的文件，必须在每个覆盖条目里出现** —— 否则新增一个跨级文件时，姊妹侧又会退回「解析到空、静默不被校验」。★ 覆盖值一律是相对消费方 harness 目录的路径，且不得含 ..。",
+    "E:/linli-letters": {
+      "林离人设.md": "林离人设.md"
+    }
+  },
+  "linesSemantics": "行数 = 换行符(LF)个数 + (末尾无换行时把最后一行计入)。Node 复算：text.split('\\n').length - (text.endsWith('\\n') ? 1 : 0)",
+  "sha256Case": "清单里的 sha256 一律**小写**十六进制（Node crypto 的 digest('hex') 原样输出）。PowerShell 侧复算必须先 .Hash.ToLower() 再比较 —— Get-FileHash 返回大写，直接比会整份全红（第 0 步实测踩过）。",
+  "files": {
+    "VERSION": { "bytes": 4, "lines": 1, "sha256": "da148f251bd202e54bec805a73831b6128ca7e8d1c7c45f0cb0bd17ed2543975" },
+    "00-栏目.md": { "bytes": 2119, "lines": 15, "sha256": "f7ee3c09f5e037647c8a0502116f8b8100908e801c846a4ff97515b5bbdde991" },
+    "01-初始化账本.md": { "bytes": 5071, "lines": 63, "sha256": "a6e12c9468b8249cf2d0f286a2f90cd7d930c787051df3335228d7e986551177" },
+    "01-预检.md": { "bytes": 4708, "lines": 54, "sha256": "2c63f8ddca998cc7f9748ded4bfe0d01b06bda4089d50b95fd72abdbd3ef3083" },
+    "02-历史检索.md": { "bytes": 2021, "lines": 44, "sha256": "f03e1b61597c9d955c35b5fd64d6a7dabfe9ed97cf2f7e1e9c3c95127205c666" },
+    "02-账本校正.md": { "bytes": 2646, "lines": 41, "sha256": "a2702f181ee4d1817b093f53956da2491c18bffe60e79cf4f9b651f6c69a9a89" },
+    "03-中段生成.md": { "bytes": 1268, "lines": 36, "sha256": "5145726e209f366fd33efa306f39d43b5e888f4a541c87587751e4b70fd4790b" },
+    "04-尾端检查.md": { "bytes": 1946, "lines": 58, "sha256": "23bfb1cc4e53350522e6855e973fd02ceb1608e3eb91670690e9c312f321ebf3" },
+    "05-反馈重写.md": { "bytes": 1277, "lines": 42, "sha256": "0d02afb60b75af8c646c44041b39432306edf49dc47cbbf98d7dacb9e3b14318" },
+    "开信.md": { "bytes": 406, "lines": 7, "sha256": "904c653f02ddc7787c9886c61ea8db6f42a081dc80db0aca58f93e43941b660f" },
+    "写法.md": { "bytes": 9829, "lines": 155, "sha256": "45872552ca2d508de20131cacd67bb1d73b9e61d26bad1f745ecea49b2ea7acc" },
+    "林离人设.md": { "relPath": "../林离人设.md", "bytes": 7550, "lines": 101, "sha256": "f43562f952a5f5a0214c296685a4fbe2eb65dbdcedf0c2a5d75d631263216e57" },
+    "行为参数.json": { "bytes": 11907, "lines": 152, "sha256": "aec146bcab43efaf48ddf5c66927099d6172fb7e1af21eb2879951807a9f186a" },
+    "主动来信.md": { "bytes": 3966, "lines": 86, "sha256": "f0f59e9e22180c40c6a49095a2c04b6acbadd441be304b5e1120352b780da0e3" },
+    "主动信语料.md": { "bytes": 3474, "lines": 68, "sha256": "3bd72826523374aa54c116f56db19e5ca949eaa12240b8db212ba00d4a5423a0" },
+    "近况.md": { "bytes": 1903, "lines": 28, "sha256": "deadf04bd4a3f391180a806708d17be64eb6f4fd53d2ce799e3227c14782c1e8" }
+  },
+  "stepMap": {
+    "initLedger": "01-初始化账本.md",
+    "precheck": "01-预检.md",
+    "history": "02-历史检索.md",
+    "ledger": "02-账本校正.md",
+    "draft": "03-中段生成.md",
+    "tail": "04-尾端检查.md",
+    "rewrite": "05-反馈重写.md",
+    "opening": "开信.md",
+    "fields": "00-栏目.md",
+    "rules": "写法.md",
+    "persona": "林离人设.md",
+    "proactive": "主动来信.md"
+  },
+  "stepMapNote": "这是**现状**映射（实测自 .cursor/skills/fit-letters/scripts/harness-4step.ps1）。★ S3（2026-10-16）已落地：proactive 指向 主动来信.md（原先内联在 写法.md 的 `## 主动写信` 节已删除）。⚠️ 与姊妹侧的关键差异：**OliviaSoul 侧主动信仍走六步链路** —— harness-4step.ps1 在 -Proactive 时把 主动来信.md 的 `## System` 段并进 {{rules}}，并额外整份读入 `主动信语料.md`（调性锚，同样并入 {{rules}}），**不渲染它们的 `## User` 段**。所以 variablesById['主动来信.md'] 里的 trigger/memory/anchors 是**契约登记**（供姊妹侧 Node 渲染器对齐），在本侧运行时不由 Expand-Harness 消费。待办：是否单步化，见 主动来信.md 顶部的 TODO(两端同步 S3b)。② persona / rules 自 **S6** 起改为**显式整份读**（`Strip-Yaml (Read-Utf8 <path>)`），不再调用 Take-FromHeading（该函数定义仍保留，只是没有调用点）；`写法.md` 首行恰好是 `# 写法` 所以旧实现「恰好等于整份」是巧合，`林离人设.md` 的 `## 基础` 在第 3 行、旧实现每封都在丢首行标题。③ 近况层（S9）：`近况.md` 由调用方按档位拼好后经 `-DriftTier` → `Get-DriftText` 注入 **STEP3**，第 0 档为空串。",
+  "variablesById": {
+    "00-栏目.md": [],
+    "01-初始化账本.md": ["ctx", "proactiveNote", "relationshipMemory"],
+    "01-预检.md": ["ctx", "previousState", "proactiveNote"],
+    "02-历史检索.md": ["budget", "facts", "historyResults", "navigation", "proactiveNote", "safe"],
+    "02-账本校正.md": ["evidence", "facts", "proactiveNote", "safe"],
+    "03-中段生成.md": ["ctx", "drift", "evidence", "fields", "persona", "proactiveNote", "rules", "safe"],
+    "04-尾端检查.md": ["ctx", "draft", "evidence", "fields", "persona", "proactiveNote", "safe"],
+    "05-反馈重写.md": ["check", "ctx", "draft", "evidence", "fields", "persona", "proactiveNote", "rules", "safe"],
+    "开信.md": [],
+    "写法.md": [],
+    "主动来信.md": ["trigger", "persona", "rules", "memory", "anchors"]
+  },
+  "variables": ["anchors", "budget", "check", "ctx", "draft", "drift", "evidence", "facts", "fields", "historyResults", "memory", "navigation", "persona", "previousState", "proactiveNote", "relationshipMemory", "rules", "safe", "trigger"],
+  "optionalVariables": ["proactiveNote", "evidence", "previousState", "relationshipMemory", "facts", "navigation", "historyResults", "budget", "draft", "check", "memory", "anchors", "drift"],
+  "optionalVariablesNote": "与真源脚本 harness-4step.ps1 的 `$harnessOptionalVars` 逐项一致，由 test/letter-harness-strict-render.test.js 断言（改一处必须同批改另一处，防两边漂移）。★ S3 起加入 memory / anchors（主动来信.md 用；无记忆、无语料锚时按空串渲染）。★ S9 起加入 drift（近况层，STEP3 用；第 0 档为空串）。⚠️ 姊妹侧 app/harness-render.mjs 的 KNOWN / OPTIONAL 是**另一份独立名单**（它已预置 trigger/memory/anchors/drift）⇒ 任何变量增删都要同批通知两端，见下面的 consumers.variables。",
+  "behavior": {
+    "source": "行为参数.json",
+    "note": "回信 / 主动信 / 主动信禁词 / 禁补史词表 / 近况层分档的数值与阈值已固化为单一真相源，见该文件。姊妹侧已接入（施工单 T8 于 2026-10-16 完成：新增 app/behavior-params.mjs 只读本 JSON、core.mjs 的 inspectReply / inspectProactive 阈值改读它，并实现 P2 的「汉字数 < minChars 且 段落数 < minParagraphs」双条件，缺失 minCharsWhenMultiParagraph 时退到 minChars 而不是 0）。"
+  },
+  "consumers": {
+    "behavior": "两端校验代码：姊妹 app/behavior-params.mjs + app/core.mjs 的 inspectReply / inspectProactive（**已接入**）；本侧 harness-4step.ps1 的机械兜底**尚未接入**（见 行为参数.json 的 pending P-behavior-1）。",
+    "variables": "两端渲染器的变量白名单：本侧 $harnessOptionalVars（harness-4step.ps1）+ 姊妹 app/harness-render.mjs 的 KNOWN / OPTIONAL。⚠️ 这两份是**各自维护**的实现名单（本清单描述契约，不是运行时的单一来源）⇒ 任何变量增删（例如 S9 的 {{drift}}）必须**同批通知两端**，否则对方会判「未登记变量」当场 throw。"
+  },
+  "syncedWith": {
+    "开信.md": "与姊妹 app/harness/开信.md 同源，两端现状由生成器现算：<!--AUTO:synced-开信.md-->本侧 406 B / 904c653f…；姊妹侧 406 B / 904c653f…；**逐字节相同**<!--/AUTO:synced-开信.md-->。",
+    "写法.md": "P5 落地后两侧同源，两端现状由生成器现算：<!--AUTO:synced-写法.md-->本侧 9829 B / 45872552…；姊妹侧 9829 B / 45872552…；**逐字节相同**<!--/AUTO:synced-写法.md-->。语义：§四 的六段结构 / 场景矩阵 / 红线 / 天气规则已进两侧；§三 的「常规 250–450 字」刻意没有进来（与 行为参数.json 的 reply.maxChars 冲突），字数以该 JSON 为单一来源。",
+    "林离人设.md": "S7 换代（`## 人格与气质` 换成升级版 §二 的结构化准则）后的两端现状由生成器现算：<!--AUTO:synced-林离人设.md-->本侧 7550 B / f43562f9…；姊妹侧 7550 B / f43562f9…；**逐字节相同**<!--/AUTO:synced-林离人设.md-->。不要用本文件的 bytes 去校验姊妹侧 —— 以现算块为准。",
+    "主动来信.md": "两端现状由生成器现算：<!--AUTO:synced-主动来信.md-->本侧 3966 B / f0f59e9e…；姊妹侧 3966 B / f0f59e9e…；**逐字节相同**<!--/AUTO:synced-主动来信.md-->。差异在**结构**：本侧 System 段并入六步链的 {{rules}}，姊妹侧是 STEP6 单步渲染（见 stepMapNote 与同步方案 §5.1 的 S3）。",
+    "主动信语料.md": "S4 新建（5 封调性锚 + 使用声明 + 来源与授权留痕），两端现状由生成器现算：<!--AUTO:synced-主动信语料.md-->本侧 3474 B / 3bd72826…；姊妹侧 3474 B / 3bd72826…；**逐字节相同**<!--/AUTO:synced-主动信语料.md-->。",
+    "行为参数.json": "S5 新建，姊妹侧已按 T8 改成读它。两端现状由生成器现算：<!--AUTO:synced-行为参数.json-->本侧 11907 B / aec146bc…；姊妹侧 11907 B / aec146bc…；**逐字节相同**<!--/AUTO:synced-行为参数.json-->。",
+    "近况.md": "S9 新建，姊妹侧已同步同名文件。两端现状由生成器现算：<!--AUTO:synced-近况.md-->本侧 1903 B / deadf04b…；姊妹侧 1903 B / deadf04b…；**逐字节相同**<!--/AUTO:synced-近况.md-->。"
+  },
+  "tierThresholds": "已落到 行为参数.json 的 nearTerm 段（tiers 四档：0 封信不注入 / 4–20 / 21–60 / >60 或账本「关系」≥ 密友；thresholdMode=letters；allowRollback=false；userToggle=设置页「保持她现在的样子」；引擎接线由 server.js 的 resolveDriftTier(person) 算档后经 -DriftTier 走两条链路）。",
+  "driftForbidden": "已落到 行为参数.json 的 nearTerm.forbiddenTargets（摘要 / 跨封账本 {safe} / {navigation} / 检索上下文 {evidence}）与 nearTerm.mechanicalEvidence（时间点 8 词 + `(去|买|整理|写|见|做|收到|遇到|找到|搬|弄)了`）。",
+  "targetFieldsNote": "behavior / tierThresholds / driftForbidden 都已落地：本条目的职责只剩**指路**——数值一等来源一律是 行为参数.json，本清单不复制数值，避免两处漂移。",
+  "requiredBy": {
+    "source": ["VERSION", "00-栏目.md", "01-初始化账本.md", "01-预检.md", "02-历史检索.md", "02-账本校正.md", "03-中段生成.md", "04-尾端检查.md", "05-反馈重写.md", "开信.md", "写法.md", "林离人设.md", "行为参数.json", "主动来信.md", "主动信语料.md", "近况.md"],
+    "sister": ["开信.md", "写法.md", "林离人设.md", "主动来信.md", "主动信语料.md", "行为参数.json", "近况.md"],
+    "note": "source = 本侧 harness 运行时全部读到的文件（含 VERSION 与两份 JSON）；sister = 姊妹侧 app/harness/ 下应存在的文件。★ 姊妹侧 harness 目录的现算现状（**不写死** —— 它曾写过「没有 00-栏目.md / 01-* / 04-尾端检查.md 等六步链模板」，而实测八件全在盘上，见 [审查-5] 🟠-7）：<!--AUTO:sister-harness-->共 17 件；六步链八件（00-栏目.md / 01-初始化账本.md / 01-预检.md / 02-历史检索.md / 02-账本校正.md / 03-中段生成.md / 04-尾端检查.md / 05-反馈重写.md）**全在盘上**；有 8/8 件<!--/AUTO:sister-harness-->。姊妹侧不**消费**六步链（它是 Node 单文件实现，靠 app/harness-render.mjs 手工把 写法/人设/栏目 拼进 prompt）—— 「不消费」不等于「文件不存在」。本清单（harness-manifest.json）在**两侧都存在**：本侧在 `repo/source/harness/`（开发/审计用，**不进安装产物**），姊妹侧在 `app/harness/`（它的 `tests/harness-manifest.test.js:22` 要读它来逐项复算哈希）。两边内容应逐字节相同（唯一允许的差异是 `generatedAt`）。"
+  },
+  "pending": {
+    "S3b": "主动信是否单步化（本侧现为六步链 + System 并入；姊妹侧是 STEP6 单步）—— 见 主动来信.md 顶部 TODO(两端同步 S3b)",
+    "P-behavior-1": "OliviaSoul 侧生产链路（harness-4step.ps1）尚未接硬校验兜底；接入要按 AGENTS.md §二 的登记卡 8 条走",
+    "P6": "是否新增「UserData 搬迁包」契约（现有 /toy/letter/export 不导出 source/status/archived_at/摘要表，且会抹掉未解锁回信的正文）—— 待用户拍板（原名 P5，因与「§三/§四 落地选项」重名而改）"
+  }
+}

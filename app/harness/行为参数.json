@@ -1,0 +1,152 @@
+{
+  "paramsVersion": 1,
+  "updatedAt": "2026-10-16T07:44:19+08:00",
+  "status": "active",
+  "sourceOfTruth": "repo/source/harness/行为参数.json",
+  "note": "两端硬校验数值的唯一来源（同步方案 §3.8 / 施工单 S5）。① 规范目标值（进 prompt 的中文，见 targets）由 00-栏目.md / 写法.md / 主动来信.md 承载；② 硬校验值（程序兜底，见 reply / proactive）必须不严于目标值，否则模型按规范写出的信会被程序拒掉；③ 本文件是 JSON 真源，两端各自的校验代码都读它，不得各存一份手抄副本。",
+
+  "units": {
+    "maxChars": "汉字数 = 正则 /[一-龥]/g 的匹配数（不含标点、空白、数字、拉丁字母）",
+    "minChars": "同上，下限",
+    "maxParagraphs": "按空行切分（/[\\n\\r]+\\s*[\\n\\r]+/ 等价写法）后的非空段数",
+    "maxAsciiRun": "连续拉丁字母的最长串长度"
+  },
+
+  "reply": {
+    "maxChars": 240,
+    "minChars": 10,
+    "maxParagraphs": 8,
+    "maxAsciiRun": 7,
+    "forbidNamePrefixRegex": "^(林离|回信)\\s*[:：]",
+    "forbiddenWords": [
+      "由头", "触发", "主动来信", "主动信", "System", "prompt", "PROMPT",
+      "{{", "}}", "预检", "账本", "栏目"
+    ]
+  },
+
+  "proactive": {
+    "maxChars": 200,
+    "minChars": 12,
+    "minCharsWhenMultiParagraph": 1,
+    "minCharsRule": "双条件（2026-10-16 P2 拍板）：段落数 < 2（单段）时必须 ≥ minChars；段落数 ≥ 2 时只要求 ≥ minCharsWhenMultiParagraph（即非空）。理由：规范允许「短到一句也可以」（写法.md:79），一句 13 字要放行，一句 3 字的真碎片仍要拦。",
+    "maxParagraphs": 3,
+    "maxAsciiRun": 5,
+    "extraForbiddenWords": [
+      "你上次说", "你说过", "你让我", "你信里", "如你所说", "你刚才说",
+      "老公", "老婆", "男朋友", "女朋友", "在一起", "亲一下", "抱抱", "想我吗"
+    ],
+    "forbiddenWordsSemantics": "主动信的有效禁词 = reply.forbiddenWords 全部 ∪ proactive.extraForbiddenWords；不得只查后者"
+  },
+
+  "antifabrication": {
+    "historyClaimWordsWhenZeroEvidence": [
+      "上次", "上回", "上封", "前些天", "还记得",
+      "你跟我说过", "你讲过", "你答应过", "每次你都", "你以前总是"
+    ],
+    "appliesWhen": "本轮检索零原文证据（EvidenceCount = 0）时逐行命中即判违规；有原文证据时一律放行，不误伤合法引用"
+  },
+
+  "targets": {
+    "reply": {
+      "typicalParagraphs": [3, 4],
+      "typicalMaxChars": 200,
+      "singleTopicParagraphs": [1, 2],
+      "complexParagraphs": [4, 5],
+      "complexMaxChars": 220,
+      "maxParagraphs": 6,
+      "source": "00-栏目.md:9 与 写法.md:78-80"
+    },
+    "proactive": {
+      "paragraphs": [1, 2],
+      "maxChars": 160,
+      "source": "主动来信.md（尺寸节：1~2 段，不超过 160 字）"
+    }
+  },
+
+  "nearTerm": {
+    "enabled": true,
+    "whyEnabled": "用户 2026-10-16 拍板「按你建议的来」，P1 三问按建议落地：① 分档按信件数（thresholdMode=letters）；② 给用户开关（userToggle，设置页「保持她现在的样子」）；③ 档位不回退（allowRollback=false）。内容层见 repo/source/harness/近况.md（三档 9 条）。",
+    "thresholdMode": "letters",
+    "allowRollback": false,
+    "userToggle": {
+      "key": "keep-current-shape",
+      "default": false,
+      "label": "保持她现在的样子",
+      "meaning": "用户打开后不注入近况层（她的表达停在当前档、不再随往来推进而变）；关掉则恢复按档注入。默认关（= 近况层生效）。",
+      "note": "《写信引擎-两端结构同步方案》§3.9 倾向「不给开关，少一处状态」，但用户 2026-10-16 拍板给。两端必须同构：键名、默认值、语义一致。"
+    },
+    "carrier": "repo/source/harness/近况.md",
+    "variable": "drift",
+    "injectAt": "STEP3（harness/03-中段生成.md）",
+    "tiers": [
+      { "tier": 0, "lettersFrom": 0, "lettersTo": 3, "inject": false, "note": "不注入（{{drift}} 传空串）" },
+      { "tier": 1, "lettersFrom": 4, "lettersTo": 20, "inject": true, "note": "只注入第 1 档" },
+      { "tier": 2, "lettersFrom": 21, "lettersTo": 60, "inject": true, "note": "注入第 1+2 档" },
+      { "tier": 3, "lettersFrom": 61, "lettersTo": null, "inject": true, "note": "注入第 1+2+3 档" }
+    ],
+    "tierOverride": {
+      "when": "账本「关系」字段达到「密友」及以上",
+      "tier": 3,
+      "implemented": false,
+      "note": "与信件数取较高者（方案 §3.9 档 3 的两个条件之一）",
+      "whyNotImplemented": "需要稳定读取 信件往来\\<person>.md 的账本「关系」段（7 档：厌恶／令你感兴趣的笔友／一般朋友／好朋友／密友／暧昧／男女朋友），而该账本段目前**从不落进归档文件**（formatArchive 只拼记忆与逐封总结）；账本只存在于 _probe 的 h4_*_1safe.txt 中间产物里，且 probe-prune.ps1 只保留最近 3 封。⇒ 要实现它得先有一条稳定的账本读取路径，属独立改动。",
+      "todoMarker": "TODO(near-term-override)"
+    },
+    "tierDataSource": "letters 表 COUNT(*) —— 只算「用户自己写的、且已经回过信」的那些（`WHERE person = ? AND source <> 'proactive' AND status = 4(REPLIED)`）：排除主动信（她自己写来的信不该推高「往来多久」的档位）；排除在途信（生成回信时那封信已在表里，不排除会比已回信数提前 1 封）。⚠️ 尚未纳入：首封 created_at（按天数分档）与账本「关系」字段（见 tierOverride，标 implemented:false）。",
+    "mechanicalEvidence": {
+      "newActionPattern": "(去|买|整理|写|见|做|收到|遇到|找到|搬|弄)了",
+      "newTimeWords": ["上周", "上个月", "最近", "昨天", "前几天", "这几天", "今天", "前阵子"],
+      "newTimeWordsNote": "出处：《人设演进方案-近况层与分档注入-2026-10-16》§2.4 :108 机械判据表的原列（8 词）。首版写 null 是因为只读了《写信引擎-两端结构同步方案》§3.9 的「新时间点词表」说法、漏了 §2.4 的原表；不臆造所以留空，现按原表补齐。"
+    },
+    "forbiddenTargets": [
+      "摘要（letter_summaries / memory_bulk_summaries）",
+      "跨封账本（{{safe}}）",
+      "{{navigation}}（历史检索的导航摘要）",
+      "检索上下文（{{evidence}}）"
+    ],
+    "forbiddenTargetsWhy": "近况层只写「她最近怎么写」（比重 / 节奏 / 侧重 / 质地），永不写「发生过什么」；一旦进入摘要或账本，它会被后续检索当事实反复引用而逐步事实化。",
+    "engineWiring": "已全部接线（2026-10-16 完成）：① 脚本侧 —— harness-4step.ps1 的 -DriftTier 参数 + Get-DriftText 函数（按档累积拼接，档 ≤ 0 返回空串）+ drift 进 $harnessOptionalVars 与 STEP3 的 map3；03-中段生成.md 已有 {{drift}} 占位；两个入口脚本（harness-live.ps1 / harness-proactive.ps1）都接住并转发 -DriftTier。② 调用方 —— server.js 的 resolveDriftTier(person) 读本文件的 tiers 算档（enabled 非 true / 用户开关为 \"1\" / 命中不注入的第 0 档 ⇒ -1），经 `driftTier:` 传给回信（reply-worker 的 generator）与主动信（scheduleProactiveLetter 的 proactiveGenerator）两条链路；历史最高档记在 settings.drift_tier_max（allowRollback=false 即不回退）。③ 未实现的一项：tierOverride（账本「关系」≥密友 ⇒ 第 3 档）在 server.js 里留了 `TODO(near-term-override)`（需解析 信件往来\\<person>.md 的账本段）。",
+    "userToggleWiring": "设置页「保持她现在的样子」= public/index.html 的 #proactiveKeepShape + public/proactive-settings.js 的 fill/save/reset 三处 + server.js 的 /toy/letter/proactive GET/POST 各回一次 keepCurrentShape；落盘键就是 userToggle.key（keep-current-shape，值 \"1\"/\"0\"）。护栏：test/proactive-settings.test.js 第 6 项 + .test-twins/mut-config-near-term-toggle.json（3 变异全抓）。"
+  },
+
+  "conflicts": [
+    {
+      "id": "C1",
+      "severity": "resolved",
+      "what": "主动信硬校验曾为单值 minChars = 20，而回信规范 写法.md:79 明写「短到一句也可以」；主动信自己的规范（主动来信.md 尺寸节）只规定 1~2 段 / 不超过 160 字，没有给最短长度。",
+      "whyItMatters": "一封合法的主动信可能只有十来个汉字（例如「今天路过那家店，忽然很想你。」= 12 个汉字），会被旧的单值 minChars 20 直接拒掉。",
+      "status": "已解决（2026-10-16 P2 拍板：改为双条件 —— 单段须 ≥ minChars 12，多段（≥2 段）只须 ≥ minCharsWhenMultiParagraph 1）。⚠️ 两端实现 inspection 时必须按 minCharsRule 走，只读 minChars 会把合法的短主动信拒掉。"
+    },
+    {
+      "id": "C2",
+      "severity": "resolved",
+      "what": "主动信 maxParagraphs 曾与规范上限相等、没有余量（早期规范在姊妹侧写「2~3 段」，上界 3 与硬校验 3 顶死）。",
+      "whyItMatters": "保留这条记录是为了说明「规范变严、硬校验不必跟着收」：硬校验只需不严于目标值，宽一点反而给模型留容错。",
+      "status": "已消解，**维持 maxParagraphs = 3 不改**（2026-10-16 核实）：S3 之后两侧 app/harness/主动来信.md 的尺寸节一致写「1~2 段，不超过 160 字」（两侧文件逐字节相同，3,966 B / f0f59e9e…），因此硬校验 3 相对规范上界 2 已有 1 段余量。WorkBuddy 2026-10-16 建议进一步放宽到 4，**不采纳**：那会让「明显超出规范（3~4 段）的主动信」也通过，硬校验就失去了兜底意义；余量给 1 段已符合「不严于目标值」的原则。"
+    }
+  ],
+
+  "consumers": [
+    {
+      "who": "E:/linli-letters（OliviaSoul-community 独立版）",
+      "where": "app/behavior-params.mjs + app/core.mjs 的 baseInspect / inspectReply / inspectProactive",
+      "state": "已接入（施工单 T8，2026-10-16 完成）",
+      "note": "姊妹侧新增 app/behavior-params.mjs 只读本 JSON（无回退值），core.mjs 的 inspectReply / inspectProactive 阈值改为从它取；同时实现了 P2 的双条件（汉字数 < minChars 且 段落数 < 2 才拒），并在 minCharsWhenMultiParagraph 缺失时退回 minChars 而不是 0。本文件的数值最初就是从它侧的硬编码常量抄录（FORBIDDEN_REPLY 12 项 / inspectReply 240,10,8,7 / inspectProactive 200,20,3,5），接入后不再有手抄副本。"
+    },
+    {
+      "who": "E:/olivia-soul-community-kit（OliviaSoul）",
+      "where": "repo/source/local-service/test/harness-behavior-params.test.js",
+      "state": "已接入（仅一致性断言）",
+      "note": "断言本文件与真源规范文本（00-栏目.md:9 / 写法.md:78-80 / 主动来信.md 尺寸节）的目标值一致，并断言两处手抄副本（若日后出现）与本文件一致 —— 防止「规范改了、参数没改」的漂移。生产链路的机械自检（4 步链末尾的字数/段数兜底）尚未接，见 pending"
+    }
+  ],
+
+  "pending": [
+    {
+      "id": "P-behavior-1",
+      "what": "OliviaSoul 侧生产链路（.cursor/skills/fit-letters/scripts/harness-4step.ps1）尚未把本文件的硬校验值接成机械兜底；目前只有 STEP4 的 LLM 逐栏核对与 05-反馈重写.md 的 LLM 自审。",
+      "whyDeferred": "这是行为变更（新信可能因此被拦），牵涉新增套件 + 两处 $suites 登记 + 变异配置，按 AGENTS.md §二「新增功能登记卡」8 条走；不宜与 S5（纯新增数据文件）合并提交。",
+      "when": "S5 提交后单独一轮"
+    }
+  ]
+}

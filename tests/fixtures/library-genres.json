@@ -1,0 +1,665 @@
+{
+ "note": "E://linlimusic 里 Solo_/PlaySing_ 全集 + 3 个 midi 样本；genre 与原版四档逐首对过",
+ "tracks": [
+  {
+   "dir": "PlaySing_Da_Capo_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Devastation_And_Redemption_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Emberfire_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Fen_Shua_Jiang_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Her_Wishes_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_If_I_Can_Stop_One_Heart_From_Breaking_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Liang_Zhi_Lao_Hu_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Lucens_Ut_Risus_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Melody_Of_Brave_Seeds_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Mo_Li_Hua_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Moon_Halo_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Natlan_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Nod-Krai_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Petala_Ceciderunt_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Qing_Lian_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Rubia_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Ruu_Melody_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Sheng_Ri_Kuai_Le_Ge_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Somnias_A_Luna_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Song_Bie_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Star_Odyssey_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_The_Long_Way_Home_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_The_Rime_Of_The_Ancient_Bargeman_III_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_The_Road_Not_Taken_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_The_Sanctification_Of_Tao_Dou_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Wai_Po_Qiao_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_White_Night_Ziyun_original",
+   "genre": "ACG",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Xiao_Tu_Zi_Guai_Guai_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Yao_Lan_Qu_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_You_Yi_Di_Jiu_Tian_Chang_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "PlaySing_Zhao_Peng_You_Ziyun_original",
+   "genre": "轻音乐",
+   "mode": "弹唱"
+  },
+  {
+   "dir": "Solo_A_Dramatic_Irony",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_A_New_Day_With_Hope",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Above_The_Sea_Of_Clouds",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Air_On_The_G_String_From_Orchestral_Suite_No3_In_D_Major_BWV_1068",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Another_Hopeful_Tomorrow",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Arabesque_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Beethoven_Piano_Sonata_No8_In_C_Minor_Op13_2_Adagio_Cantabile",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Canon_In_D",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No12",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No3",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No5",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No8",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op10_No9",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op25_No12_In_C_Minor",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Etude_Op25_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Nocturne_Op9_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Op25_No3",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Op28_No4",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Op40_No1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Chopin_Op64_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Clear_Sky_Over_Liyue",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Consolation_No3_In_D_Flat_Major",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Croatian_Rhapsody",
+   "genre": "轻音乐",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Dance_Of_The_Gnomes_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Dawn_Winery_Theme",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Debussy_Moonlight",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Debussy_Reverie",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Down_By_The_Forgotten_Gardens",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Dream_Of_Scattered_Petals",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Dwelling_In_The_Past",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Ethereal_Mildness",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Flight_Of_The_Bumblebee_Jazz_Version",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Footprints",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_For_Riddles_For_Wonders",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Good_Night_Liyue",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Grande_Polonaise_Brillante_Op22_P1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Grande_Polonaise_Brillante_Op22_P2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Gymnopedie_No1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Gymnopedies_Of_Lune",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Hanachirusato",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Hence_Begins_The_Journey",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Honkai_Star_Rail_Opening_Theme",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Impromptu_In_G_Flat_Major_Op90_No3",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Le_Duc_Sous_leau",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Leisure_In_Painting",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Liyue",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Lustrous_Stars",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Lyphard_Melody",
+   "genre": "轻音乐",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Minute_Waltz_Op64_No1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Moment_Musical_No3_In_F_Minor_Op94",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Moonlike_Smile",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Nocturne_No3_In_B_Major_For_Piano_Solo",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Notturno_Op_54_No4",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Once-Joyful_Dream",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Ondulations_Du_Rythme",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Pathway_To_The_Hidden_Isles",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Pavane_For_A_Dead_Princess",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Peaceful_Wishes",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Piano_Sonata_No13_K333",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Piano_Sonata_No16_K545",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Piano_Sonata_No17_In_D_Minor_Op31_No2_Tempest_1_Largo",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Prelude_And_Fugue_In_C_Minor_BWV_847_P1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Prelude_And_Fugue_In_C_Minor_BWV_847_P2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Prelude_In_G_Minor_Op23_No5",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Pure_Sky",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Qingyun_Peak_Theme",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Rays_Of_Sunlight",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Resonance_Of_Khvarena",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Rex_Incognito",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Rhapsodie_Espagnole_S254_P1",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Rhapsodie_Espagnole_S254_P2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Scarlatti_Sonata_In_D_Minor_K213",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Scene_From_Childhood_Op_15_No7_Dreaming",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Schumann_Papillons_Op2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Scriabin_Etude_In_C_Sharp_Minor_Op19_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Simurghs_Dream",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Sink_Into_Oblivion",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Sipping_In_The_Soft_Breeze",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Slight_Distress",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Soliloquy_Of_The_Star",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Song_Without_Words_Op67_No2",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Spacewalk",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Stroll_Along_The_Beach",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Tagelied_Nachtlicher_Gedanken",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Tender_Strength",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Fading_Stories",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Little_Bell_No3",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Seasons_Op_37a_X_October_Autumn_Song",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Shimmering_Voyage",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Swan",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_The_Wind_Catcher_From_A_Foreign_Land",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Traum_Durch_Die_Dammerung_Erster_Satz",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Turkish_March",
+   "genre": "古典",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Vespers_Of_Pluviose",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Wedding_Of_Love",
+   "genre": "轻音乐",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Where_Did_You_Go",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "Solo_Wildfire",
+   "genre": "ACG",
+   "mode": "独奏"
+  },
+  {
+   "dir": "midi_100022_1784248593",
+   "genre": "我的上传",
+   "mode": "个人上传"
+  },
+  {
+   "dir": "midi_10020_1783943393",
+   "genre": "我的上传",
+   "mode": "个人上传"
+  },
+  {
+   "dir": "midi_100261_1784170028",
+   "genre": "我的上传",
+   "mode": "个人上传"
+  }
+ ]
+}
