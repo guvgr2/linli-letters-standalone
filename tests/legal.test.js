@@ -116,15 +116,22 @@ test("★ 协议正文里不许出现 markdown 记号（两处都是按纯文本
   assert.ok(!/[`#]/u.test(all), "★ 协议里出现 markdown 的 ` 或 #");
 });
 
-test("★ 第四条必须如实写明随附的字体（否则协议在撒谎）", () => {
+test("★ 第四条必须写明字体的新口径：不含字体 + 给官网地址 + 不许退回旧说法", () => {
   const L = loadGenerated();
   const four = L.sections.find((s) => s.head.startsWith("四、"));
   assert.ok(four, "缺第四条");
-  // 安装包里真的随附了 SentyTEA ⇒ 第四条若还写着「不打包任何原版游戏素材」就是假的。
-  // 这条钉住的是"协议说的和包里装的是同一件事"。
-  assert.match(four.body, /SentyTEA/, "第四条没写明随附的是哪个字体");
+  // 2026-10-15 决定：不再随包字体（汉仪协议 4.4.3 / 4.4.4 禁止附带或嵌入分发）。
+  // 这条钉住的是"协议说的和包里装的是同一件事"：包里没有字体，协议就不能说随附了。
+  assert.match(four.body, /不包含[^。]*不随附|不随附[^。]*字体/u,
+    "第四条没写明本程序不包含/不随附字体文件");
+  // ★ 官网地址用**字面量**钉死域名，别拿被测代码现算期望值（那叫同义反复，永远绿）。
+  assert.match(four.body, /sentyfont/i, "第四条没给出官网地址（个人非商业免费下载）");
   assert.match(four.body, /不主张任何权利/, "第四条没写明这个字体的权利不归我们");
   assert.match(four.body, /第十条/, "第四条要把权利人的下架路径指到第十条");
+  // ★ 反向断言：旧口径必须绝迹，否则有人会把「随附」的说法加回来。
+  const all = [L.lead, ...L.sections.flatMap((s) => [s.head, s.body]), L.tail].join("\n");
+  assert.ok(!/随附了?\s*SentyTEA/u.test(all), "★ 协议里又出现「随附（了）SentyTEA」的旧说法");
+  assert.ok(!/取自原版游戏客户端/u.test(all), "★ 协议里又出现「取自原版游戏客户端」的旧说法");
 });
 
 test("★ 下架通知与安全报告这两个入口不能被悄悄删掉", () => {

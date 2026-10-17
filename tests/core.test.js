@@ -35,11 +35,17 @@ import {
   playbackTimeOfDay,
   pickTrigger,
   prettySongName,
+  classifyGenre,
+  officialSong,
+  songDisplayName,
   reserveDue,
   selectVariant,
   unansweredWaitHours,
   withoutSentences,
+  resolveDriftTier,
+  driftTextByTier,
 } from "../app/core.mjs";
+import { nearTermLimits, proactiveLimits, replyLimits } from "../app/behavior-params.mjs";
 
 const ON = { enabled: true, windowStart: "09:00", windowEnd: "21:30", minGapHours: 20, maxPerDay: 1, maxPerWeek: 4 };
 const HOUR = 3600;
@@ -455,12 +461,141 @@ test("自检：正常文本能过", () => {
   assert.equal(inspectReply(proactive).ok, true);
 });
 
+// ------------------------------------------------- T8：硬校验值只认 行为参数.json
+//
+// 真源侧（DSH）维护 `harness/行为参数.json`，我侧随包带一份 `app/harness/行为参数.json`。
+// 这组断言守两件事：① 代码真的在读它（不是抄了一份在 core.mjs 里）；
+// ② P2 拍板的「最短长度双条件」真的按 minCharsRule 实现了。
+
+test("★ T8：自检阈值来自 行为参数.json，core.mjs 里不再有第二份数字", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  const R = replyLimits();
+  const P = proactiveLimits();
+  assert.ok(Number.isFinite(R.maxChars) && Number.isFinite(P.maxChars), "两份都要能读到上限");
+  assert.ok(P.maxChars < R.maxChars, "★ 主动信必须比回信严，否则同一段文字两端判定不一致");
+
+  // 边界是从 JSON 里量出来的，不是写死的 —— 改 JSON，这条跟着走。
+  assert.equal(inspectProactive("字".repeat(P.maxChars)).ok, true, `${P.maxChars} 字应当放行`);
+  assert.equal(inspectProactive("字".repeat(P.maxChars + 1)).ok, false, `${P.maxChars + 1} 字应当被上限拦下`);
+  assert.equal(inspectReply("字".repeat(R.maxChars)).ok, true, `${R.maxChars} 字应当放行`);
+  assert.equal(inspectReply("字".repeat(R.maxChars + 1)).ok, false, `${R.maxChars + 1} 字应当被上限拦下`);
+
+  // ★ 反向断言：core.mjs 不许再出现「阈值字段名 + 数字字面量」—— 出现了就是第二份真源。
+  const src = await readFile(join(import.meta.dirname, "..", "app", "core.mjs"), "utf8");
+  for (const field of ["maxChars", "minChars", "maxParagraphs", "maxAsciiRun"]) {
+    const hit = new RegExp(`${field}:\\s*\\d`).exec(src);
+    assert.equal(hit, null, `core.mjs 里又出现了硬编码阈值（${hit?.[0]}）⇒ 改回读 行为参数.json`);
+  }
+  assert.ok(!src.includes("\"由头\""), "core.mjs 里又出现了手写的禁词表 ⇒ 改回读 行为参数.json");
+});
+
+test("★ P2 双条件：一句 12 字的合法主动信要放行，真碎片照拦", () => {
+  const P = proactiveLimits();
+
+  // C1 记录的那句：12 个汉字，单段 → 单段门槛 minChars（12）刚好放行。
+  const oneLine = "今天路过那家店，忽然很想你。";
+  const cjk = (oneLine.match(/[一-龥]/g) ?? []).length;
+  assert.ok(cjk >= P.minChars, `样本要落在门槛上（${cjk} vs ${P.minChars}）`);
+  assert.equal(inspectProactive(oneLine).ok, true, "★ 单值 minChars=20 会把这句合法信拒掉 —— 这正是 C1");
+
+  // 多段：总字数不到单段门槛，但按 minCharsRule 多段只要求非空 ⇒ 放行。
+  const twoShort = "在吗。\n\n想你了。";
+  assert.equal(inspectProactive(twoShort).ok, true, "★ 多段走 minCharsWhenMultiParagraph，不该被单段门槛拦下");
+
+  // 单段的真碎片仍然要拦。
+  assert.equal(inspectProactive("在吗").ok, false, "单段 2 字仍是碎片");
+  assert.equal(inspectProactive("。").ok, false, "只剩标点要拦");
+});
+
 test("★ 主动信比回信更严：回信允许的长文本，主动信要拦", () => {
   // 主动信上限 200 字、3 段；回信 240 字、8 段。同一段文字应出现「回信过、主动信不过」。
   const mid = "字".repeat(220);
   assert.equal(inspectReply(mid).ok, true);
   assert.equal(inspectProactive(mid).ok, false);
   assert.equal(inspectReply("字".repeat(300)).ok, false, "★ 回信自己也有上限，不能只给主动信设限");
+});
+
+// ------------------------------------------------- T9：近况层档位（只认真源 JSON）
+//
+// 真源 = `行为参数.json` 的 `nearTerm`（DSH 侧 §4.22 ⑤ 的可执行判定式）。
+// 这组断言守四件事：① 开关总闸；② 用户开关；③ 按信件数落档且第 0 档不注入（传 -1）；
+// ④ 不回退（删信件也不降档）。阈值全部从 JSON 量出来，不写死。
+
+test("★ T9：近况层档位判定按真源 tiers 落档，第 0 档不注入", () => {
+  const N = nearTermLimits();
+  assert.equal(N.enabled, true, "真源 nearTerm.enabled 应为 true（P1 已拍板）");
+  assert.equal(N.userToggle.key, "keep-current-shape", "★ 键名必须两端同构");
+  assert.equal(N.userToggle.default, false, "★ 默认关 = 近况层生效");
+
+  // ★ 总闸关闭（真源 enabled=false）⇒ 一律不注入。
+  //   真源的 enabled 恒为 true，若不注入口径这条分支就永远走不到（变异会报「仍绿」）——
+  //   所以这里注入一份 enabled:false 的口径，把这条分支真正测到。
+  assert.equal(
+    resolveDriftTier({ letters: 9999, toggleValue: "0" }, { ...N, enabled: false }),
+    -1,
+    "★ 总闸关闭（enabled=false）⇒ 不注入",
+  );
+
+  // 档位边界从 JSON 的 tiers 量出来（0–3 ⇒ 0 / 4–20 ⇒ 1 / 21–60 ⇒ 2 / 61+ ⇒ 3），
+  // 不写死数字 —— 改 JSON，这条跟着走。
+  const t0 = N.tiers.find((t) => t.tier === 0);
+  const t1 = N.tiers.find((t) => t.tier === 1);
+  assert.ok(t0 && t1, "真源应有第 0、1 档");
+  // 第 0 档：不注入 ⇒ 传 -1（★ 不是传「第 0 档的文本」）
+  assert.equal(resolveDriftTier({ letters: 0, toggleValue: "0" }), -1, "0 封 ⇒ -1");
+  assert.equal(resolveDriftTier({ letters: t0.lettersTo, toggleValue: "0" }), -1, "第 0 档上界仍不注入");
+  // 第 1 档起点
+  assert.equal(resolveDriftTier({ letters: t1.lettersFrom, toggleValue: "0" }), 1, "第 1 档起点应落档 1");
+  // 最高档
+  assert.equal(resolveDriftTier({ letters: 9999, toggleValue: "0" }), 3, "极多信件 ⇒ 第 3 档");
+});
+
+test("★ T9：开关与不回退 —— 用户打开则不注入，删信件也不降档", () => {
+  const N = nearTermLimits();
+  // 用户开关（真源 key）打开 ⇒ 不注入
+  assert.equal(resolveDriftTier({ letters: 9999, toggleValue: "1" }), -1, "★ 打开「保持她现在的样子」⇒ 不注入");
+  assert.equal(resolveDriftTier({ letters: 9999, toggleValue: true }), -1, "布尔 true 也要认");
+  // ★ 不回退：allowRollback=false 时，历史最高档要兜住
+  assert.equal(N.allowRollback, false, "真源 allowRollback 应为 false");
+  assert.equal(resolveDriftTier({ letters: 0, toggleValue: "0", maxTier: 2 }), 2, "★ 删信件到 0 封也不许跌回 -1（不回退）");
+  assert.equal(resolveDriftTier({ letters: 5, toggleValue: "0", maxTier: 3 }), 3, "历史最高 3 ⇒ 仍算 3");
+  // 开关优先级高于不回退（用户没打开，但真源总闸关了 ⇒ -1）
+  assert.equal(resolveDriftTier({ letters: 9999, toggleValue: "0", maxTier: 3 }), 3, "未开开关 + 高历史档 ⇒ 维持高档");
+});
+
+test("★ T9：近况文本按档累积拼接，-1/0 档返回空串", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const md = await readFile(join(import.meta.dirname, "..", "app", "harness", "近况.md"), "utf8");
+  const at = driftTextByTier(md);
+  // 第 0 档/ -1 ⇒ 空串（不注入）
+  assert.equal(at(-1), "");
+  assert.equal(at(0), "");
+  // 第 1 档非空
+  const t1 = at(1);
+  assert.ok(t1.length > 0, "第 1 档应有文本");
+  // ★ 第 2 档起累积：档 2 必须**包含**档 1（真源近况.md 顶部写明「第 2 档起累积」）
+  const t2 = at(2);
+  const t3 = at(3);
+  assert.ok(t2.length > t1.length, "★ 档 2 应比档 1 长（累积，不是替换）");
+  assert.ok(t2.includes(t1.split("\n")[0].replace(/^-\s*/, "")), "★ 档 2 应含档 1 的内容");
+  assert.ok(t3.length > t2.length, "★ 档 3 应比档 2 长（累积）");
+  assert.ok(t3.includes(t2.split("\n")[0].replace(/^-\s*/, "")), "★ 档 3 应含档 2 的内容");
+  // 超出最高档也不许炸：应按最高档给
+  assert.equal(at(9), t3, "超出最高档 ⇒ 按最高档给");
+});
+
+test("★ T9：core.mjs 的 resolveDriftTier 不许出现硬编码档位阈值", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const src = await readFile(join(import.meta.dirname, "..", "app", "core.mjs"), "utf8");
+  // ★ 反向断言：档位判定不许在源码里写「lettersFrom: 数字」这类字面量 —— 那是第二份真源。
+  const hit = /lettersFrom:\s*\d/.exec(src);
+  assert.equal(hit, null, `core.mjs 里出现了硬编码档位阈值（${hit?.[0]}）⇒ 改回读 行为参数.json`);
+  // 开关键名也不许写死在 core.mjs（要从真源 userToggle.key 读）
+  assert.ok(!src.includes("\"keep-current-shape\""), "core.mjs 里又写死了开关键名 ⇒ 改回读真源");
 });
 
 // ---------------------------------------------------------------- 账本
@@ -565,4 +700,39 @@ test("曲名美化：去掉来源尾巴，但不能把曲名削没", () => {
   assert.equal(prettySongName("solo_piano_01"), "solo piano 01");
   assert.equal(prettySongName(""), "");
   assert.ok(prettySongName("solo_ziyun_original").length > 0, "★ 只剩尾巴时也要留下可显示的名字");
+});
+
+test("官方曲名表：129 首对过表的曲子显示原版曲名（契约值用字面量钉死）", async () => {
+  // ★ 三重指纹（模式列 98/31 + ffprobe 时长 + 目录名语义）对表的结果，样例逐字钉住。
+  //   别把期望值写成 OFFICIAL_SONGS 的常量 —— 那是同义反复，表值改错时永远绿。
+  assert.equal(officialSong("PlaySing_The_Road_Not_Taken_Ziyun_original")?.title, "未行之路 The Road Not Taken");
+  assert.equal(officialSong("Solo_Schumann_Papillons_Op2")?.title, "Papillons, Op.2（蝴蝶）");
+  assert.equal(officialSong("Solo_Schumann_Papillons_Op2")?.composer, "Schumann");
+  assert.equal(officialSong("PlaySing_Fen_Shua_Jiang_Ziyun_original")?.title, "粉刷匠");
+  assert.equal(officialSong("Solo_Croatian_Rhapsody")?.title, "Croatian Rhapsody（克罗地亚狂想曲）");
+  assert.equal(officialSong("PlaySing_Moon_Halo_Ziyun_original")?.composer, "HOYO-MIX");
+  assert.equal(officialSong("Solo_Turkish_March")?.composer, "Tchaikovsky");
+  // 表外（个人上传 / 不存在的目录）不乱给名字
+  assert.equal(officialSong("midi_100022_1784248593"), null);
+  assert.equal(officialSong("solo_user_made_song"), null);
+  // songDisplayName：表内走原版曲名、表外走裸名清洗
+  assert.equal(songDisplayName("PlaySing_The_Road_Not_Taken_Ziyun_original"), "未行之路 The Road Not Taken");
+  assert.equal(songDisplayName("solo_piano_01"), "solo piano 01");
+  // ★ 覆盖面：fixture 里的 129 条每一条都能被 officialSong 查到（表和 fixture 不许漂移）
+  const { readFile } = await import("node:fs/promises");
+  const fx = JSON.parse(await readFile(new URL("./fixtures/official-song-names.json", import.meta.url), "utf8"));
+  const dirs = Object.keys(fx);
+  assert.equal(dirs.length, 129);
+  for (const dir of dirs) {
+    const hit = officialSong(dir);
+    assert.ok(hit, `表里查不到：${dir}`);
+    assert.equal(hit.title, fx[dir].title, `曲名漂移：${dir}`);
+    assert.equal(hit.composer, fx[dir].composer, `作曲家漂移：${dir}`);
+  }
+  // genre/mode 与分类表同源一致（fixture 的 genre 应与 classifyGenre 一致）
+  for (const dir of dirs) {
+    if (fx[dir].genre !== "我的上传") {
+      assert.equal(classifyGenre(dir), fx[dir].genre, `分类漂移：${dir}`);
+    }
+  }
 });

@@ -11,16 +11,23 @@
 
 import { createServer } from "node:http";
 import { readFile, readdir } from "node:fs/promises";
-import { existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname, extname } from "node:path";
+import { join, dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, randomBytes } from "node:crypto";
 import { runSecretPipeline } from "./secret-store.mjs";
+import { ERR, codeMessage, ApiError } from "./error-codes.mjs";
+import { buildImportPlan, PreviewRegistry, PREVIEW_TTL_MS } from "./import-session.mjs";
+import { parseSoulArchive, SOUL_LIMITS } from "./soul-archive.mjs";
+import { exchangeFingerprint } from "./import-preview.mjs";
+import { ensureImportColumns } from "./db-import-columns.mjs";
 import {
   PROACTIVE_DEFAULTS,
   evaluateProactive as coreEvaluateProactive,
+  validateProactivePatch,
+  TIER_COUNT_SQL,
   proactiveIntro,
   triggerLabel,
   inspectProactive,
@@ -38,7 +45,13 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
 const HARNESS_DIR = join(HERE, "harness");
-const DATA_DIR = join(homedir(), "AppData", "Roaming", "LinliLetters");
+// ★ 数据目录唯一真源是 `%APPDATA%\LinliLetters`（安装后用户所有信件都在那儿）。
+//   `LINLI_DATA_DIR` 是**测试与排障**用的逃生口：`tests/import-route.test.js` 要在临时目录
+//   起一个干净的库来验证导入，指不动数据目录就没法测「真的写进 sqlite 了吗」。
+//   外壳从不设这个变量 ⇒ 生产路径的路径与环境变量是否存在无关。
+const DATA_DIR = process.env.LINLI_DATA_DIR
+  ? resolve(process.env.LINLI_DATA_DIR)
+  : join(homedir(), "AppData", "Roaming", "LinliLetters");
 const DB_FILE = join(DATA_DIR, "letters.sqlite");
 
 const PORT = Number(process.env.LINLI_PORT ?? 0); // 0 = 让系统给端口
@@ -426,7 +439,9 @@ function evaluateProactive(input = {}) {
     herLetters,
     busyCount: count("SELECT COUNT(*) value FROM letters WHERE status IN (?, ?)", STATUS.PENDING, STATUS.LLM_PROCESSING),
     unreadProactive: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND is_read = 0"),
-    exchangedCount: count("SELECT COUNT(*) value FROM letters WHERE status = ? AND reply_text IS NOT NULL", STATUS.REPLIED),
+    // ★ 「往来多久」走 TIER_COUNT_SQL，别在这里另写一句 —— 裸 `status=4 AND reply_text IS NOT NULL`
+    //   不看 origin，会把她自己主动写来的信也算进档位推进（档位被推高，她就"熟得太快"）。
+    exchangedCount: count(TIER_COUNT_SQL),
     lastCreatedAt: last ? last.created_at : null,
     proactive24h: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND created_at >= ?", ts - 24 * 3600),
     proactive7d: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND created_at >= ?", ts - 7 * 24 * 3600),
@@ -498,16 +513,49 @@ function json(res, code, payload) {
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
 }
+
+/**
+ * 报错的唯一出口：中文那句话里**带上号**，旁边再单独给一个纯 `code`。
+ *
+ * 两条腿缺一条都不行：只有中文，日志/前端没法按号分支；只有号，用户看不懂。
+ * （用户 2026-10-17 的原话：「程序报错代码一定要有能让程序快速识别的报错号，
+ *   和方便用户查看的显式报错。」）
+ */
+function fail(res, status, code, message) {
+  const text = codeMessage(message, code);
+  return json(res, status, { error: text, code });
+}
+/**
+ * 读 JSON 请求体。
+ *
+ * ★ 抛的**全是 ApiError**：请求体写坏了是调用方的问题，不该冒充服务故障（500）。
+ *   原来畸形 JSON 会被最外层 catch 压成 500 并把解析器原文回吐
+ *   （`Expected property name or''}'' in JSON at position 1`）——
+ *   用户既看不懂，也以为是程序坏了。
+ * ★ 空体（没发 body）按 `{}` 收：前端 `api()` 对无参 POST 就是不发 body，
+ *   这不是"请求体不是 JSON"，不该报错。
+ */
 async function readJsonBody(req, limit = 2 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new Error("请求体过大");
+    if (size > limit) throw new ApiError(413, "请求体太大了", ERR.COMMON_BODY_TOO_LARGE);
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new ApiError(400, "请求体不是合法的 JSON", ERR.COMMON_BODY_NOT_JSON);
+  }
+  // ★ 顶层必须是对象：`JSON.parse("42")` 不报错，但后面 `body.dir` 全是 undefined，
+  //   会静默当成"什么都没传"，比直接报错难查得多。
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ApiError(400, "请求体必须是一个 JSON 对象", ERR.COMMON_BODY_NOT_OBJECT);
+  }
+  return parsed;
 }
 
 // ★ 必须有字体那几档：缺了就按 application/octet-stream 吐出去，
@@ -582,12 +630,184 @@ async function serveMedia(req, res, songDir, fileName) {
   (await import("node:fs")).createReadStream(target).pipe(res);
 }
 
+// ---------------------------------------------------------------- .soul 导入（UserData 一键导入）
+//
+// 预览与落库必须分两步：预览**一行用户数据都不写**，用户可以随时抽身；
+// 落库要给正在跑的库动刀，动刀前必先留一份备份 —— 这一步没有撤销键。
+// （ parlance 依据：DSH《UserData 一键导入机制说明》§5「风险不对称」。）
+
+/** 预览登记簿。纯内存 —— 进程重启后预览失效是**正确**表现，届时让用户重选一次文件。 */
+const previewRegistry = new PreviewRegistry();
+
+/** 库里已经有哪些信件 id 与内容指纹 —— 预览算 when-hit 全靠这两个集合。 */
+function importExisting() {
+  const ids = db.prepare("SELECT id FROM letters").all().map((r) => String(r.id));
+  const cols = new Set(db.prepare("PRAGMA table_info(letters)").all().map((r) => String(r.name)));
+  // ⚠️ content_md5 是迁移加的列，旧库没有 —— 没有就当作"没有任何已知指纹"，不能硬 SELECT。
+  const hashes = cols.has("content_md5")
+    ? db.prepare("SELECT content_md5 m FROM letters WHERE content_md5 IS NOT NULL").all().map((r) => String(r.m))
+    : [];
+  return { ids, hashes };
+}
+
+async function readRawBody(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new ApiError(413, "这份归档太大了", ERR.IMPORT_SOUL_TOO_LARGE);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * 第一步：只算不写。返回给用户看的是三个数与一句话，avage toxicity 全在 plan 里。
+ */
+async function importPreview(buf) {
+  if (!buf || buf.length === 0) {
+    throw new ApiError(400, "没有收到 .soul 文件，请重新选一个", ERR.IMPORT_FILE_REQUIRED);
+  }
+  let parsed;
+  try {
+    parsed = parseSoulArchive(buf, SOUL_LIMITS);
+  } catch (error) {
+    // ★ 解析器的九道判据全是给用户看的中文，这里**原样上屏**，不许换成笼统话 ——
+    //   用户要知道的是"文件被截短了"，不是"出错了"。
+    throw new ApiError(400, error.message, ERR.IMPORT_SOUL_UNREADABLE);
+  }
+  const { ids, hashes } = importExisting();
+  const id = randomUUID();
+  const record = buildImportPlan({ id, parsed, existingIds: ids, existingHashes: hashes, archivedAt: nowSeconds() });
+  previewRegistry.put(record);
+  return {
+    previewId: id,
+    counts: record.counts,
+    total: record.total,
+    // 缺日期的信要如实数出来 —— 静默当 0 等于替用户编了时间。
+    noDateCount: record.fallbackIds.length,
+    videos: record.videos,
+    note: record.note,
+    ttlMs: PREVIEW_TTL_MS,
+  };
+}
+
+/** 动库前留退路。**一次入库只能产生一份备份**（dn every migration step 共用它）。 */
+function makeBackupOnce() {
+  let file = null;
+  const once = () => {
+    if (file) return file;
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    file = `letters-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.sqlite.bak`;
+    copyFileSync(DB_FILE, join(DATA_DIR, file));
+    return file;
+  };
+  Object.defineProperty(once, "file", { get: () => file });
+  return once;
+}
+
+/**
+ * 第二步：真的写。**先备份 → 再补列 → 再落库 → 最后回读对账**，
+ * 顺序一步都不能挪（改用户的库没有撤销键）。
+ */
+async function importConfirm(previewId) {
+  const key = String(previewId ?? "").trim();
+  // ★ 「没给预览 id」与「没收到文件」是两个号：前者用户该重走预览，后者该重选文件。
+  if (!key) throw new ApiError(400, "没有指定要确认的预览，请重新选择 .soul 文件", ERR.IMPORT_PREVIEW_REQUIRED);
+
+  // take() 用完即删 —— 同一份预览不能落库两次。
+  const record = previewRegistry.take(key);
+  if (!record) {
+    throw new ApiError(410, "这份预览已经失效或已经确认过了，请重新选择 .soul 文件", ERR.IMPORT_PREVIEW_STALE);
+  }
+
+  // 预览之后、确认之前库可能又变了（别的页面刚写完一封）⇒ 再过一遍 id 去重。
+  const known = new Set(importExisting().ids);
+  const fresh = record.rows.filter((r) => !known.has(r.letterId));
+  const staleSkipped = record.rows.length - fresh.length;
+
+  if (fresh.length === 0) {
+    // 一封都不写 ⇒ 连备份都不该碰（备份本身也是在动用户的库文件）。
+    return {
+      written: 0, staleSkipped,
+      counts: record.counts, total: record.total,
+      verify: { checked: 0, mismatched: 0 },
+      // 一封都没写 ⇒ 档位数没变，但仍旧如实数一遍（不要塞个 null 让界面自己去猜）。
+      tierCount: db.prepare(TIER_COUNT_SQL).get()?.value ?? 0,
+      backup: null,
+    };
+  }
+
+  const backupOnce = makeBackupOnce();
+  // ★ 备份是「动库前先留退路」，备份没成就不许往下走 —— 否则一次导入失败就没有回头路。
+  try {
+    ensureImportColumns(db, { backup: backupOnce });
+  } catch (error) {
+    throw new ApiError(500, `导入前备份没做成，这次一封都没写：${error.message}`, ERR.IMPORT_BACKUP_FAILED);
+  }
+
+  const insert = db.prepare(`
+    INSERT INTO letters(id, content, reply_text, origin, status, created_at, replied_at, is_read, trigger_kind, content_md5, archived_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)
+  `);
+  const writtenIds = [];
+  db.exec("BEGIN");
+  try {
+    for (const row of fresh) {
+      const replied = row.status === STATUS.REPLIED;
+      insert.run(
+        row.letterId,
+        row.content,
+        // 没回信就是 NULL，不是空串 —— 空串会被当成"回了一封空信"。
+        row.replyText === "" ? null : row.replyText,
+        row.origin,
+        row.status,
+        row.createdAt,
+        replied ? row.createdAt : null,
+        row.contentMd5,
+        row.archivedAt,
+      );
+      writtenIds.push(row.letterId);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+
+  // 回读复算指纹：写进去多少就对账多少，一个数不落。
+  // ★ 同时把「用户来信且已回信」的档位数按 TIER_COUNT_SQL 再取一次：
+  //   导入是**唯一一次**会让档位一下子跳好几档的操作，回执里报出来，
+  //   用户和自己下一次写信看到的档位才对得上（也免得有人以为是程序算错了）。
+  const readBack = db.prepare("SELECT content, reply_text, content_md5 FROM letters WHERE id = ?");
+  let mismatched = 0;
+  for (const row of fresh) {
+    const got = readBack.get(row.letterId);
+    const again = exchangeFingerprint(got?.content, got?.reply_text ?? "");
+    if (!got || !got.content_md5 || got.content_md5 !== again) mismatched += 1;
+  }
+  const tierCount = db.prepare(TIER_COUNT_SQL).get()?.value ?? 0;
+
+  return {
+    written: writtenIds.length,
+    staleSkipped,
+    counts: record.counts,
+    total: record.total,
+    verify: { checked: writtenIds.length, mismatched },
+    // 落在 SQL 层数出来的「往来封数」—— 导入后用户下次写信，档位判定用的就是它。
+    tierCount,
+    // 只有真的备份过才有文件名 —— ensureImportColumns 可能一列都不缺（那时 backup 从未被调用）。
+    backup: backupOnce.file,
+  };
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const path = url.pathname;
   try {
     // ① 来源闸：挡住任意网页跨站调用本机接口
-    if (!allowedOrigin(req)) return json(res, 403, { error: "来源不被允许" });
+    if (!allowedOrigin(req)) return fail(res, 403, ERR.COMMON_ORIGIN_BLOCKED, "来源不被允许");
 
     // ★ 自检契约：外壳（LinliShell）起来之后先探这一眼，确认服务**真的在应答**再进界面。
     //   「端口占了」和「起来了但卡住了」是两种不同的故障，没有这一眼就只能靠超时猜。
@@ -609,7 +829,7 @@ const server = createServer(async (req, res) => {
 
     // ② 令牌闸：写操作必须带令牌，挡住本机其它进程
     if (req.method !== "GET" && req.method !== "HEAD" && !tokenOk(req)) {
-      return json(res, 403, { error: "缺少会话令牌" });
+      return fail(res, 403, ERR.COMMON_TOKEN_MISSING, "缺少会话令牌");
     }
     if (req.method === "GET" && path === "/api/letters") {
       const rows = db.prepare("SELECT id, content, reply_text, origin, status, error, created_at, replied_at, is_read, trigger_kind FROM letters ORDER BY created_at DESC, rowid DESC LIMIT 200").all();
@@ -627,7 +847,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/library/dir") {
       const body = await readJsonBody(req);
       const dir = String(body.dir ?? "").trim();
-      if (dir && !existsSync(dir)) return json(res, 400, { error: "目录不存在" });
+      if (dir && !existsSync(dir)) return fail(res, 400, ERR.LIBRARY_DIR_NOT_FOUND, "目录不存在");
       setSetting("library_dir", dir);
       return json(res, 200, await scanLibrary());
     }
@@ -635,7 +855,7 @@ const server = createServer(async (req, res) => {
       const songDir = url.searchParams.get("dir") ?? "";
       const view = (url.searchParams.get("view") ?? "NI").toUpperCase();
       const todParam = (url.searchParams.get("tod") ?? "").toUpperCase();
-      if (!songDir) return json(res, 400, { error: "没有指定曲目" });
+      if (!songDir) return fail(res, 400, ERR.LIBRARY_SONG_REQUIRED, "没有指定曲目");
       return json(res, 200, await resolvePlayback(songDir, view, TIME_SLOTS.includes(todParam) ? todParam : null));
     }
     if (req.method === "GET" && path === "/api/media") {
@@ -647,10 +867,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/library/import") {
       const body = await readJsonBody(req);
       const songDir = String(body.dir ?? "").trim();
-      if (!songDir) return json(res, 400, { error: "没有指定曲目" });
+      if (!songDir) return fail(res, 400, ERR.LIBRARY_SONG_REQUIRED, "没有指定曲目");
       const known = (await scanLibrary()).songs ?? [];
       const hit = known.find((s) => s.dir === songDir);
-      if (!hit) return json(res, 400, { error: "曲库里没有这一首" });
+      if (!hit) return fail(res, 400, ERR.LIBRARY_SONG_NOT_FOUND, "曲库里没有这一首");
       db.prepare("INSERT INTO songs(dir, name, added_at) VALUES(?, ?, ?) ON CONFLICT(dir) DO UPDATE SET name = excluded.name")
         .run(hit.dir, hit.name, nowSeconds());
       return json(res, 200, { songs: await importedSongs() });
@@ -658,7 +878,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/library/played") {
       const body = await readJsonBody(req);
       const title = String(body.title ?? "").trim();
-      if (!title) return json(res, 400, { error: "没有曲名" });
+      if (!title) return fail(res, 400, ERR.LIBRARY_TITLE_REQUIRED, "没有曲名");
       setSetting("last_played_title", title);
       setSetting("last_played_at", nowSeconds());
       return json(res, 200, { title });
@@ -694,16 +914,27 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && path === "/api/proactive") {
       const patch = await readJsonBody(req);
+      // ★ 整批校验必须在**第一次 setSetting 之前**（tests/proactive-validate.test.js ⑨ 钉死顺序）。
+      //   先写后验的后果是：其它字段非法时开关已经被改掉，界面显示「保存失败，但勾选框变了」。
+      const judged = validateProactivePatch(patch);
+      if (!judged.ok) {
+        return fail(res, 400, ERR.PROACTIVE_SETTINGS_INVALID,
+          `这些设置不合法：${judged.errors.join("；")}`);
+      }
+      // ★ 各键的落盘写法**只写一张表**（键 → 设置名 → 怎么转成字符串）。
+      //   原来布尔判定按 key 名写死成 `["enabled","asked"].includes(key)`，
+      //   新增的布尔键会漏进 String(value) 分支 ⇒ `false` 落库成字面量 "false"，
+      //   读回来的比较又是 `=== "1"` ⇒ 关不掉。加键时这张表跟着加，别再另开分支。
+      const BOOL = { enabled: true, asked: true };
+      const map = {
+        enabled: "proactive_enabled", windowStart: "proactive_window_start", windowEnd: "proactive_window_end",
+        minGapHours: "proactive_min_gap_hours", maxPerDay: "proactive_max_per_day", maxPerWeek: "proactive_max_per_week",
+        asked: "proactive_asked",
+      };
       for (const [key, value] of Object.entries(patch ?? {})) {
-        const map = {
-          enabled: "proactive_enabled", windowStart: "proactive_window_start", windowEnd: "proactive_window_end",
-          minGapHours: "proactive_min_gap_hours", maxPerDay: "proactive_max_per_day", maxPerWeek: "proactive_max_per_week",
-          asked: "proactive_asked",
-        };
         const settingKey = map[key];
         if (!settingKey) continue;
-        const on = ["enabled", "asked"].includes(key);
-        setSetting(settingKey, on ? (value ? "1" : "0") : String(value));
+        setSetting(settingKey, BOOL[key] ? (value ? "1" : "0") : String(value));
       }
       // ★ 用户主动把开关打开 ⇒ 等价于"已经答过这个问题了"，别再弹一次。
       if (patch?.enabled === true) setSetting("proactive_asked", "1");
@@ -716,8 +947,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/letters") {
       const body = await readJsonBody(req);
       const content = String(body.content ?? "").trim();
-      if (!content) return json(res, 400, { error: "信是空的" });
-      if (content.length > 4000) return json(res, 400, { error: "一封信最多 4000 字" });
+      if (!content) return fail(res, 400, ERR.LETTER_EMPTY, "信是空的");
+      if (content.length > 4000) return fail(res, 400, ERR.LETTER_TOO_LONG, "一封信最多 4000 字");
       const id = randomUUID();
       db.prepare("INSERT INTO letters(id, content, origin, status, created_at, is_read) VALUES(?, ?, NULL, ?, ?, 1)")
         .run(id, content, STATUS.PENDING, nowSeconds());
@@ -726,8 +957,25 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && path.startsWith("/api/letters/") && path.endsWith("/read")) {
       const id = path.slice("/api/letters/".length, -"/read".length);
-      db.prepare("UPDATE letters SET is_read = 1 WHERE id = ?").run(id);
+      // ★ 更新了 0 行必须当"没有这一封信"，不能回 200 ok ——
+      //   否则前端以为已读、下次刷新又变回未读，用户会以为程序在丢状态。
+      const changed = db.prepare("UPDATE letters SET is_read = 1 WHERE id = ?").run(id).changes;
+      if (!changed) return fail(res, 404, ERR.LETTER_NOT_FOUND, "没有这一封信");
       return json(res, 200, { ok: true });
+    }
+
+    // ---- UserData 导入（.soul 归档）：预览只算不写 → 确认才动库 ------------
+    // ★ 两条都挂在令牌闸后面（上面 ②），所以没令牌的导入会被 403 挡掉。
+    if (req.method === "POST" && path === "/api/import/preview") {
+      // 收的是**原始字节流**，不是 JSON —— `.soul` 是二进制归档。
+      // 上限取解析器自己那条（10 GiB），收件层不另立一个数：
+      // 两个上限并存，早晚会出现「收件层先拒了、解析器判能收」的怪状态。
+      const buf = await readRawBody(req, SOUL_LIMITS.maxBytes);
+      return json(res, 200, await importPreview(buf));
+    }
+    if (req.method === "POST" && path === "/api/import/confirm") {
+      const body = await readJsonBody(req);
+      return json(res, 200, await importConfirm(body?.previewId));
     }
     // ★ 窗口图标的唯一入口。
     //   外壳是用 Edge 的 --app= 开窗口的，那种窗口**不用 exe 的图标**：
@@ -739,10 +987,29 @@ const server = createServer(async (req, res) => {
       return serveIcon(req, res);
     }
     if (req.method === "GET" || req.method === "HEAD") return serveStatic(req, res, path);
-    res.writeHead(405); res.end("method not allowed");
+    // ★ 405 也走 fail()：原来这里是纯文本 `res.end("method not allowed")`，
+    //   前端 res.json() 直接抛 `Unexpected token 'm'` —— 一个代码写错的路由
+    //   会被显示成"解析出错"，让人以为是数据坏了。
+    return fail(res, 405, ERR.COMMON_ROUTE_NOT_FOUND, "这个地址不支持这种请求方式");
   } catch (error) {
     console.error(`[api] ${req.method} ${path} → ${error.message}`);
-    json(res, 500, { error: error.message });
+    // ★ ApiError 自带状态码与错误号，别一律压成 500 COMMON_INTERNAL。
+    //   它是**唯一一条转发型出口**：号来自抛出点（那里已经核过），这里不再套一层 "（号）"，
+    //   否则同一条报错会带着两个号上屏。
+    if (error instanceof ApiError) {
+      console.error(`[api] ${error.code} → ${error.message}`);
+      return json(res, error.status, { error: codeMessage(error.message, error.code), code: error.code });
+    }
+    // 请求体问题（畸形 JSON / 太大 / 不是对象）是**调用方**的错，不是服务故障 ——
+    // 原来一律 500 还把解析器原文吐出去（`Expected property name or '}' in JSON at position 1`），
+    // 用户既看不懂，也以为是程序坏了。
+    if (error instanceof SyntaxError) {
+      return fail(res, 400, ERR.COMMON_BODY_NOT_JSON, "请求体不是合法的 JSON");
+    }
+    if (error?.message === "请求体过大") {
+      return fail(res, 413, ERR.COMMON_BODY_TOO_LARGE, "请求体太大了");
+    }
+    return fail(res, 500, ERR.COMMON_INTERNAL, error.message);
   }
 });
 

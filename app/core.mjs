@@ -2,6 +2,11 @@
 //
 // 从 server.mjs 抽出来的原因：机会判定与自检是这个程序**唯一能挡住「不该发的信被发出去」**的两道闸，
 // 埋在 HTTP 处理器里就没法测，而没法测的护栏等于没有护栏（旧项目踩过：沙箱自造前提 ⇒ 全绿却漏 P0）。
+//
+// ★ 唯一的例外（2026-10-16 T8）：自检阈值改从 `app/harness/行为参数.json` 读，
+//   那是真源侧维护的唯一一份口径。它读不到就抛 —— 不回退、不静默。
+
+import { nearTermLimits, proactiveLimits, replyLimits } from "./behavior-params.mjs";
 
 export const PROACTIVE_DEFAULTS = Object.freeze({
   // 用户 2026-10-13 定：默认开启，7 天最多 4 封。
@@ -447,7 +452,11 @@ export function reserveDue(nowSeconds, minGapHours, jitterSeed = 0) {
  *   并且**全局最多重写一次**（竞品也是这样，防止越改越不像人写的）。
  */
 export function withoutSentences(text, spans) {
-  const body = String(text ?? "");
+  // ★ 2026-10-16 修（DSH 互查 F2）：以前这里**不 trim**，而调用方 `inspectReplyDegraded:464`
+  //   比较时**trim 了** ⇒ 若 spans 是按 trimmed 文本算的，删除会落在首尾空白上（删了空白、
+  //   没删句子），随后判等成立 ⇒ 静默返回「降级失败」：不抛错、不告警。
+  //   ⇒ 进函数第一件事统一坐标系：**一律相对 trimmed 文本**。
+  const body = String(text ?? "").trim();
   const list = (Array.isArray(spans) ? spans : [])
     .filter((s) => s && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
     .sort((a, b) => b.start - a.start);            // 从后往前删，前面的下标才不会被挪动
@@ -468,7 +477,74 @@ export function inspectReplyDegraded(text, spans) {
     : { ok: false, reason: again.reason, degraded: false };
 }
 
+/**
+ * 主动信设置**落盘前**的整批校验（2026-10-16，两端同步 §9.2）。
+ *
+ * 为什么要有这道：DSH 侧 `POST /toy/letter/proactive` 的缺陷是「先落盘、后校验」⇒
+ * 其余设置非法时开关已经被改掉（界面表现为「保存失败，但那个勾选框变了」）。
+ * 我侧的形态其实**更松** —— 原来压根没有校验，是**逐键 setSetting 直接写**：
+ *   `windowStart: "99:99"`、`minGapHours: -5` 这类值会原样进库，而且中途任一键抛错时
+ *   前面已经写进去的键不会回滚。
+ *
+ * ⇒ 修法是**顺序**：先整批校验，全部合法才落盘（一个都不写）。落盘那一行不在这里。
+ *
+ * ★ 只做「类型 / 格式 / 范围」，**不新增产品约束** —— 例如 `maxPerWeek: 0`（等于关掉主动来信）
+ *   是用户的合法意图，这里不拦。拦的是脏值：NaN、负数、非整数、`"99:99"`、字符串冒充布尔。
+ */
+// ★ 2026-10-17 修（审核）：开关的布尔判据**只此一份**，校验层与落库层共用。
+//   原来 server.mjs 落库时另写了一份 `value ? "1" : "0"`，而字符串 "0" 是**非空**
+//   ⇒ 真值 ⇒ 写成 "1" ⇒ `{enabled:"0"}`（校验层明确放行）被写成"开"。
+//   两处判据一旦漂移，就会变成"校验说合法、落库是反的"。
+//   ★ 只认布尔与 1/0（含 "1"/"0" 字符串，trim 后比）；"abc"、"2"、"" 一律不算真。
+export function proactiveBool(v) {
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0) return false;
+  const s = String(v).trim();
+  if (s === "1") return true;
+  if (s === "0") return false;
+  return undefined; // 不是合法的布尔写法 ⇒ 交给校验层报错，不要猜
+}
+
+export function validateProactivePatch(patch) {
+  const errors = [];
+  const p = patch ?? {};
+  const has = (k) => p[k] !== undefined && p[k] !== null;
+
+  // 时间窗：HH:MM，且必须是一天里真实存在的时刻
+  for (const k of ["windowStart", "windowEnd"]) {
+    if (!has(k)) continue;
+    if (clockToMinutes(p[k]) === null) errors.push(`${k} 不是 HH:MM（实际 ${JSON.stringify(p[k])}）`);
+  }
+  // 数值：非负有限整数
+  for (const k of ["minGapHours", "maxPerDay", "maxPerWeek", "checkIntervalMinutes"]) {
+    if (!has(k)) continue;
+    const n = Number(p[k]);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+      errors.push(`${k} 必须是非负整数（实际 ${JSON.stringify(p[k])}）`);
+    }
+  }
+  // 开关：只认布尔与 "1"/"0"/1/0；字符串 "abc" 这类一律拒（它会被 truthy 当成 true）
+  for (const k of ["enabled", "asked", "keepCurrentShape"]) {
+    if (!has(k)) continue;
+    const v = p[k];
+    if (proactiveBool(v) === undefined) errors.push(`${k} 必须是布尔或 1/0（实际 ${JSON.stringify(v)}）`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function normalizeSettings(raw) {
+  // ★ 2026-10-17 修（审核）：**幂等短路**。
+  //   evaluateProactive()（core.mjs:157）会拿传进来的 settings 再走一遍本函数，
+  //   并用**重算出来的** invalid 决定是否拦（core.mjs:164）。而生产路径
+  //   server.mjs:559-570 的 proactiveSettings() 传进来的**已经是归一化过的对象**
+  //   ⇒ windowStart 早已被替换成合法的 "09:00" ⇒ 第二遍重算的 invalid 必然是 []
+  //   ⇒ BAD_WINDOW 护栏永不触发。
+  //   实测：用户填 "99:99"，传原始 DB 行 ⇒ bad_window（拦截）；传归一化对象 ⇒
+  //   不再是 bad_window，且 99:99 被静默改成 09:00–21:30 —— 正是本护栏要防的
+  //   「写错一个字符就悄悄变回默认 ⇒ 她在不受控的时段写信」，结果自己 fail-open。
+  //   ★ invalid 是唯一能证明「这一轮真的校验过」的痕迹，见到它就说明已归一化，
+  //     直接透传，别再抹一遍。
+  if (raw && Array.isArray(raw.invalid)) return raw;
   const clamp = (v, lo, hi, dflt) => {
     const n = Number(raw?.[v]);
     if (!Number.isFinite(n)) return dflt;
@@ -484,25 +560,32 @@ export function normalizeSettings(raw) {
     windowStart: clockToMinutes(raw?.windowStart) === null ? PROACTIVE_DEFAULTS.windowStart : String(raw.windowStart),
     windowEnd: clockToMinutes(raw?.windowEnd) === null ? PROACTIVE_DEFAULTS.windowEnd : String(raw.windowEnd),
     minGapHours: clamp("minGapHours", 0, 720, PROACTIVE_DEFAULTS.minGapHours),
-    maxPerDay: clamp("maxPerDay", 0, 10, PROACTIVE_DEFAULTS.maxPerDay),
-    maxPerWeek: clamp("maxPerWeek", 0, 30, PROACTIVE_DEFAULTS.maxPerWeek),
+    // ★ 2026-10-15 修（审核）：这两个**下限必须是 1，不能是 0**。
+    //   判据是 `已发 >= 上限`，上限为 0 时恒真 ⇒ 主动来信被静默永久关停，
+    //   界面上还会写成「7 天内已发 0 封，达上限 0」，看着像正常配置。
+    //   想要"不发"请走 enabled=false，那才是表达这个意思的地方。
+    maxPerDay: clamp("maxPerDay", 1, 10, PROACTIVE_DEFAULTS.maxPerDay),
+    maxPerWeek: clamp("maxPerWeek", 1, 30, PROACTIVE_DEFAULTS.maxPerWeek),
     invalid,
   };
 }
 
 // ------------------------------------------------------------------ 自检
+//
+// ★ 2026-10-16（两端同步 T8）：下面这批阈值**不再是本文件里的数字**。
+//   唯一真源是随包下发的 `app/harness/行为参数.json`（真源侧维护、随清单推送）。
+//   改口径请改那份 JSON，两端同时生效；本文件**不留任何回退用的硬编码副本**
+//   （留了就是第二份真源，两端漂移正是从"为了不崩先给个默认值"开始的）。
+//   `tests/core.test.js` 有一条反向断言钉住这件事：本文件不许再出现「字段名 + 数字字面量」的写法。
 
-const FORBIDDEN_REPLY = [
-  "由头", "触发", "主动来信", "主动信", "System", "prompt", "PROMPT", "{{", "}}", "预检", "账本", "栏目",
-];
+const FORBIDDEN_REPLY = replyLimits().forbiddenWords;
 
 const FORBIDDEN_PROACTIVE = [
   ...FORBIDDEN_REPLY,
-  "你上次说", "你说过", "你让我", "你信里", "如你所说", "你刚才说",
-  "老公", "老婆", "男朋友", "女朋友", "在一起", "亲一下", "抱抱", "想我吗",
+  ...proactiveLimits().extraForbiddenWords,
 ];
 
-function baseInspect(text, { forbidden, maxChars, minChars, maxParagraphs, maxAsciiRun }) {
+function baseInspect(text, { forbidden, maxChars, minChars, minCharsWhenMultiParagraph, maxParagraphs, maxAsciiRun }) {
   const body = String(text ?? "").trim();
   if (!body) return { ok: false, reason: "空正文" };
   for (const word of forbidden) {
@@ -510,8 +593,13 @@ function baseInspect(text, { forbidden, maxChars, minChars, maxParagraphs, maxAs
   }
   const cjk = (body.match(/[一-龥]/g) ?? []).length;
   if (cjk > maxChars) return { ok: false, reason: `正文 ${cjk} 字，超过 ${maxChars} 字` };
-  if (cjk < minChars) return { ok: false, reason: `正文仅 ${cjk} 字，过短` };
   const paragraphs = body.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+  // ★ P2 双条件（真源 `proactive.minCharsRule`，2026-10-16 用户拍板）：
+  //   单段须 ≥ minChars（12）；多段只须 ≥ minCharsWhenMultiParagraph（1）。
+  //   ⇒ 一句 12 字的合法主动信放行，「在吗」这种真碎片照拦。
+  //   ⚠️ 只读 minChars 会把「短到一句也可以」的合法信拒掉 —— 那正是 C1 记的问题。
+  const floor = paragraphs.length >= 2 ? (minCharsWhenMultiParagraph ?? minChars) : minChars;
+  if (cjk < floor) return { ok: false, reason: `正文仅 ${cjk} 字，过短` };
   if (paragraphs.length > maxParagraphs) return { ok: false, reason: `正文 ${paragraphs.length} 段，超过 ${maxParagraphs} 段` };
   const run = body.match(/[A-Za-z]+/g)?.sort((a, b) => b.length - a.length)[0] ?? "";
   if (run.length > maxAsciiRun) return { ok: false, reason: "正文出现英文长串" };
@@ -519,14 +607,155 @@ function baseInspect(text, { forbidden, maxChars, minChars, maxParagraphs, maxAs
 }
 
 export function inspectReply(text) {
-  const r = baseInspect(text, { forbidden: FORBIDDEN_REPLY, maxChars: 240, minChars: 10, maxParagraphs: 8, maxAsciiRun: 7 });
+  const R = replyLimits();
+  const r = baseInspect(text, {
+    forbidden: FORBIDDEN_REPLY,
+    maxChars: R.maxChars,
+    minChars: R.minChars,
+    maxParagraphs: R.maxParagraphs,
+    maxAsciiRun: R.maxAsciiRun,
+  });
   if (!r.ok) return r;
-  if (/^(林离|回信)\s*[:：]/.test(r.body)) return { ok: false, reason: "正文带了角色名前缀" };
+  if (R.namePrefix.test(r.body)) return { ok: false, reason: "正文带了角色名前缀" };
   return r;
 }
 
 export function inspectProactive(text) {
-  return baseInspect(text, { forbidden: FORBIDDEN_PROACTIVE, maxChars: 200, minChars: 20, maxParagraphs: 3, maxAsciiRun: 5 });
+  const P = proactiveLimits();
+  return baseInspect(text, {
+    forbidden: FORBIDDEN_PROACTIVE,
+    maxChars: P.maxChars,
+    minChars: P.minChars,
+    minCharsWhenMultiParagraph: P.minCharsWhenMultiParagraph,
+    maxParagraphs: P.maxParagraphs,
+    maxAsciiRun: P.maxAsciiRun,
+  });
+}
+
+// ------------------------------------------------------------------ 近况层（T9）
+//
+// ★ 2026-10-16（两端同步 T9）：近况层档位判定。真源 = `行为参数.json` 的 `nearTerm`
+//   （DSH 侧 §4.22 ⑤ 给了可执行判定式，封锁解除）。本函数是**纯函数**：
+//   输入「信件数 / 用户开关 / 历史最高档 / 关系」，输出档位号（-1 = 不注入）。
+//
+// 判定顺序（与真源 §4.22 ⑤ 的 5 步逐条对应）：
+//   1. `nearTerm.enabled !== true`                ⇒ -1
+//   2. 用户开关（`keep-current-shape === "1"`）    ⇒ -1
+//   3. 按信件数落档 0–3 ⇒ 0 / 4–20 ⇒ 1 / 21–60 ⇒ 2 / 61+ ⇒ 3
+//   4. 命中「不注入」的档（inject=false，即第 0 档）⇒ -1（★ 传 -1，不是传第 0 档的文本）
+//   5. 与历史最高档取较高者（allowRollback=false ⇒ 不回退）
+//
+// ⚠️ 关系覆盖（tierOverride：账本「关系」≥ 密友 ⇒ 第 3 档）由调用方在**查询里**解析后
+//   作为 `relationshipTier` 传入；本函数只负责与信件数取较高者，不自己去解析账本。
+//
+// ── 近况层档位的计数口径 ────────────────────────────────────────────────
+// 真源 `行为参数.json` 的 `tierDataSource`（2026-10-16 版）逐字写的是：
+//   「只算『用户自己写的、且已经回过信』的那些
+//     （`WHERE person = ? AND source <> 'proactive' AND status = 4(REPLIED)`）：
+//     排除主动信（她自己写来的信不该推高『往来多久』的档位）；
+//     排除在途信（生成回信时那封信已在表里，不排除会比已回信数提前 1 封）。」
+//
+// 本侧列名不同但语义一一对应：`person` 无（单人）· `source` ⇒ `origin`
+// （NULL = 用户来信，'proactive' = 林离先写）· `status` ⇒ 同为 `status`。
+//
+// ⚠️ 两个会写错的地方（都是真踩过的）：
+//   ① SQLite 里 `origin <> 'proactive'` 对 `origin IS NULL` 的行返回 **NULL**，
+//      而 NULL **不入选** ⇒ 只写这一句会把「用户来信」全漏掉，档位永远停在 0。
+//      必须显式带上 `origin IS NULL OR`。
+//   ② 这里**必须**带 `status = 4`：不带就把在途信（1/3）和失败信（5）算进「往来多久」。
+export const TIER_COUNT_SQL =
+  "SELECT COUNT(*) value FROM letters WHERE (origin IS NULL OR origin <> 'proactive') AND status = 4";
+
+/** 档位计数认定的「已回信」状态值；须与 `app/server.mjs` 的 `STATUS.REPLIED` 同值（有测试守）。 */
+export const TIER_COUNTED_STATUS = 4;
+
+/**
+ * 与 {@link TIER_COUNT_SQL} **同口径**的行级判定（纯函数，可单测）。
+ * SQL 与这个函数是同一条规则的两处表达 —— 任一侧改了另一侧没跟上，
+ * `tests/tier-count.test.js` 里那条「两边对同一批行必须同结果」会红。
+ * @param {{origin?:string|null, status?:number}} row
+ */
+export function isTierCounted(row = {}) {
+  const proactive = row.origin != null && String(row.origin) === "proactive";
+  return !proactive && Number(row.status) === TIER_COUNTED_STATUS;
+}
+
+/**
+ * @param {{letters:number, toggleValue?:string|boolean, maxTier?:number, relationshipTier?:number}} ctx
+ * @param {object} [limits] 注入真源口径（**仅测试用**）。缺省则读 `行为参数.json`。
+ *   为什么留这个口：真源 `nearTerm.enabled` 当前恒为 `true`，若不注入就无法测「总闸关闭」那条分支
+ *   ⇒ 那条分支会变成「写了但永远不走」的摆设（变异会报「仍绿」）。注入口让每条分支都能被打红。
+ * @returns {number} 档位号；-1 表示「不注入近况层」
+ */
+export function resolveDriftTier(ctx = {}, limits = null) {
+  const N = limits ?? nearTermLimits();
+  // 步 1：开关总闸
+  if (!N.enabled) return -1;
+  // 步 2：用户开关（真源 key 由 JSON 给，值 "1" = 打开 = 停用近况层）
+  const raw = ctx.toggleValue;
+  const on = raw === true || raw === 1 || String(raw ?? "").trim() === "1";
+  if (on) return -1;
+  // 步 3：按信件数落档
+  const letters = Number(ctx.letters);
+  const count = Number.isFinite(letters) && letters > 0 ? Math.floor(letters) : 0;
+  let tier = 0;
+  for (const t of N.tiers) {
+    if (count >= t.lettersFrom && (t.lettersTo === null || count <= t.lettersTo)) {
+      tier = t.tier;
+      break;
+    }
+  }
+  // 步 3b：账本「关系」覆盖（与信件数取较高者）
+  const rel = Number(ctx.relationshipTier);
+  if (Number.isFinite(rel)) tier = Math.max(tier, Math.floor(rel));
+  // 步 4：不回退 —— 与历史最高档取较高者。
+  //   ⚠️ **必须在「第 0 档不注入」判定之前**做：关系推进过就不会生疏，
+  //     删信件把 count 降回第 0 档时，历史最高档要把它兜回来，否则「不回退」等于没实现。
+  if (!N.allowRollback) {
+    const max = Number(ctx.maxTier);
+    if (Number.isFinite(max)) tier = Math.max(tier, Math.floor(max));
+  }
+  // 步 5：命中「不注入」的档（第 0 档）⇒ -1（★ 传 -1，不是传第 0 档的文本）
+  const hit = N.tiers.find((t) => t.tier === tier);
+  if (!hit || hit.inject === false) return -1;
+  return tier;
+}
+
+/**
+ * 把 `近况.md` 拆成「档位 → 该档注入的文本」。
+ * ★ 第 2 档起**累积**：档 2 = 第 1+2 档；档 3 = 第 1+2+3 档（真源 `近况.md` 顶部已写明）。
+ * 返回的是数组，`tierAt(2)` = [第1档, 第2档] 拼接后的文本。
+ * @param {string} markdown `近况.md` 全文
+ * @returns {(tier:number)=>string} 传 -1 或 0 返回空串
+ */
+export function driftTextByTier(markdown) {
+  const raw = String(markdown ?? "");
+  // 按 `## 第 N 档` 切段（真源标题形如 `## 第 1 档 · 回应比重上升（4–20 封）`）。
+  // ⚠️ 用行首锚点切，别用 lookahead + `$`（带 m 标志时 `\s*$` 会在换行处立即命中 ⇒ 每段都被切成空）。
+  const lines = raw.split(/\r?\n/);
+  const parts = [];
+  let cur = null;
+  const head = /^##\s*第\s*(\d+)\s*档/;
+  for (const line of lines) {
+    const m = head.exec(line);
+    if (m) {
+      if (cur) parts.push(cur);
+      cur = { tier: Number(m[1]), buf: [] };
+      continue;
+    }
+    if (cur) cur.buf.push(line);
+  }
+  if (cur) parts.push(cur);
+  const sections = parts.map((p) => ({ tier: p.tier, body: p.buf.join("\n").trim() })).filter((p) => p.body);
+  return (tier) => {
+    const n = Number(tier);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    return sections
+      .filter((p) => p.tier >= 1 && p.tier <= n)
+      .sort((a, b) => a.tier - b.tier)
+      .map((p) => p.body)
+      .join("\n\n");
+  };
 }
 
 // ------------------------------------------------------------------ 曲库变体
@@ -542,9 +771,12 @@ export function inspectProactive(text) {
 export const TIME_SLOTS = Object.freeze(["TOD12", "TOD1730", "TOD20"]);
 export const TIME_SLOT_LABELS = Object.freeze({ TOD12: "白天", TOD1730: "傍晚", TOD20: "夜晚" });
 
-// 曲库目录筛选口径（用户 2026-10-13 指定）：只要目录名以 solo / playsing 开头的。
-// 放在这里而不是 server.mjs，是因为「哪些目录算曲目」是一条判据 —— 判据要能被变异打红。
-export const LIBRARY_DIR_PATTERN = /^(?:solo|playsing)/iu;
+// 曲库目录筛选口径。
+// ★ 2026-10-13 用户指定过"只要 solo / playsing 开头的"；2026-10-14 要了「我的上传」这一档，
+//   而那一档就是 midi_ / oliviasoul_ 那批（原版右栏里写的"个人上传 · mid_11565_…"也是它们）——
+//   不加进来的话，这一档永远是空的，等于摆了个点不动的按钮。
+//   放在这里而不是 server.mjs，是因为「哪些目录算曲目」是一条判据 —— 判据要能被变异打红。
+export const LIBRARY_DIR_PATTERN = /^(?:solo|playsing|midi|oliviasoul)/iu;
 
 /**
  * 目录名 → 曲名：去掉 _ziyun_original 这类来源尾巴，下划线还原成空格。
@@ -563,10 +795,349 @@ export function prettySongName(dirName) {
   return name.length > SONG_NAME_MAX ? name.slice(0, SONG_NAME_MAX - 1).trimEnd() + "…" : name;
 }
 
+// ---------------------------------------------------------------- 曲库分类
+//
+// ★ 用户口径（2026-10-14）：页签照原版分「古典 / ACG / 轻音乐 / 我的上传」，
+//   但**不要用户自己去挑** —— 导入曲库时按目录名与曲名自动判，判完就摆好。
+//
+// ★★ 为什么下面对表而不是只写关键词：
+//   用户 2026-10-14 把原版那四档**逐张截图**发过来校准（古典 7 张 / ACG 10 张 /
+//   轻音乐 2 张）。把那些曲目和曲库里的目录名逐首对上之后，得到一个可复核的事实：
+//       古典 48 + ACG 68 + 轻音乐 13 = 129，
+//   而 129 正好就是 `E:\linlimusic` 里 `Solo_` 98 + `PlaySing_` 31 的**全集**。
+//   也就是说这套命名与原版四档是**一一对应**的 —— 分类不是猜，是查表。
+//   （`midi_` / `oliviasoul_` 那 2455 个目录全是「我的上传」，见下。）
+//
+// ★ 表是**按目录名**写的，不按显示名：显示名会被 prettySongName 改掉，目录名不会。
+//   前缀 `Solo_` / `PlaySing_` 与尾巴 `_Ziyun_original` 在 songKey() 里统一去掉。
+//
+// ★ 为什么放 core.mjs：这是一条**判据**（"这首算哪一类"），放这里才能被单测和变异打红。
+export const GENRES = Object.freeze(["古典", "ACG", "轻音乐", "我的上传"]);
+
+/** 播放方式（原版表头那一列「模式」）：独奏 / 弹唱 / 个人上传。
+ *  ★ 原版写的是**弹唱**，不是"演唱"（2026-10-14 的截图里 20 多行都写着弹唱）——
+ *    PlaySing 那批本来也是边弹边唱。照它的字。 */
+export const SONG_MODES = Object.freeze({ solo: "独奏", sing: "弹唱", upload: "个人上传" });
+
+/** 「古典」那一档：48 首（原版第 1–48 首）。 */
+const CLASSICAL_KEYS = Object.freeze([
+  "Air_On_The_G_String_From_Orchestral_Suite_No3_In_D_Major_BWV_1068",
+  "Arabesque_No2",
+  "Beethoven_Piano_Sonata_No8_In_C_Minor_Op13_2_Adagio_Cantabile",
+  "Canon_In_D",
+  "Chopin_Etude_Op10_No1", "Chopin_Etude_Op10_No12", "Chopin_Etude_Op10_No3",
+  "Chopin_Etude_Op10_No5", "Chopin_Etude_Op10_No8", "Chopin_Etude_Op10_No9",
+  "Chopin_Etude_Op25_No12_In_C_Minor", "Chopin_Etude_Op25_No2",
+  "Chopin_Nocturne_Op9_No2", "Chopin_Op25_No3", "Chopin_Op28_No4",
+  "Chopin_Op40_No1", "Chopin_Op64_No2",
+  "Consolation_No3_In_D_Flat_Major",
+  "Dance_Of_The_Gnomes_No2",
+  "Debussy_Moonlight", "Debussy_Reverie",
+  "Flight_Of_The_Bumblebee_Jazz_Version",
+  "Grande_Polonaise_Brillante_Op22_P1", "Grande_Polonaise_Brillante_Op22_P2",
+  "Gymnopedie_No1",
+  "Impromptu_In_G_Flat_Major_Op90_No3",
+  "Minute_Waltz_Op64_No1",
+  "Moment_Musical_No3_In_F_Minor_Op94",
+  "Nocturne_No3_In_B_Major_For_Piano_Solo", "Notturno_Op_54_No4",
+  "Pavane_For_A_Dead_Princess",
+  "Piano_Sonata_No13_K333", "Piano_Sonata_No16_K545",
+  "Piano_Sonata_No17_In_D_Minor_Op31_No2_Tempest_1_Largo",
+  "Prelude_And_Fugue_In_C_Minor_BWV_847_P1", "Prelude_And_Fugue_In_C_Minor_BWV_847_P2",
+  "Prelude_In_G_Minor_Op23_No5",
+  "Rhapsodie_Espagnole_S254_P1", "Rhapsodie_Espagnole_S254_P2",
+  "Scarlatti_Sonata_In_D_Minor_K213",
+  "Scene_From_Childhood_Op_15_No7_Dreaming",
+  "Schumann_Papillons_Op2",
+  "Scriabin_Etude_In_C_Sharp_Minor_Op19_No2",
+  "Song_Without_Words_Op67_No2",
+  "The_Little_Bell_No3",
+  "The_Seasons_Op_37a_X_October_Autumn_Song",
+  "The_Swan", "Turkish_March",
+]);
+
+/** 「轻音乐」那一档：13 首 = 10 首童谣（弹唱）+ 3 首轻钢琴（独奏）。
+ *  ★ 这一档**必须列表**：10 首童谣的目录名是拼音（`PlaySing_Yao_Lan_Qu`），
+ *    关键词认不出来；而 `Solo_Croatian_Rhapsody` 又会撞上古典的 "rhapsody"。
+ *    （克罗地亚狂想曲在原版是轻音乐，不是古典 —— 这是逐首对表才知道的事。） */
+const LIGHT_KEYS = Object.freeze([
+  "Croatian_Rhapsody", "Lyphard_Melody", "Wedding_Of_Love",
+  "Fen_Shua_Jiang", "Liang_Zhi_Lao_Hu", "Mo_Li_Hua", "Sheng_Ri_Kuai_Le_Ge",
+  "Song_Bie", "Wai_Po_Qiao", "Xiao_Tu_Zi_Guai_Guai", "Yao_Lan_Qu",
+  "You_Yi_Di_Jiu_Tian_Chang", "Zhao_Peng_You",
+]);
+
+/** 「ACG」那一档：68 首 = 47 首独奏 + 21 首弹唱（原神 / 崩坏 / 星穹铁道那批）。 */
+const ACG_KEYS = Object.freeze([
+  "A_Dramatic_Irony", "A_New_Day_With_Hope", "Above_The_Sea_Of_Clouds",
+  "Another_Hopeful_Tomorrow", "Clear_Sky_Over_Liyue", "Dawn_Winery_Theme",
+  "Down_By_The_Forgotten_Gardens", "Dream_Of_Scattered_Petals",
+  "Dwelling_In_The_Past", "Ethereal_Mildness", "Footprints",
+  "For_Riddles_For_Wonders", "Good_Night_Liyue", "Gymnopedies_Of_Lune",
+  "Hanachirusato", "Hence_Begins_The_Journey", "Honkai_Star_Rail_Opening_Theme",
+  "Le_Duc_Sous_leau", "Leisure_In_Painting", "Liyue", "Lustrous_Stars",
+  "Moonlike_Smile", "Once-Joyful_Dream", "Ondulations_Du_Rythme",
+  "Pathway_To_The_Hidden_Isles", "Peaceful_Wishes", "Pure_Sky",
+  "Qingyun_Peak_Theme", "Rays_Of_Sunlight", "Resonance_Of_Khvarena",
+  "Rex_Incognito", "Simurghs_Dream", "Sink_Into_Oblivion",
+  "Sipping_In_The_Soft_Breeze", "Slight_Distress", "Soliloquy_Of_The_Star",
+  "Spacewalk", "Stroll_Along_The_Beach", "Tagelied_Nachtlicher_Gedanken",
+  "Tender_Strength", "The_Fading_Stories", "The_Shimmering_Voyage",
+  "The_Wind_Catcher_From_A_Foreign_Land", "Traum_Durch_Die_Dammerung_Erster_Satz",
+  "Vespers_Of_Pluviose", "Where_Did_You_Go", "Wildfire",
+  "Da_Capo", "Devastation_And_Redemption", "Emberfire", "Her_Wishes",
+  "If_I_Can_Stop_One_Heart_From_Breaking", "Lucens_Ut_Risus",
+  "Melody_Of_Brave_Seeds", "Moon_Halo", "Natlan", "Nod-Krai",
+  "Petala_Ceciderunt", "Qing_Lian", "Rubia", "Ruu_Melody", "Somnias_A_Luna",
+  "Star_Odyssey", "The_Long_Way_Home", "The_Rime_Of_The_Ancient_Bargeman_III",
+  "The_Road_Not_Taken", "The_Sanctification_Of_Tao_Dou", "White_Night",
+]);
+
+const GENRE_BY_KEY = new Map([
+  ...CLASSICAL_KEYS.map((k) => [k, "古典"]),
+  ...ACG_KEYS.map((k) => [k, "ACG"]),
+  ...LIGHT_KEYS.map((k) => [k, "轻音乐"]),
+]);
+
+/** 目录名 → 查表用的键：去掉前缀与来源尾巴。
+ *  `Solo_Chopin_Etude_Op10_No1` → `Chopin_Etude_Op10_No1`
+ *  `PlaySing_Moon_Halo_Ziyun_original` → `Moon_Halo` */
+export function songKey(dirName) {
+  return String(dirName ?? "")
+    .replace(/_Ziyun_original$/iu, "")
+    .replace(/^(?:Solo|PlaySing)_/iu, "");
+}
+
+// 兜底（表外的曲子才走这里）：作曲家 / 曲式关键词 → 古典；日系与 Hoyo 关键词 → ACG。
+// ★ 表内的 129 首**不走**这两条 —— 所以"克罗地亚狂想曲"不会被 "rhapsody" 抢走。
+const CLASSICAL_HINT = new RegExp([
+  "chopin", "rachmanin", "schumann", "liszt", "debussy", "brahms", "tchaikovsky",
+  "mendelssohn", "satie", "saint-?saens", "bach", "beethoven", "mozart", "haydn",
+  "handel", "vivaldi", "grieg", "dvo[rř][aá]k|dvorak", "scarlatti", "ravel",
+  "rimsky|korsakov", "scriabin", "pachelbel", "schubert", "paganini", "albeniz",
+  "肖邦", "拉赫", "舒曼", "李斯特", "德彪西", "勃拉姆斯", "柴可夫斯基", "门德尔松",
+  "萨蒂", "圣桑", "巴赫", "贝多芬", "莫扎特", "海顿", "亨德尔", "维瓦尔第", "格里格",
+  "德沃夏克", "斯卡拉蒂", "拉威尔",
+  "nocturne", "夜曲", "prelude", "前奏曲", "[eé]tude", "练习曲", "waltz", "圆舞曲",
+  "sonata", "奏鸣曲", "polonaise", "波兰舞曲", "mazurka", "ballade", "arabesque",
+  "gymnop", "impromptu", "consolation", "pavane", "bumblebee|野蜂", "kinderszenen",
+  "tr[aä]umerei|梦幻曲", "moment musical", "rhapsody|狂想曲", "fugue|赋格",
+  "clair de lune|月光", "turkish march|土耳其", "the seasons|四季", "campanella|钟",
+  "song without words|无词歌", "the swan|天鹅", "air on the g string|g弦",
+  "f[uü]r elise|致爱丽丝", "canon|卡农", "bwv", "\\bop\\.?\\s?\\d",
+].join("|"), "iu");
+const ACG_HINT = /(genshin|honkai|star[\s_-]?rail|原神|崩坏|星穹|moon[\s_-]?halo|natlan|emberfire|nod[\s_-]?krai|somnias|rubia|liyue|璃月|hoyo|二次元|anime|初音|vocaloid|bilibili|東方|东方)/iu;
+
+/**
+ * 这一首算哪一类。
+ * ★ 顺序即优先级：先认"个人上传"（midi_ / oliviasoul_ 是用户自己传上去的那批），
+ *   再查对过表的 129 首（这是**真值**），表外才走关键词，关键词也认不出就兜底轻音乐。
+ * ★ 判据不依赖任何网络与元数据文件 —— 只吃目录名和曲名，离线可用。
+ */
+export function classifyGenre(dirName, songName = "") {
+  const dir = String(dirName ?? "");
+  if (/^(?:midi|oliviasoul)/iu.test(dir)) return "我的上传";
+  const known = GENRE_BY_KEY.get(songKey(dir));
+  if (known) return known;
+  const text = `${dir} ${songName}`;
+  if (CLASSICAL_HINT.test(text)) return "古典";
+  if (ACG_HINT.test(text)) return "ACG";
+  return "轻音乐";
+}
+
+// ---------------------------------------------------------------- 官方曲名表
+//
+// ★ 来源（2026-10-15 定稿）：用户 2026-10-14 深夜截的**原版曲库页** 19 张截图
+//   （古典 7 + ACG 10 + 轻音乐 2），逐行读出后与 `E://linlimusic` 的 129 个目录
+//   用「模式列（独奏98/弹唱31）+ 实测时长 + 目录名语义」三重指纹对表 —— 129/129
+//   零歧义（见 analysis/songs/）。**没有这层，用户电脑里有官方歌曲时界面只会显示
+//   裸目录名**（`PlaySing The Road Not Taken`），这是用户明确在意的事。
+// ★ 曲名只收截图上完整可读的文本，被截断的中文名**不补编**；时长是 ffprobe 实测
+//   （截图上被悬浮提示遮挡/误读的行一律以实测为准）。
+// ★ 契约值（曲名/作曲家）全部用**字面量**钉死，好让变异测试打得到。
+//   测试对照副本在 tests/fixtures/official-song-names.json（含时长）。
+const OFFICIAL_SONGS = new Map([
+  ["Da_Capo", ["Da Capo 《毕业旅行》动画曲", "HOYO-MIX"]],
+  ["Devastation_And_Redemption", ["神女劈观·唤情", "HOYO-MIX"]],
+  ["Emberfire", ["烬火", "HOYO-MIX"]],
+  ["Fen_Shua_Jiang", ["粉刷匠", "童谣"]],
+  ["Her_Wishes", ["她的期许", "HOYO-MIX"]],
+  ["If_I_Can_Stop_One_Heart_From_Breaking", ["使一颗心免于哀伤", "HOYO-MIX"]],
+  ["Liang_Zhi_Lao_Hu", ["两只老虎", "童谣"]],
+  ["Lucens_Ut_Risus", ["新月的摇篮曲（其二）：宵晖下的笑颜", "HOYO-MIX"]],
+  ["Melody_Of_Brave_Seeds", ["和合大梦的曲调", "HOYO-MIX"]],
+  ["Mo_Li_Hua", ["茉莉花", "童谣"]],
+  ["Moon_Halo", ["Moon Halo 《新炎永燃》动画短片印象曲", "HOYO-MIX"]],
+  ["Natlan", ["纳塔", "HOYO-MIX"]],
+  ["Nod-Krai", ["摆德卡莱", "HOYO-MIX"]],
+  ["Petala_Ceciderunt", ["新月的摇篮曲（其三）：眉间落英", "HOYO-MIX"]],
+  ["Qing_Lian", ["剧情PV-「轻透」", "HOYO-MIX"]],
+  ["Rubia", ["Rubia《渡尘》动画短片印象曲", "HOYO-MIX"]],
+  ["Ruu_Melody", ["阿瑠的歌", "HOYO-MIX"]],
+  ["Sheng_Ri_Kuai_Le_Ge", ["生日快乐歌", "童谣"]],
+  ["Somnias_A_Luna", ["新月的摇篮曲（其一）：伴月同眠", "HOYO-MIX"]],
+  ["Song_Bie", ["送别", "童谣"]],
+  ["Star_Odyssey", ["尘间星旅", "HOYO-MIX"]],
+  ["The_Long_Way_Home", ["回家的路", "HOYO-MIX"]],
+  ["The_Rime_Of_The_Ancient_Bargeman_III", ["幽谷舟咏·其三", "HOYO-MIX"]],
+  ["The_Road_Not_Taken", ["未行之路 The Road Not Taken", "HOYO-MIX"]],
+  ["The_Sanctification_Of_Tao_Dou", ["八奇炼桃都", "HOYO-MIX"]],
+  ["Wai_Po_Qiao", ["外婆桥", "童谣"]],
+  ["White_Night", ["不眠之夜", "HOYO-MIX"]],
+  ["Xiao_Tu_Zi_Guai_Guai", ["小兔子乖乖", "童谣"]],
+  ["Yao_Lan_Qu", ["摇篮曲", "童谣"]],
+  ["You_Yi_Di_Jiu_Tian_Chang", ["友谊地久天长", "童谣"]],
+  ["Zhao_Peng_You", ["找朋友", "童谣"]],
+  ["A_Dramatic_Irony", ["卡芙卡角色PV——戏剧性反讽", "HOYO-MIX"]],
+  ["A_New_Day_With_Hope", ["希望的新一天 A New Day with Hope", "HOYO-MIX"]],
+  ["Above_The_Sea_Of_Clouds", ["云海之上", "HOYO-MIX"]],
+  ["Air_On_The_G_String_From_Orchestral_Suite_No3_In_D_Major_BWV_1068", ["Air on the G String, BWV 1068", "Bach"]],
+  ["Another_Hopeful_Tomorrow", ["希望的明日", "HOYO-MIX"]],
+  ["Arabesque_No2", ["Arabesque No.2 in G major", "Debussy"]],
+  ["Beethoven_Piano_Sonata_No8_In_C_Minor_Op13_2_Adagio_Cantabile", ["Sonata No.8 in C minor, Op.13 \"Pathétique\"", "Beethoven"]],
+  ["Canon_In_D", ["Canon in D（卡农）", "Johann Pachelbel"]],
+  ["Chopin_Etude_Op10_No1", ["Étude Op.10 No.1", "Chopin"]],
+  ["Chopin_Etude_Op10_No12", ["Étude Op.10 No.12", "Chopin"]],
+  ["Chopin_Etude_Op10_No3", ["Étude Op.10 No.3", "Chopin"]],
+  ["Chopin_Etude_Op10_No5", ["Étude Op.10 No.5", "Chopin"]],
+  ["Chopin_Etude_Op10_No8", ["Étude Op.10 No.8", "Chopin"]],
+  ["Chopin_Etude_Op10_No9", ["Étude Op.10 No.9", "Chopin"]],
+  ["Chopin_Etude_Op25_No12_In_C_Minor", ["Étude in C minor, Op.25 No.12", "Chopin"]],
+  ["Chopin_Etude_Op25_No2", ["Étude Op.25 No.2", "Chopin"]],
+  ["Chopin_Nocturne_Op9_No2", ["Nocturne Op.9 No.2", "Chopin"]],
+  ["Chopin_Op25_No3", ["Étude in F major, Op.25 No.3", "Chopin"]],
+  ["Chopin_Op28_No4", ["Prelude in E minor, Op.28 No.4", "Chopin"]],
+  ["Chopin_Op40_No1", ["Polonaise in A major, Op.40 No.1", "Chopin"]],
+  ["Chopin_Op64_No2", ["Waltz in C# minor, Op.64 No.2", "Chopin"]],
+  ["Clear_Sky_Over_Liyue", ["琄月的晴空", "HOYO-MIX"]],
+  ["Consolation_No3_In_D_Flat_Major", ["Consolation No.3 in D♭ major（慰藉曲）", "Liszt"]],
+  ["Croatian_Rhapsody", ["Croatian Rhapsody（克罗地亚狂想曲）", "Maksim Mrvica"]],
+  ["Dance_Of_The_Gnomes_No2", ["Gnomenreigen, Concert Study S.145 No.2", "Liszt"]],
+  ["Dawn_Winery_Theme", ["晨曦酒庄", "HOYO-MIX"]],
+  ["Debussy_Moonlight", ["Clair de Lune（月光）", "Debussy"]],
+  ["Debussy_Reverie", ["Rêverie（梦幻曲）", "Debussy"]],
+  ["Down_By_The_Forgotten_Gardens", ["行于繁花侧畔", "HOYO-MIX"]],
+  ["Dream_Of_Scattered_Petals", ["华散之梦", "HOYO-MIX"]],
+  ["Dwelling_In_The_Past", ["久住往昔 Dwelling in the Past", "HOYO-MIX"]],
+  ["Ethereal_Mildness", ["绿枝新柔", "HOYO-MIX"]],
+  ["Flight_Of_The_Bumblebee_Jazz_Version", ["Flight of the Bumblebee（野蜂飞舞）", "Rimsky-Korsakov"]],
+  ["Footprints", ["足迹", "HOYO-MIX"]],
+  ["For_Riddles_For_Wonders", ["凡初的智慧 For Riddles, for Wonders", "HOYO-MIX"]],
+  ["Good_Night_Liyue", ["晚安，璃月", "HOYO-MIX"]],
+  ["Grande_Polonaise_Brillante_Op22_P1", ["Polonaise in F# minor, Op.22 Part 1", "Chopin"]],
+  ["Grande_Polonaise_Brillante_Op22_P2", ["Polonaise in F# minor, Op.22 Part 2", "Chopin"]],
+  ["Gymnopedie_No1", ["Gymnopédie No.1", "Erik Satie"]],
+  ["Gymnopedies_Of_Lune", ["淡月之舞", "HOYO-MIX"]],
+  ["Hanachirusato", ["华散之缘 Hanachirusato", "HOYO-MIX"]],
+  ["Hence_Begins_The_Journey", ["旅途的开始 Hence, Begins the Journey", "HOYO-MIX"]],
+  ["Honkai_Star_Rail_Opening_Theme", ["星穹铁道 Star Rail", "HOYO-MIX"]],
+  ["Impromptu_In_G_Flat_Major_Op90_No3", ["Impromptu in G♭ major, Op.90 No.3", "Schubert"]],
+  ["Le_Duc_Sous_leau", ["水下的公爵", "HOYO-MIX"]],
+  ["Leisure_In_Painting", ["画景的游憩", "HOYO-MIX"]],
+  ["Liyue", ["瑶月", "HOYO-MIX"]],
+  ["Lustrous_Stars", ["寒星遥遥", "HOYO-MIX"]],
+  ["Lyphard_Melody", ["Lyphard Melody（星空的旋律）", "理查德克莱德曼"]],
+  ["Minute_Waltz_Op64_No1", ["Waltz in D♭ major, Op.64 No.1 \"Minute Waltz\"", "Chopin"]],
+  ["Moment_Musical_No3_In_F_Minor_Op94", ["Moment Musical in F minor, Op.94 No.3", "Schubert"]],
+  ["Moonlike_Smile", ["皎洁的笑颜 Moonlike Smile", "HOYO-MIX"]],
+  ["Nocturne_No3_In_B_Major_For_Piano_Solo", ["Nocturne No.3", "Daniel Hellbach"]],
+  ["Notturno_Op_54_No4", ["Notturno, Op.54 No.4（夜曲）", "Grieg"]],
+  ["Once-Joyful_Dream", ["往昔的乐园", "HOYO-MIX"]],
+  ["Ondulations_Du_Rythme", ["轻漪的节音", "HOYO-MIX"]],
+  ["Pathway_To_The_Hidden_Isles", ["狭径绌幽", "HOYO-MIX"]],
+  ["Pavane_For_A_Dead_Princess", ["Pavane for a Dead Princess", "Ravel"]],
+  ["Peaceful_Wishes", ["和平的祝愿", "HOYO-MIX"]],
+  ["Piano_Sonata_No13_K333", ["Piano Sonata No.13 in B-flat major, K.333", "Mozart"]],
+  ["Piano_Sonata_No16_K545", ["Piano Sonata No.16 in C major, K.545", "Mozart"]],
+  ["Piano_Sonata_No17_In_D_Minor_Op31_No2_Tempest_1_Largo", ["Piano Sonata No.17 in D minor, Op.31 No.2 \"Tempest\"", "Beethoven"]],
+  ["Prelude_And_Fugue_In_C_Minor_BWV_847_P1", ["Prelude in C minor, BWV 847 Part 1", "Bach"]],
+  ["Prelude_And_Fugue_In_C_Minor_BWV_847_P2", ["Fugue in C minor, BWV 847 Part 2", "Bach"]],
+  ["Prelude_In_G_Minor_Op23_No5", ["Prelude in G minor, Op.23 No.5", "Rachmaninoff"]],
+  ["Pure_Sky", ["青空 Pure Sky", "HOYO-MIX"]],
+  ["Qingyun_Peak_Theme", ["庆云顶主题曲", "HOYO-MIX"]],
+  ["Rays_Of_Sunlight", ["天霁日出 Rays of Sunlight", "HOYO-MIX"]],
+  ["Resonance_Of_Khvarena", ["灵光的回响", "HOYO-MIX"]],
+  ["Rex_Incognito", ["「钟离：听书人」尘世闲游", "HOYO-MIX"]],
+  ["Rhapsodie_Espagnole_S254_P1", ["Spanish Rhapsody Part 1", "Liszt"]],
+  ["Rhapsodie_Espagnole_S254_P2", ["Spanish Rhapsody Part 2", "Liszt"]],
+  ["Scarlatti_Sonata_In_D_Minor_K213", ["Sonata in D minor, K.213 (L.108)", "Scarlatti"]],
+  ["Scene_From_Childhood_Op_15_No7_Dreaming", ["Kinderszenen, Op.15 No.7 \"Träumerei\"", "Schumann"]],
+  ["Schumann_Papillons_Op2", ["Papillons, Op.2（蝴蝶）", "Schumann"]],
+  ["Scriabin_Etude_In_C_Sharp_Minor_Op19_No2", ["Nocturne No.2, Op.19", "Scriabin"]],
+  ["Simurghs_Dream", ["花海之梦", "HOYO-MIX"]],
+  ["Sink_Into_Oblivion", ["湮没的忆念", "HOYO-MIX"]],
+  ["Sipping_In_The_Soft_Breeze", ["柔风浅韵", "HOYO-MIX"]],
+  ["Slight_Distress", ["淡淡的不安", "HOYO-MIX"]],
+  ["Soliloquy_Of_The_Star", ["幽星的独言", "HOYO-MIX"]],
+  ["Song_Without_Words_Op67_No2", ["Song Without Words, Op.67 No.2", "Mendelssohn"]],
+  ["Spacewalk", ["太空漫步", "HOYO-MIX"]],
+  ["Stroll_Along_The_Beach", ["信步行时", "HOYO-MIX"]],
+  ["Tagelied_Nachtlicher_Gedanken", ["拽夜的晓歌", "HOYO-MIX"]],
+  ["Tender_Strength", ["同伴的力量", "HOYO-MIX"]],
+  ["The_Fading_Stories", ["不再年轻的村庄 The Fading Stories", "HOYO-MIX"]],
+  ["The_Little_Bell_No3", ["La Campanella（钟）", "Liszt"]],
+  ["The_Seasons_Op_37a_X_October_Autumn_Song", ["The Seasons, Op.37a No.10 \"October\"", "Tchaikovsky"]],
+  ["The_Shimmering_Voyage", ["珍珠之歌", "HOYO-MIX"]],
+  ["The_Swan", ["The Swan（天鹅）", "Saint-Saëns"]],
+  ["The_Wind_Catcher_From_A_Foreign_Land", ["捕风的异乡人 The Wind Catcher from a Foreign Land", "HOYO-MIX"]],
+  ["Traum_Durch_Die_Dammerung_Erster_Satz", ["暮景遐思·其一", "HOYO-MIX"]],
+  ["Turkish_March", ["Turkish March（土耳其进行曲）", "Tchaikovsky"]],
+  ["Vespers_Of_Pluviose", ["雨月的晚祷", "HOYO-MIX"]],
+  ["Wedding_Of_Love", ["Mariage d'amour（梦中的婚礼）", "理查德克莱德曼"]],
+  ["Where_Did_You_Go", ["Where Did You Go", "HOYO-MIX"]],
+  ["Wildfire", ["野火", "HOYO-MIX"]],
+]);
+
+/** 目录名 → 官方曲名信息；表外（个人上传、用户自建）返回 null。 */
+export function officialSong(dirName) {
+  const hit = OFFICIAL_SONGS.get(songKey(dirName));
+  return hit ? { title: hit[0], composer: hit[1] } : null;
+}
+
+/** 曲库显示名：官方曲目用原版曲名，表外走 prettySongName 的裸名清洗。 */
+export function songDisplayName(dirName) {
+  return officialSong(dirName)?.title ?? prettySongName(dirName);
+}
+
+/** 播放方式：独奏 / 弹唱 / 个人上传（跟分类同一套命名口径）。 */
+export function songMode(dirName) {
+  const dir = String(dirName ?? "");
+  if (/^(?:midi|oliviasoul)/iu.test(dir)) return SONG_MODES.upload;
+  if (/^playsing/iu.test(dir)) return SONG_MODES.sing;
+  return SONG_MODES.solo;
+}
+
 export function playbackTimeOfDay(minutes) {
   const m = Number(minutes);
   if (!Number.isFinite(m)) return "TOD12";
   return m >= 360 && m < 960 ? "TOD12" : m >= 960 && m < 1200 ? "TOD1730" : "TOD20";
+}
+
+// ---------------------------------------------------------------- 待机素材（场景/状态 + 时段后缀）
+//
+// ★ 时段 → 文件名后缀，来自原版素材自己的命名（`A_R1_1200.mp4` 那一批）：
+//   TOD12→1200、TOD1730→1730、TOD20→2000。跟上面 TIME_SLOTS 是同一套时段，只是换了个写法。
+//   有了它，前端/服务端挑场景状态之后只要按当前时段换个后缀，就能拼出该播的那个文件。
+export const TOD_SLOT = Object.freeze({ TOD12: "1200", TOD1730: "1730", TOD20: "2000" });
+export const SLOT_ORDER = Object.freeze(["1200", "1730", "2000"]);
+
+/**
+ * 过场片名：`{场景}_Transition_{旧}_{新}.mp4`。
+ * ★ 方向必须跟时钟方向一致 —— `2000_1200` 是「夜晚→白天」（跨零点那一跳），不是笔误，
+ *   也不是"倒着写"。所以这里按 SLOT_ORDER 的**环形**顺序判"是不是下一档"。
+ * ★ 只有相邻时段原版才做过场片（1200→1730 / 1730→2000 / 2000→1200）；不是相邻就返回 null，
+ *   调用方直接切正片 —— 别去拼一个根本不存在的文件名，那会拼出一片黑。
+ */
+export function transitionFile(scene, fromSlot, toSlot) {
+  const s = String(scene ?? "");
+  const from = String(fromSlot ?? "");
+  const to = String(toSlot ?? "");
+  if (!/^[ABC]$/u.test(s)) return null;
+  const i = SLOT_ORDER.indexOf(from);
+  const j = SLOT_ORDER.indexOf(to);
+  // 环形相邻：在 3 档里 (to - from) 恰好前进一格。
+  if (i < 0 || j < 0 || (j - i + SLOT_ORDER.length) % SLOT_ORDER.length !== 1) return null;
+  return `${s}_Transition_${from}_${to}.mp4`;
 }
 
 export function normalizeTod(token) {
