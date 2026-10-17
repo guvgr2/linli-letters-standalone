@@ -13,6 +13,22 @@
 <body>
 <div id="glassBg"><i></i><i></i><i></i><i></i></div>
 
+<!-- ★★ 舞台层（2026-10-18 补）：一支视频都不在时，这里是一片透明，底下的
+     #glassBg 氛围渐变照样露出来当兜底；有素材时才 body.stage-on 把它们请出来。
+     app.js 里 stageCrossFade() / pumpBackdrop() / stopStage() 都按这五个 id 取元素，
+     之前 index.html 一个都没有 —— 于是整条「按当前时段播放演奏视频」的链路
+     从第一版起就是死的（解析不报错，因为取元素那几处都带 ?. 或先判空）。
+     两个 <video> 是交叉淡入用的：换时段时新的在上面，旧的转 under 慢慢淡出。
+     ★ muted + playsinline 不是可选项：没有 muted 的话浏览器直接拒绝自动播放，
+       整个舞台就永远黑着。preload=auto 让它一进页面就开始缓冲。
+     ★ #cbg 是 80×50 的小画布，每 1.2 秒从正在播的那支视频抓一帧，CSS 放大 + 模糊
+       铺满当「模糊延伸」背景 —— 不另解一路视频，代价几乎为零。 -->
+<div id="stage">
+  <canvas id="cbg" width="80" height="50"></canvas>
+  <video id="stageVideo" class="under" muted playsinline preload="auto"></video>
+  <video id="stageVideoB" class="under" muted playsinline preload="auto"></video>
+</div>
+
 <!-- ★ 只在原生窗口里露出来。外壳的 MainWindow 是**无边框**窗口，
      拖动 / 收进托盘 / 退出这三件事 Windows 不会再替我们做，得页面发一句话给 C#。
      在浏览器里打开时这一整条不显示 —— 那时浏览器自带标题栏，不该再来一套。 -->
@@ -43,6 +59,13 @@
         <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
           <button class="pri" id="sendBtn">寄出</button>
           <span class="hint" id="composeHint">一封信最多 4000 字</span>
+        </div>
+        <!-- 明信片上的邮戳小片（4 支 mail_stamp_*.mp4 + 静态 webp 兜底）。
+             ★ 视频解码失败（缺 HEVC 解码器、文件被删）时 stampFallback() 把它换成图，
+               所以这两枚必须同时在，缺一个那张卡就没有邮戳。 -->
+        <div class="write-stamp" id="writeStamp" aria-hidden="true">
+          <video id="writeStampVideo" muted playsinline preload="auto" hidden></video>
+          <img id="writeStampImg" alt="" hidden>
         </div>
       </div>
 
@@ -188,6 +211,15 @@
           <button id="checkProactive">现在判断一次</button>
           <span class="hint" id="proactiveVerdict"></span>
         </div>
+        <!-- ★ 近况层开关（T9）：键名由 app/harness/行为参数.json 的
+             nearTerm.userToggle.key 定，不是这里自己起的。文字用 label 但显示的是
+             JSON 里的 label（fillProactive 会覆盖 textContent），这里写的是兜底。
+             ★ 这个宿主之前不存在 —— fillProactive() 一进设置页就在 null 上设 .checked，
+               整段设置页的填充当场抛错，下面的「关于」「协议」也就都没填上。 -->
+        <label class="row" style="align-items:center;gap:8px;margin-top:14px;cursor:pointer">
+          <input id="proactiveKeepShape" type="checkbox">
+          <span id="proactiveKeepShapeLabel">保持她现在的样子</span>
+        </label>
       </div>
 
       <div class="card">

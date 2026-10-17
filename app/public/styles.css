@@ -80,6 +80,55 @@ html, body {
   to   { transform: translate3d(3vw, -2vw, 0) scale(1.08); }
 }
 
+/* ---- 舞台层（背景里那支演奏视频）----
+   ★ 层级：body > #stage(z-index:0) 与 #glassBg(z-index:0) 同层，
+     舞台排在 DOM 前面 ⇒ 后出现的 #glassBg 氛围球盖在视频上；.win 是 z-index:1，
+     永远在最上面。所以「视频在最底、玻璃面板浮在它上面」不靠额外层级，靠顺序。
+   ★ 默认全透明：没有素材（没入库、@key 也没配、assets 没随包）时这里什么也不画，
+     底下就是那层氛围渐变 —— 这正是「两种都没有就什么都不做」的兜底。
+   ★ 只有 body.stage-on 才显影：app.js 在真的拿到 url 之后才加这个类，
+     加之前不显影是为了避免黑屏闪一下。 */
+#stage {
+  position: fixed; inset: 0; z-index: 0;
+  overflow: hidden; pointer-events: none;
+  opacity: 0; transition: opacity 1.2s ease;
+}
+body.stage-on #stage { opacity: 1; }
+
+/* 模糊延伸的底层：80×50 的小画布被拉到满屏并重度模糊，当作「视频的边缘延伸」。
+   ★ 不直接铺满原始视频，是因为 16:9 的视频塞进不同比例的窗口必然留黑边；
+     这层模糊底正好把那两条黑边染成画面自己的颜色。 */
+#stage #cbg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  filter: blur(48px) saturate(140%) brightness(.66);
+  transform: scale(1.12);       /* 放大一点，把模糊造成的四周透明边推出视口 */
+}
+
+/* 两枚视频叠在同一位置，object-fit:contain 保证不裁画面（宁可留边，不切构图）。
+   换时段时新的从 under 状态淡入、旧的转 under 淡出，见 .under。 */
+#stage video {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  transition: opacity 1s ease, transform 1s ease;
+}
+#stage video.under { opacity: 0; transform: scale(1.02); }
+
+/* 写信卡上的邮戳小片。★ 用 float 而不是绝对定位：.card 没有定位上下文，
+   absolute 会一路找到视口，邮戳就跑到屏幕角上去了。float 让它停在右上，
+   又不把「寄出」按钮挤走（下面那行是 display:flex，会自己让开）。 */
+.write-stamp {
+  float: right;
+  width: 64px; height: 64px;
+  margin: 0 0 6px 10px;
+  border-radius: 8px;
+  overflow: hidden; pointer-events: none;
+  opacity: .9;
+}
+.write-stamp video,
+.write-stamp img { width: 100%; height: 100%; object-fit: contain; }
+
 /* ---- 原生窗口的窗口条 ----
    ★ 只有 body.native 才显示：外壳的 MainWindow 是无边框窗口，拖动/最小化/关闭
      都得页面自己给 C# 发一句话。在浏览器里打开时没有那个通道，整条就不该出现。 */
