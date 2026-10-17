@@ -1,0 +1,107 @@
+OliviaSoul-community独立版 · 第三方开源组件声明
+==============================================================================
+
+本软件在分发时随附了以下第三方组件。它们的权利仍归各自的作者与权利人所有，
+本项目不主张任何权利。下面按"随包分发"与"不随包分发"两类列出。
+
+本文件为纯文本（UTF-8），可用记事本打开。
+各组件完整的许可证全文见下文中标注的路径或链接。
+
+
+一、随包分发（装完就在程序目录里）
+------------------------------------------------------------------------------
+
+1) Node.js —— 运行时，版本 v22.22.2
+   许可证：MIT（"Copyright Node.js contributors"），
+           并附带其内置各子组件的许可条款（V8 / libuv / OpenSSL 等）。
+   许可证全文：本仓库内的 runtime\node\LICENSE（取自官方 v22.22.2 发行包，
+           148,217 字节，含 Node.js 自身及 V8 / libuv / OpenSSL 等子组件的许可条款）
+   官方地址：https://nodejs.org/
+   上游许可证原文：https://github.com/nodejs/node/blob/v22.22.2/LICENSE
+
+2) .NET 运行时 —— 外壳 LinliShell 所依赖的运行时
+   形态：以"自包含单文件"方式随外壳发布（build.ps1 的 dotnet publish
+         --self-contained true -p:PublishSingleFile=true），
+         因此其运行时文件随安装包一起分发到用户机器上。
+   许可证：MIT
+   来源：https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+         版权归 .NET Foundation and Contributors 所有。
+
+3) SQLite —— 本地信件的存储引擎
+   使用方式：通过 Node.js 的内置模块 node:sqlite 使用（app/server.mjs），
+             已编译进 1) 的 node.exe，不单独分发文件。
+   许可证：Public Domain（公有领域，见 https://www.sqlite.org/copyright.html），
+           可自由用于任何目的，无版权限制。
+   官方地址：https://www.sqlite.org/
+
+4) Microsoft.Web.WebView2（NuGet 包，版本 1.0.3537.50）
+   用途：C# 外壳调用 WebView2 控件的 .NET 封装（src\LinliShell\LinliShell.csproj）。
+   许可证：微软提供的 SDK 许可条款，见该 NuGet 包自带的许可信息。
+   官方地址：https://learn.microsoft.com/microsoft-edge/webview2/
+
+
+二、不随包分发（非本项目再分发，仅在此说明）
+------------------------------------------------------------------------------
+
+5) Microsoft Edge WebView2 Runtime —— 界面渲染引擎
+   说明：本软件**不**再分发 WebView2 运行时。它通常由 Windows 10/11 系统自带，
+         缺少时由用户自行安装微软的 Evergreen Runtime（或系统通过 Windows 更新提供）。
+   许可证：受微软软件许可条款约束（Microsoft Software License Terms）。
+   官方地址：https://learn.microsoft.com/microsoft-edge/webview2/
+
+6) Inno Setup —— 制作本安装程序所用的打包工具
+   许可证：Inno Setup 自有许可（Jordan Russell），
+           免费用于商业与非商业用途；完整条款以官方发布为准。
+   官方地址：https://jrsoftware.org/   许可信息：https://jrsoftware.org/isinfo.php
+
+7) Inno Setup 简体中文语言文件（ChineseSimplified.isl）
+   说明：随本仓库一起保存在 installer\ChineseSimplified.isl，非本项目原创。
+   维护者：Zhenghan Yang (Kira)
+           https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
+   来源：Inno Setup 官方的用户贡献翻译分发页 https://jrsoftware.org/files/istrans/
+
+
+8) 液态玻璃（液态玻璃效果的技法来源）
+   说明：本软件界面的"液态玻璃"效果**没有引入任何第三方库或复制任何第三方代码**。
+       实现在本仓库内自行完成：app\glass-lens.mjs（透镜位移图的几何数学，纯函数）
+       与 app\public\styles.css（玻璃层的 CSS）。
+       下面两个开源项目仅作为**技法与物理推导的参考读物**，其代码未被复制、
+       未被打包、也未成为本软件的组成部分：
+
+     · xanaxknight/liquid-glass-css-svg
+       https://github.com/xanaxknight/liquid-glass-css-svg
+       参考价值：用 Snell 定律从圆角矩形 SDF 推导位移图（本文实现中
+       "位移必须沿边缘法线向内、由几何算出，不能用噪声"这一条即源自此思路）。
+
+     · tomagranate/liquid-glass
+       https://github.com/tomagranate/liquid-glass
+       参考价值：feDisplacementMap 的参数化方式与参数量级的参考系
+       （其默认参数是给小尺寸浅色按钮调的，本项目按暗色大面板重新调过）。
+
+     · dpawlikowski/liquid-glass
+       https://github.com/dpawlikowski/liquid-glass
+       参考价值：反例。其用 feTurbulence 噪声做位移，得到的是水波纹而非玻璃，
+       本项目据此明确排除了噪声式做法。
+
+    声明立场：以上仅记录思路来源，不构成对上述项目代码的复制或再分发，
+    因此不随附其许可全文。若权利人有不同意见，请按文末地址联系。
+
+
+三、说明
+------------------------------------------------------------------------------
+
+· 本项目自身的代码**没有任何 npm 运行时依赖**：工程内不存在 package.json，
+  app\server.mjs / app\core.mjs / app\secret-store.mjs 只使用 Node.js 内置模块
+  （node:fs、node:http、node:sqlite、node:crypto 等），因此上面按实际使用情况
+  列出，不存在第三方 npm 包需要声明。
+
+· 本软件**不**随附任何字体文件。信的字迹按用途分两档，都用汉仪的字体：
+  林离写的信（读信正文、她的回信）用 SentyTEA / 汉仪新蒂下午茶体；
+  你自己写信（输入框与你写的那封信）用 HanyiSentyGarden / 漢儀新蒂花園體。
+  二者的权利均归北京汉仪所有；使用者需自行按汉仪条款安装
+  （个人非商业使用免费）。程序界面本身用系统界面字体，不涉第三方。
+  相关来源与立场在《协议.txt》第四条与第八条中单独说明，不在本文件的授权范围内。
+
+· 项目自身的开源许可见仓库根目录的 LICENSE（MIT，Copyright (c) 2026 guvgr2）。
+
+· 如果你认为本声明有遗漏或错误，请写信到 guvgr13@outlook.com。
