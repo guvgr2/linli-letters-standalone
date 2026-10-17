@@ -87,7 +87,9 @@ test("③ ApiError：不给号时落到 COMMON_INTERNAL，给了就用自己的"
 test("④ server.mjs 里每一处 new ApiError 都必须带号（第三个参数）", () => {
   const calls = callSlices(SERVER, "new ApiError(");
   assert.ok(calls.length >= 7, `只找到 ${calls.length} 处 new ApiError，抽取逻辑可能坏了`);
-  const naked = calls.filter((c) => !/\bERR\.[A-Z_]+\b/.test(c.text));
+  // ★ 号从辅助函数的变量名里来（`…, overCode)`）也算带号：readRawBody 那种"超限抛什么号
+  //   由调用方点名"的写法，第三参必然是 overCode，不是裸字符串。
+  const naked = calls.filter((c) => !/\bERR\.[A-Z_]+\b/.test(c.text) && !/\boverCode\b/.test(c.text));
   assert.equal(naked.length, 0,
     `这些 new ApiError 没给号（第 ${naked.map((c) => c.line).join("、")} 行）：\n`
     + naked.map((c) => `  L${c.line}: ${c.text.split("\n")[0].trim()}`).join("\n"));
@@ -113,6 +115,9 @@ test("⑥ server.mjs 里每一处 fail(res, …) 都必须带 ERR 表里的号",
   const calls = callSlices(SERVER, "fail(res,")
     .filter((c) => SERVER.slice(c.at - 9, c.at) !== "function ");
   assert.ok(calls.length >= 12, `只找到 ${calls.length} 处 fail() 调用，抽取逻辑可能坏了`);
+  // ★ 这里**不**放过 `overCode`：fail() 的号必须当场写死。能传变量的只有 ApiError
+  //   那条转发出口（异常从别处抛来，号在抛出点核过）；fail() 是最后一道关卡，
+  //   放行变量名等于让"号随参数漂"，一码一义就守不住了。
   const naked = calls.filter((c) => !/\bERR\.[A-Z_]+\b/.test(c.text));
   assert.equal(naked.length, 0,
     `这些 fail() 没带号（第 ${naked.map((c) => c.line).join("、")} 行）：\n`
@@ -166,14 +171,13 @@ test("⑨ 每个号都得真的发得出去：源码里至少要引用它一次"
   //
   // ★ 「暂时还没有出口」的号要显式登记在这里，并写清在等什么 ——
   //   不登记就是死号，登记了就是一条有主的欠账。
-  const PENDING = new Map([
-    ["IDLE_AMBIENCE_NOT_BOOL", "等 /api/idle/settings 的 POST 移植进来"],
-    ["FONT_FILE_TOO_LARGE", "等 /api/font/import 移植进来"],
-    ["FONT_NOT_FONT", "等 /api/font/import 移植进来"],
-    ["FONT_SAVE_FAILED", "等 /api/font/import 移植进来"],
-  ]);
+  //   目前**没有**欠账：待机与字体路由接上之后，四个号全部有了真出口。
+  //   （2026-10-18 之前它们在这里挂着等 `/api/idle/settings` 与 `/api/font/import`。）
+  const PENDING = new Map([]);
 
   const FRONT = read("app/public/app.js");
+  // ★ 号从辅助函数的变量名里来（`?overCode:`）也算带号：readRawBody 那种
+  //   "超限抛什么号由调用方点名"的写法，第三参必然是 overCode，不是裸字符串。
   const dead = codes.filter((c) => {
     if (PENDING.has(c)) return false;
     return !new RegExp(`ERR\\.${c}\\b`).test(SERVER) && !FRONT.includes(`"${c}"`);

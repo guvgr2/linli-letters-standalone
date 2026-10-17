@@ -24,6 +24,10 @@ const LEGAL_TESTS = ["tests/legal.test.js"];
 //   变异植入 import-preview.mjs 后两层都可能抓到 —— 只跑纯函数那层，
 //   像「counts 与桶脱钩」这种只在 HTTP 响应里露头的错就会漏。
 const IMPORT_TESTS = ["tests/import-preview.test.js", "tests/import-route.test.js"];
+// ★ 待机与字体那一组路由的护栏：起真服务测"接对了"（路由挂没挂、令牌闸、Range、落盘）。
+//   白名单/种子/字形表这些纯规则**还没有独立的纯函数测试文件** —— 它们目前只由这一层守着，
+//   所以下面的变异必须打在**能在 HTTP 响应里露头**的位置，不要打内部细节。
+const IDLE_FONT_TESTS = ["tests/idle-font-route.test.js"];
 const COLUMN_TESTS = ["tests/import-columns.test.js"];
 const TIER_TESTS = ["tests/tier-count.test.js"];
 const VARS_TESTS = ["tests/harness-vars.test.js"];
@@ -506,6 +510,51 @@ const MUTATIONS = [
     tests: VARS_TESTS,
     from: `return [REPLY_LEAD, "", "# 写法", rules, "", "# 人设", persona, "", "# 栏目", fields].join("\\n");`,
     to: `return [REPLY_LEAD, "", "# 人设", persona, "", "# 栏目", fields].join("\\n");`,
+  },
+
+  // ---- 待机素材与信件字体（2026-10-18 从姊妹侧搬回来的那组路由） ----
+  //   ★ 这几条打的是**行为**，不是"文件里有没有这行字"：
+  //     白名单松一格、开关不落库、超限当作正常请求放过去 —— 三种都是"接口看着还在，
+  //     但用户的按钮不灵了"的典型，只有真起一次服务发真 HTTP 才抓得住。
+  {
+    name: "待机-环境音关了还把地址发出去(前端漏判就出声)",
+    file: "app/assets.mjs",
+    tests: IDLE_FONT_TESTS,
+    from: "ambience: ambienceOn && ambienceFile",
+    to: "ambience: ambienceFile",
+  },
+  {
+    // 只改**服务端真正的入口**（idleFileName 里的白名单判定）。别去动 assets.mjs 顶部的
+    // PRESENCE_NAME_RE 声明：同一个正则被删两处引用，第二处就"没打中原文"了。
+    name: "待机-片名白名单松成任意 .mp4(目录穿越的口子)",
+    file: "app/assets.mjs",
+    tests: IDLE_FONT_TESTS,
+    from: "return pattern.test(name) ? name : null;",
+    to: "return /\\.mp4$/u.test(name) ? name : null;",
+  },
+  {
+    name: "字体-开关只收布尔退化成真值判断(\"yes\" 被当成开)",
+    file: "app/server.mjs",
+    tests: IDLE_FONT_TESTS,
+    from: "if (body.ambience !== undefined && typeof body.ambience !== \"boolean\") {",
+    to: "if (false) {",
+  },
+  {
+    name: "字体-任意文件都当真字体收下(不验文件头)",
+    file: "app/assets.mjs",
+    tests: IDLE_FONT_TESTS,
+    from: "export function looksLikeFont(buf) {",
+    to: "export function looksLikeFont(buf) {\n  if (buf) return true;",
+  },
+  {
+    // ★ 打 `idleChoice` 的**定义**而不是调用点：这句话在文件里有三处调用，
+    //   只改一处另两处照旧 ⇒ 既是"没打中"也是"打了却测不出来"，归因会糊掉。
+    //   从定义处让种子失效，三条路径一起坏，才是这条变异真正想表示的事。
+    name: "待机-场景/状态跟着种子失效(每 30 秒轮询换一次片)",
+    file: "app/assets.mjs",
+    tests: IDLE_FONT_TESTS,
+    from: "export function idleChoice(seed, getSetting) {",
+    to: "export function idleChoice(seed, getSetting) {\n  seed = Math.random() * 1e9 | 0;",
   },
 ];
 

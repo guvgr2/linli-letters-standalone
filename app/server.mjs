@@ -10,8 +10,8 @@
 //      第一次打开时会问一句「就这样好不好」，用户可以当场关掉；只问一次。
 
 import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFile, readdir, writeFile, rename } from "node:fs/promises";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,25 @@ import { buildImportPlan, PreviewRegistry, PREVIEW_TTL_MS } from "./import-sessi
 import { parseSoulArchive, SOUL_LIMITS } from "./soul-archive.mjs";
 import { exchangeFingerprint } from "./import-preview.mjs";
 import { ensureImportColumns } from "./db-import-columns.mjs";
+import {
+  AMBIENCE_SUBDIR,
+  AMBIENCE_NAME_RE,
+  FONT_DIR_NAME,
+  FONT_MAX_BYTES,
+  IDLE_SEED_KEY,
+  PRESENCE_SUBDIR,
+  VIDEO_NAME_RE,
+  allFontStatus,
+  assetRoot,
+  assetsDir,
+  fontFile,
+  idleFilePath,
+  idleNext,
+  idleSettingsView,
+  idleTransition,
+  letterFontStatus,
+  looksLikeFont,
+} from "./assets.mjs";
 import {
   PROACTIVE_DEFAULTS,
   evaluateProactive as coreEvaluateProactive,
@@ -273,6 +292,86 @@ async function resolvePlayback(songDir, view = "NI", todOverride = null) {
   };
 }
 
+/**
+ * 桌面壁纸层（窗口里那层背景）和桌面壁纸共用的一次"挑一首"：
+ * 上次播过的 → 已导入的 → 曲库扫描的第一首；都没有就 url:null。
+ * ★ 外壳也要问这个接口：没有曲子就**根本不往桌面上铺窗口** —— 铺了就是一块黑。
+ *   所以它必须永远回 200 且结构稳定（reason 说明为什么没曲子），不能靠 5xx 表示"没有"。
+ */
+async function stageNext() {
+  // ★ 名字与 dir 都要留着：上面 api /play 传的是 prettySongName 过的名字。
+  const pick = (songs) => {
+    if (!songs || !songs.length) return null;
+    const last = getSetting("last_played_title", "");
+    const hit = last
+      ? songs.find((s) => s.name === last) || songs.find((s) => s.dir === last)
+      : null;
+    return hit || songs[0];
+  };
+  // ★ 只挑**这个时段真有片子**的曲子：曲库里 7788 个 mp4 里，128 个目录是原版
+  //   导出的 TOD 命名，其余是 md5 命名 —— parseVariant 解析不出时段。第一首恰好是
+  //   后者时 url 会算成 null、整首跳过，桌面那层就再也不亮了。
+  const playable = async (songs) => {
+    const out = [];
+    for (const s of songs) {
+      const variants = await listVariants(s.dir);
+      if (variants.length) out.push({ song: s, variants });
+    }
+    return out;
+  };
+  const resolveOne = async (song, variants) => {
+    const now = new Date();
+    const tod = playbackTimeOfDay(now.getHours() * 60 + now.getMinutes());
+    const picked = selectVariant(variants, tod, "NI");
+    return {
+      dir: song.dir,
+      title: song.name,
+      tod,
+      label: TIME_SLOT_LABELS[tod] ?? tod,
+      file: picked?.file ?? null,
+      url: picked
+        ? `/api/media?dir=${encodeURIComponent(song.dir)}&file=${encodeURIComponent(picked.file)}`
+        : null,
+    };
+  };
+  for (const source of [importedSongs, async () => (await scanLibrary()).songs]) {
+    try {
+      const rows = await source();
+      const list = await playable(rows);              // 保持原顺序：上次播过的排第一
+      if (!list.length) continue;
+      const ordered = pick(list.map((x) => ({ name: x.song.name, dir: x.song.dir })));
+      const first = list.find((x) => x.dir === ordered.dir) ?? list[0];
+      const hit = await resolveOne(first.song, first.variants);
+      if (hit.url) return hit;
+      // 那一首这个时段没片子 ⇒ 退而求其次，在同批里找真能播的
+      for (const x of list) {
+        const alt = await resolveOne(x.song, x.variants);
+        if (alt.url) return alt;
+      }
+    } catch { /* 没导入过 / 曲库目录不存在，都往下走 */ }
+  }
+  return { dir: null, tod: null, label: null, url: null, reason: "no-song" };
+}
+
+// ---------------------------------------------------------------- 待机素材与信件字体
+//
+// 判据全在 `assets.mjs`（纯函数，可单测），这里只做三件事：把库里的设置读出来、
+// 把请求体收进来、把结果落盘。
+
+/**
+ * 待机用哪个场景/状态与环境音，由**一个落库的种子**钉住，之后只读。
+ * ★ 种子在启动时钉一次（这里不写库），所以 GET 路径上一次库都不写。
+ */
+function idleSeed() {
+  const raw = String(getSetting(IDLE_SEED_KEY, "") ?? "");
+  return /^\d{1,10}$/u.test(raw) ? Number(raw) : 0;
+}
+function primeIdleSeed() {
+  if (String(getSetting(IDLE_SEED_KEY, "") ?? "").trim()) return;
+  setSetting(IDLE_SEED_KEY, String(Math.floor(Math.random() * 1_000_000_000)));
+}
+const idleCtx = () => ({ seed: idleSeed(), getSetting });
+
 // 账本解析在 core.mjs（纯函数，可单测）。
 
 function ledgerText() {
@@ -518,9 +617,13 @@ function startProactiveScheduler() {
 
 // ---------------------------------------------------------------- HTTP
 
-function json(res, code, payload) {
+function json(res, code, payload, extraHeaders = null) {
   const body = JSON.stringify(payload);
-  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
+  res.writeHead(code, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    ...(extraHeaders ?? {}),
+  });
   res.end(body);
 }
 
@@ -534,6 +637,11 @@ function json(res, code, payload) {
 function fail(res, status, code, message) {
   const text = codeMessage(message, code);
   return json(res, status, { error: text, code });
+}
+
+/** 同上，但允许补响应头（例如要主动关连接的 413）。 */
+function failWith(res, status, code, message, extraHeaders) {
+  return json(res, status, { error: codeMessage(message, code), code }, extraHeaders);
 }
 /**
  * 读 JSON 请求体。
@@ -609,35 +717,110 @@ async function serveStatic(req, res, pathname) {
 }
 
 /**
- * 只吐曲库目录里的 mp4。路径必须解析后仍在曲库目录内 —— 否则就是任意文件读取。
- * 支持 Range，否则浏览器拖动进度条会失效。
+ * 把「曲库根 + 若干级子目录名 + 一个文件名」解成**一定还在根里面**的绝对路径；
+ * 任何一步看着不对就返回 null（调用方按 404 处理）。
+ *
+ * ★ 2026-10-15 修（审核里最严重的一条）。以前的写法是：
+ *     const base = join(root, songDir);     ← 用可控的 songDir 拼出 base
+ *     if (!target.startsWith(base)) 404     ← 再拿这个 base 去校验
+ *   **base 自己就被污染了** ⇒ `?dir=..` 时 base 变成曲库的父目录，startsWith 在它内部
+ *   恒成立 ⇒ 可以读同盘任意 .mp4；而这个路由是 GET、不经过令牌闸。
+ * 修法是两步，缺一不可：
+ *   ① 每一级目录名必须是**单级名字**（不许含 / 或 \、不许是 . / ..、不许带盘符）；
+ *   ② 拼完再判"解析后是否还在根内" —— 比的是**根**，不是那个被拼出来的中间目录。
  */
-async function serveMedia(req, res, songDir, fileName) {
-  const root = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
-  const base = join(root, String(songDir ?? ""));
-  const target = join(base, String(fileName ?? ""));
-  if (!target.startsWith(base) || !existsSync(target) || !/\.mp4$/iu.test(target)) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    return res.end("not found");
+function safeUnderRoot(root, ...parts) {
+  const clean = parts.map((p) => String(p ?? ""));
+  for (const p of clean) {
+    if (!p || p === "." || p === "..") return null;
+    if (/[\\/]/u.test(p) || /^[a-zA-Z]:/u.test(p)) return null;   // 不许跨级、不许带盘符
   }
-  const size = (await import("node:fs")).statSync(target).size;
+  let target;
+  try { target = resolve(root, ...clean); } catch { return null; }
+  const base = resolve(root);
+  // ★ 必须逐字符比对分隔符，不能只用 `target.startsWith(base)`：
+  //   `E:\linlimusic-别的` 也以 `E:\linlimusic` 开头；`C:\x\y` 也不能被 `C:\x\y..\z` 骗过。
+  if (!target.startsWith(base + "\\") && !target.startsWith(base + "/")) return null;
+  return target;
+}
+
+/**
+ * 把读流接进响应，并且**吃掉读流自己的错**。
+ * ★ 头已经发出去了就改不了状态码，只能记日志 + 掐断连接（否则客户端会一直挂着）；
+ *   头还没发就按 500 回。★ 关键在于"绝不让它冒成未捕获异常"——那会带走整个进程。
+ *   （审核 M1 的教训：曲库里只要有一个"名字以 .mp4 结尾的目录"、或任何读不出来的文件，
+ *   一次请求就让后台进程 exit 1，而外壳不会重启它 ⇒ 窗口还在、界面全废。）
+ */
+function pipeGuarded(stream, res) {
+  stream.on("error", (error) => {
+    console.warn(`[media] 读取失败：${error?.message ?? error}`);
+    try {
+      if (res.headersSent) res.destroy();
+      else { res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" }); res.end("read failed"); }
+    } catch { /* 连接已经断了 */ }
+  });
+  stream.pipe(res);
+}
+
+/**
+ * 把磁盘上一个文件吐出去，支持 Range（视频拖动进度条、audio 定位都要它）。
+ * ★ 曲库的 /api/media 与待机素材的 /api/idle/{video,ambience} 共用这一条 —— 三处的
+ *   Range 代码写三遍，迟早有一处漏了 Accept-Ranges 导致 seek 静默失效。
+ * ★ stat 也要包 try：上游只做了 existsSync，而曲库是用户可以随手改的目录，
+ *   这两个调用之间文件被删/改名/权限变了（TOCTOU）是常态 ——
+ *   不接住的话 ENOENT/EPERM 会冒成 500，还会把绝对路径原文回吐给客户端。
+ */
+function sendFile(req, res, target, type) {
+  let st;
+  try { st = statSync(target); }
+  catch { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("not found"); }
+  if (!st.isFile()) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("not a file"); }
+  const size = st.size;
   const range = req.headers.range;
-  const type = "video/mp4";
   if (range) {
     const m = /bytes=(\d*)-(\d*)/u.exec(String(range));
     const start = m && m[1] ? Number(m[1]) : 0;
     const end = m && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    if (start >= size || end < start) {
+      res.writeHead(416, { "Content-Range": `bytes */${size}` });
+      return res.end();
+    }
     res.writeHead(206, {
       "Content-Type": type,
       "Content-Range": `bytes ${start}-${end}/${size}`,
       "Accept-Ranges": "bytes",
       "Content-Length": end - start + 1,
     });
-    (await import("node:fs")).createReadStream(target, { start, end }).pipe(res);
+    pipeGuarded(createReadStream(target, { start, end }), res);
     return;
   }
   res.writeHead(200, { "Content-Type": type, "Accept-Ranges": "bytes", "Content-Length": size });
-  (await import("node:fs")).createReadStream(target).pipe(res);
+  pipeGuarded(createReadStream(target), res);
+}
+
+/**
+ * 只吐曲库目录里的 mp4。路径必须解析后仍在曲库目录内 —— 否则就是任意文件读取。
+ * 支持 Range，否则浏览器拖动进度条会失效。
+ */
+async function serveMedia(req, res, songDir, fileName) {
+  const root = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
+  // ★ 走 safeUnderRoot：曲库外的东西一律 404（`?dir=..&file=x.mp4` 这条路就此断掉）。
+  const target = safeUnderRoot(root, songDir, fileName);
+  if (!target || !/\.mp4$/iu.test(target)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end("not found");
+  }
+  return sendFile(req, res, target, "video/mp4");
+}
+
+/** 只吐待机素材目录里白名单内的那几个文件（防穿越全在 idleFilePath 里）。 */
+async function serveIdleFile(req, res, subdir, rawName, pattern, type) {
+  const target = idleFilePath(subdir, rawName, pattern);
+  if (!target) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end("not found");
+  }
+  return sendFile(req, res, target, type);
 }
 
 // ---------------------------------------------------------------- .soul 导入（UserData 一键导入）
@@ -660,12 +843,20 @@ function importExisting() {
   return { ids, hashes };
 }
 
-async function readRawBody(req, limit) {
+/**
+ * 收原始字节流（`.soul` 归档、字体文件都走这条）。
+ * @param {string} overCode 超限时抛哪个号（调用方点名，表里必须查得到）
+ * @param {string} overMessage 超限时给用户看的那句话
+ * ★ `new ApiError` 的**第三个参数**必须是 `ERR` 表里的号：tests/error-codes.test.js
+ *   第 ④ 条逐处扫这个调用，看得见 `ERR.xxx` 或看得见变量名 `${overCode}` 才算带号；
+ *   变量名必须叫 `overCode`（不是 code），否则测试读不出"这一处给了号"。
+ */
+async function readRawBody(req, limit, overCode, overMessage) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new ApiError(413, "这份归档太大了", ERR.IMPORT_SOUL_TOO_LARGE);
+    if (size > limit) throw new ApiError(413, overMessage, overCode);
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -871,6 +1062,43 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/api/media") {
       return serveMedia(req, res, url.searchParams.get("dir"), url.searchParams.get("file"));
     }
+    // ★ 外壳（LinliShell）起来之后问这一眼：没有曲子就**根本不往桌面上铺窗口**。
+    if (req.method === "GET" && path === "/api/stage/next") {
+      return json(res, 200, await stageNext());
+    }
+    // ---- 待机素材：曲库一首都没有时，桌面那层放什么 -------------------------
+    // 前端每 30 秒轮询 /api/idle/next；场景/状态与环境音都由落库的种子钉住，所以轮询不换片。
+    if (req.method === "GET" && path === "/api/idle/next") {
+      // ?tod=TOD12 只给单测/预加载用（跟 /api/library/play 的 tod 参数同套路），正常播放跟本地时钟。
+      return json(res, 200, idleNext({ ...idleCtx(), todOverride: url.searchParams.get("tod") }));
+    }
+    if (req.method === "GET" && path === "/api/idle/video") {
+      return serveIdleFile(req, res, PRESENCE_SUBDIR, url.searchParams.get("file"), VIDEO_NAME_RE, "video/mp4");
+    }
+    if (req.method === "GET" && path === "/api/idle/ambience") {
+      return serveIdleFile(req, res, AMBIENCE_SUBDIR, url.searchParams.get("file"), AMBIENCE_NAME_RE, "audio/mpeg");
+    }
+    if (req.method === "GET" && path === "/api/idle/transition") {
+      return json(res, 200, idleTransition({
+        ...idleCtx(),
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to"),
+        scene: url.searchParams.get("scene"),
+      }));
+    }
+    if (req.method === "GET" && path === "/api/idle/settings") {
+      return json(res, 200, idleSettingsView(idleCtx()));
+    }
+    // 待机环境音开关（写操作 ⇒ 上面那道令牌闸已经拦过一遍）。
+    if (req.method === "POST" && path === "/api/idle/settings") {
+      const body = await readJsonBody(req);
+      // ★ 开关只能收布尔：以前 `? "1" : "0"` 会把字符串 "not-a-bool"（真值）当成"开"。
+      if (body.ambience !== undefined && typeof body.ambience !== "boolean") {
+        return fail(res, 400, ERR.IDLE_AMBIENCE_NOT_BOOL, "环境音开关只收 true / false");
+      }
+      if (body.ambience !== undefined) setSetting("idle_ambience_on", body.ambience ? "1" : "0");
+      return json(res, 200, idleSettingsView(idleCtx()));
+    }
     if (req.method === "GET" && path === "/api/library/songs") {
       return json(res, 200, { songs: await importedSongs() });
     }
@@ -892,6 +1120,67 @@ const server = createServer(async (req, res) => {
       setSetting("last_played_title", title);
       setSetting("last_played_at", nowSeconds());
       return json(res, 200, { title });
+    }
+    // ★ 设置页「关于」里要告诉用户数据到底存在本机哪个目录 —— 「不上传」这句承诺
+    //   光靠嘴说没有说服力，给得出路径才算数。只回几个本机目录 + 版本号，不碰任何信件内容。
+    if (req.method === "GET" && path === "/api/about") {
+      return json(res, 200, {
+        version: APP_VERSION,
+        dataDir: DATA_DIR,
+        libraryDir: getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR,
+        // ★ 素材根是"有没有随包"的唯一判据：null 表示这台机器上找不到待机素材。
+        assetsDir: assetsDir(),
+      });
+    }
+    // ---- 信件字体：文件只存我们自己的数据目录，不进程序、不进系统 --------------
+    if (req.method === "GET" && path === "/api/font/status") {
+      const slot = url.searchParams.get("slot");
+      return json(res, 200, slot ? letterFontStatus(DATA_DIR, slot) : allFontStatus(DATA_DIR));
+    }
+    // GET：把那份字体原样吐给 @font-face（src: url("/api/font/file?slot=...")）。没有就 404。
+    // ★ slot 决定取哪一支：letter = 林离的信，compose = 你写信那个框。
+    if (req.method === "GET" && path === "/api/font/file") {
+      const f = fontFile(DATA_DIR, url.searchParams.get("slot"));
+      try {
+        const data = await readFile(f.path);
+        res.writeHead(200, {
+          "Content-Type": MIME[extname(f.name)] ?? "font/ttf",
+          "Content-Length": data.length,
+          "Cache-Control": "no-store",
+        });
+        return res.end(data);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end("no font");
+      }
+    }
+    // POST：前端把用户选中的字体**原始字节**发过来，我们收进数据目录。
+    // ★ 这是写操作 ⇒ 上面那道令牌闸已经拦过一遍，来源也校验过。
+    if (req.method === "POST" && path === "/api/font/import") {
+      const f = fontFile(DATA_DIR, url.searchParams.get("slot"));
+      let data;
+      try {
+        data = await readRawBody(req, FONT_MAX_BYTES, ERR.FONT_FILE_TOO_LARGE,
+          `字体文件太大了（上限 ${Math.round(FONT_MAX_BYTES / 1024 / 1024)} MB）`);
+      } catch (error) {
+        // ★ 超限是在**读流读到一半**时抛的，客户端还在往上发。不主动关掉连接，
+        //   浏览器会一直等自己把 80MB 发完，永远读不到这个 413。
+        return failWith(res, error?.status ?? 413, error?.code ?? ERR.FONT_FILE_TOO_LARGE,
+          String(error?.message ?? error), { Connection: "close" });
+      }
+      // ★ 只收真字体：把任意文件写进 fonts/，等于给这个目录开了一个落地点。
+      if (!looksLikeFont(data)) return fail(res, 400, ERR.FONT_NOT_FONT, "这不是字体文件（文件头不对）");
+      const dir = join(DATA_DIR, FONT_DIR_NAME);
+      const tmp = `${f.path}.tmp-${process.pid}`;
+      try {
+        mkdirSync(dir, { recursive: true });
+        // ★ 先写临时文件再 rename：写到一半断电/被杀，也不会把上一份能用的覆盖坏。
+        await writeFile(tmp, data);
+        await rename(tmp, f.path);
+      } catch (error) {
+        return fail(res, 500, ERR.FONT_SAVE_FAILED, `保存字体失败：${error.message}`);
+      }
+      return json(res, 200, letterFontStatus(DATA_DIR, f.key));
     }
     if (req.method === "GET" && path === "/api/model") {
       const { provider, baseUrl, model, hasKey } = await readModel();
@@ -980,7 +1269,7 @@ const server = createServer(async (req, res) => {
       // 收的是**原始字节流**，不是 JSON —— `.soul` 是二进制归档。
       // 上限取解析器自己那条（10 GiB），收件层不另立一个数：
       // 两个上限并存，早晚会出现「收件层先拒了、解析器判能收」的怪状态。
-      const buf = await readRawBody(req, SOUL_LIMITS.maxBytes);
+      const buf = await readRawBody(req, SOUL_LIMITS.maxBytes, ERR.IMPORT_SOUL_TOO_LARGE, "这份归档太大了");
       return json(res, 200, await importPreview(buf));
     }
     if (req.method === "POST" && path === "/api/import/confirm") {
@@ -1071,6 +1360,9 @@ server.listen(PORT, "127.0.0.1", () => {
   const port = server.address().port;
   console.log(`LINLI_PORT=${port}`);
   console.log(`LINLI_DATA=${DATA_DIR}`);
+  // 待机那组场景/状态的种子在**启动时**钉一次 —— 之后 /api/idle/next 是纯读，一次库都不写。
+  primeIdleSeed();
+  console.log(`LINLI_ASSETS=${assetRoot(PRESENCE_SUBDIR) ?? "（没找到待机素材）"}`);
   startProactiveScheduler();
   processQueue();
 });
