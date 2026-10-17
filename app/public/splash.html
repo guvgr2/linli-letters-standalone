@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OliviaSoul-community独立版 · 启动</title>
+<!--
+  启动动画（splash）。
+  ★ 自包含：不许外链 fonts / css / js，不许联网。所有字体走系统栈（衬线 / 黑体），
+    字体缺失也不会让布局塌 —— 尺寸全部是 px 定位，不依赖字体度量。
+  ★ 底色 #16141A = install.iss 的 WizardImageBackColor，跟安装程序同一套观感。
+  ★ 动画本体是从 design-preview.html 第 ① 节整段搬过来的（牛皮纸信封 → 开盖 → 抽信纸
+    → 摊开 → 落墨 → 盖火漆印 → 折成纸飞机 → 飞走，半路变玻璃飞机），
+    atProgress(pRaw) 的节拍一个没动，只改了外壳尺度和文案。
+  ★ 外部可调用（C# 用 ExecuteScript / WebMessage 打进来）：
+      window.__splash.setStage(n, text)   n = 0..6，见下面 STAGES
+      window.__splash.finish()            跑完最后一段（折飞机 + 飞走），跑完自己报 done
+      window.__splash.at(p)               直接定位到某一帧（第二组渲安装帧用）
+      window.__splash.progress / .done
+  ★ 就算 C# 一个都不调，它也按 ~7.5 秒自己放完，不会卡住。
+  ★ ?p=NUM（或 #p=NUM）静态定位保留。
+-->
+<style>
+:root{
+  --p1:#e6e0d8; --p2:#d8cfc4; --p3:#b3a69a; --p4:#403630;
+  --tx:#e8e9eb; --tx2:#ced2d4; --tx3:#a1a5ad; --tx4:#7d818c;
+  --line:#2f3036;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:#16141A; color:var(--tx);
+  font:14px/1.7 "PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+  display:flex; align-items:center; justify-content:center;
+  /* 无边框窗体：整页不可选、不出现文本光标 */
+  user-select:none; -webkit-user-select:none; cursor:default;
+}
+
+/* 氛围层：三团极淡的白光斑，只为让纯色底不是一块死板的板 */
+#bg{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
+#bg i{position:absolute;border-radius:50%;background:rgba(255,255,255,.22);filter:blur(78px);
+  animation:float 30s ease-in-out infinite alternate}
+#bg i:nth-child(1){width:44vw;height:44vw;left:-8vw;top:-12vw;opacity:.30}
+#bg i:nth-child(2){width:36vw;height:36vw;right:-6vw;top:6vh;opacity:.20;animation-delay:-7s}
+#bg i:nth-child(3){width:40vw;height:40vw;left:12vw;bottom:-18vw;opacity:.16;animation-delay:-14s}
+@keyframes float{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(4vw,-3vh,0) scale(1.12)}}
+
+/* ================= 纸质启动动画 ================= */
+.splash{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center}
+
+/* 舞台：设计基准仍是 200×300（下面所有 px 都是基准尺寸），
+   整体缩放只改 .envStage 的 scale —— 改布局只需动这一个数。
+   1.6× ⇒ 320×480，放进 480×640 的窗体。 */
+.stageScale{position:relative;width:320px;height:480px;flex:none}
+/* ★★ 这里**绝不能**写 transform-style:preserve-3d。
+   写了会把这棵子树拉进同一个 3D 空间 ⇒ 子元素绘制顺序改由三维深度决定，z-index 直接失效，
+   封盖（翻开后本该沉到信纸后面）会被画到信纸前面，在信纸上压出一个亮三角。 */
+.envStage{position:absolute;left:0;top:0;width:200px;height:300px;
+  transform:scale(1.6);transform-origin:top left;
+  perspective:1100px}
+
+/* ---- 信纸：先在信封里（折着），★完全抽出来之后★再摊开 ----
+   静止时上缘就顶在信封上沿上（bottom:24px ⇒ 未变换下缘 y=276、折好上缘 y=209.3，
+   比信封上沿 208 只低 1.3px）。这个 1.3px 是故意的：精确齐平会压出一条 1px 白边。 */
+.sheet{
+  position:absolute;left:24px;right:24px;bottom:24px;height:200px;
+  border-radius:2px;overflow:hidden;
+  background:linear-gradient(168deg,#eee8da 0%,#ebe5d6 60%,#e6ddcc 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.7),
+    0 10px 26px rgba(0,0,0,.48),
+    0 2px 6px rgba(0,0,0,.30);
+  transform-origin:bottom center;
+  transform:translateY(0);
+  /* 摊开靠 clip-path 从下往上一档档露出来（1/3 → 2/3 → 1），本体一点不变形 */
+  clip-path:inset(66.667% 0 0 0);
+  z-index:1}
+/* 纸的纹理：极淡的横向纤维 */
+.sheet::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(120,105,88,.022) 0 1px,transparent 1px 5px)}
+/* 两道折痕：各自在它那条折缝被翻开时淡掉 */
+.sheet .crease{position:absolute;left:0;right:0;height:1px;
+  background:rgba(255,255,255,.75);box-shadow:0 1px 0 rgba(120,105,88,.20);
+  opacity:var(--crease,1);transition:opacity .5s}
+.sheet .crease.c1{top:33.333%}
+.sheet .crease.c2{top:66.667%}
+/* 墨迹：从左往右写出来（scaleX 0→1，origin 左端），不是整体淡入 */
+.sheet .line{position:absolute;left:18px;height:1.6px;border-radius:1px;
+  background:linear-gradient(90deg,rgba(58,50,42,.74),rgba(58,50,42,.26));
+  opacity:0;transform:scaleX(0);transform-origin:left center;
+  transition:opacity .30s ease-out,transform .52s cubic-bezier(.22,.62,.28,1)}
+.sheet .line.l1{top:28px;width:78%}
+.sheet .line.l2{top:54px;width:62%}
+.sheet .line.l3{top:80px;width:84%}
+.sheet .line.l4{top:106px;width:54%}
+.sheet .line.l5{top:132px;width:40%}
+.sheet .line.on{opacity:1;transform:scaleX(1)}
+/* 落款 */
+.sheet .sig{position:absolute;left:26px;top:166px;font-size:11px;color:#6b5c4c;
+  font-family:"STKaiti","KaiTi","Songti SC","SimSun",serif;
+  letter-spacing:2px;opacity:0;transform:translateY(5px);transition:opacity .6s,transform .6s}
+.sheet .sig.on{opacity:1;transform:none}
+
+/* ---- 纸飞机 ----
+   三片叠（上翼 / 下翼 / 机腹鳍）共用同一条外轮廓，只靠各自渐变分出面 ⇒ 像"折出来的"。
+   .pl-paper（纸）→ .pl-glass（玻璃）两层同形状叠着，靠 opacity 交叉 ⇒ 同一只飞机在换材质。
+   ★ 不能用 filter:drop-shadow：① CSS 里 filter 在 clip-path 之前应用 ⇒ 剪影外的光晕会被剪掉；
+     ② 带 filter 的元素会变成 backdrop root ⇒ 里面那层玻璃的 backdrop-filter 取不到背后的像素。 */
+.plane{position:absolute;left:50%;top:98px;width:128px;height:54px;margin-left:-64px;
+  z-index:8;opacity:0;pointer-events:none;transform-origin:50% 50%;
+  clip-path:polygon(100% 50%, 4% 2%, 30% 50%, 4% 98%)}
+.pl{position:absolute;inset:0}
+.pf{position:absolute;inset:1.3px 1.6px 1.7px 1.6px}
+.pf-u{clip-path:polygon(100% 50%, 4% 2%, 30% 50%)}
+.pf-l{clip-path:polygon(100% 50%, 30% 50%, 4% 98%)}
+.pf-k{clip-path:polygon(100% 50%, 30% 50%, 66% 64%)}
+.pl-paper{background:linear-gradient(158deg,#f7f2e7 0%,#efe9db 100%)}
+.pl-paper .pf-u{background:linear-gradient(158deg,#fdfaf3 0%,#f4efe4 40%,#e9e2d1 100%)}
+.pl-paper .pf-l{background:linear-gradient(158deg,#ded4bd 0%,#d2c7ad 52%,#c4b89c 100%)}
+.pl-paper .pf-k{background:linear-gradient(158deg,#c0b299 0%,#a89a80 100%)}
+/* 玻璃：近透明底 + backdrop-filter + 内描光 + 一枚小硬高光 + 一道扫光。
+   ★ 玻璃态要把"棱"加宽到 3/3.6px —— 1.3px 在渲染比例下只有 2 个图像像素，等于一根发丝。 */
+.pl-glass{opacity:0;
+  background:linear-gradient(150deg,rgba(255,255,255,.98) 0%,rgba(255,246,231,.90) 42%,
+             rgba(226,240,255,.94) 100%);
+  backdrop-filter:blur(22px) saturate(165%) brightness(1.36);
+  -webkit-backdrop-filter:blur(22px) saturate(165%) brightness(1.36)}
+.pl-glass .pf{inset:3px 3.6px 3.8px 3.6px}
+/* 高光斑：26×12，芯 .96 —— 一枚镜面反光，不是一层白雾 */
+.pl-glass::before{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  background:radial-gradient(26px 12px at 26% 24%,rgba(255,255,255,.96) 0%,
+             rgba(255,255,255,.42) 34%,rgba(198,224,255,.10) 68%,transparent 100%)}
+/* 三片折面在玻璃态＝烟灰玻璃的三个面：整体是暗的，只靠深浅分出来 */
+.pl-glass .pf-u{background:linear-gradient(112deg,rgba(52,68,100,.88) 0%,rgba(40,54,86,.86) 42%,
+             rgba(30,42,70,.90) 100%)}
+.pl-glass .pf-l{background:linear-gradient(112deg,rgba(18,26,44,.92) 0%,rgba(12,19,34,.93) 46%,
+             rgba(10,16,30,.94) 100%)}
+.pl-glass .pf-k{background:linear-gradient(112deg,rgba(214,232,255,.72) 0%,rgba(150,186,224,.34) 100%)}
+/* 扫光：位置与亮度分开给（--sheen 走位、--sweep 控亮度），要有进有出 */
+.pl-glass::after{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;
+  background:linear-gradient(100deg,transparent 40%,
+             rgba(255,255,255,.30) 46%,rgba(255,255,255,.98) 50%,
+             rgba(255,255,255,.30) 54%,transparent 60%);
+  transform:translateX(calc(-125% + var(--sheen,0) * 250%));
+  opacity:var(--sweep,0)}
+/* 自查开关：抓"同源 twin 差"时关掉折射，避免软件光栅下每帧抖动 */
+.no-glass-fx .pl-glass{backdrop-filter:none;-webkit-backdrop-filter:none}
+/* 机身中脊：纸的时候是一道折痕（暗），玻璃的时候是一道棱（亮） */
+.pl-fold{position:absolute;left:30%;right:0;top:50%;height:1.6px;margin-top:-.8px;
+  background:linear-gradient(90deg,rgba(150,132,104,.85),rgba(150,132,104,0));
+  opacity:.7}
+.pl-plane-glassy .pl-fold{background:linear-gradient(90deg,rgba(255,255,255,.95),rgba(255,255,255,.05));opacity:.9}
+
+/* ---- 摊开时"翻上来"的那两块折片 ----
+   每块正好一折（200/3 = 66.667 高、宽 152），以下缘（折痕）为轴 rotateX −90° → 0°。 */
+.foldLid{position:absolute;left:24px;right:24px;height:66.667px;z-index:1;
+  border-radius:2px 2px 0 0;pointer-events:none;
+  transform-origin:bottom center;transform:rotateX(-90deg);opacity:0;
+  filter:drop-shadow(0 3px 6px rgba(28,20,10,.30))}
+.foldLid::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(120,105,88,.022) 0 1px,transparent 1px 5px)}
+#lidA{bottom:158.667px;background:linear-gradient(180deg,#ece6d8 0%,#eae4d4 100%)}
+#lidB{bottom:225.333px;background:linear-gradient(180deg,#eee8da 0%,#ece6d8 100%)}
+
+/* ---- 信封 ---- */
+.env{position:absolute;left:8px;right:8px;bottom:0;height:92px;z-index:3;
+  border-radius:3px;overflow:visible}
+/* 内壁（后片）：画面上一律看不见，留着它只有一个原因 —— 整个信封的外投影挂在它身上。别删。 */
+.envInner{position:absolute;left:8px;right:8px;bottom:0;height:92px;z-index:0;border-radius:3px;
+  background:linear-gradient(180deg,#b0976c 0%,#c0a87e 34%,#cdb68c 100%);
+  box-shadow:inset 0 6px 12px rgba(58,42,24,.26);
+  filter:drop-shadow(0 16px 26px rgba(0,0,0,.52)) drop-shadow(0 3px 6px rgba(0,0,0,.34))}
+/* 开口里那块 V 形纸料：与三块折片留下的缺口逐点重合，颜色＝信纸的纸色
+   ⇒ 封盖翻开后开口里露出来的是"信封里的信"，不是一块牛皮纸。
+   上沿收窄到信纸的左右边（8.7%~91.3%），否则信纸与开口两条边错开 16px，读成"上下对不齐"。 */
+.envPaper{position:absolute;left:8px;right:8px;bottom:0;height:92px;z-index:2;
+  pointer-events:none;
+  clip-path:polygon(8.7% 0,91.3% 0,50% 50%);
+  background:linear-gradient(180deg,#e6ddcc 0%,#ded4c1 58%,#d4c9b4 100%)}
+/* 三块折片：真实折法 —— 左右先向内折，底折片再压上来。纸色只差 3~5 RGB。 */
+.pane{position:absolute;inset:0;border-radius:3px}
+.pane.left{clip-path:polygon(0 0,50% 50%,0 100%);
+  background:linear-gradient(90deg,#cdb287 0%,#d2b88e 100%);
+  filter:drop-shadow(1px 0 .5px rgba(255,246,228,.4))}
+.pane.right{clip-path:polygon(100% 0,50% 50%,100% 100%);
+  background:linear-gradient(270deg,#c8ad83 0%,#ceb489 100%);
+  filter:drop-shadow(-1px 0 .5px rgba(255,246,228,.36))}
+.pane.bottom{clip-path:polygon(0 100%,100% 100%,50% 50%);
+  background:linear-gradient(180deg,#d4bb91 0%,#cfb58b 100%);
+  filter:drop-shadow(0 -1px .5px rgba(255,246,228,.45))}
+/* 纸的纤维纹理 */
+.envGrain{position:absolute;inset:0;border-radius:3px;pointer-events:none;mix-blend-mode:multiply;
+  opacity:.35;
+  background:
+    repeating-linear-gradient(0deg,rgba(122,106,86,.03) 0 1px,transparent 1px 3px),
+    repeating-linear-gradient(88deg,rgba(122,106,86,.02) 0 1px,transparent 1px 5px)}
+/* 外轮廓的纸切口亮边。★ 绝不能有"上边那道亮线" —— 顶边中间是 V 形缺口，
+   沿外框画 inset 会画出一条全宽恒亮的横线，横穿缺口也横穿信纸。 */
+.envEdge{position:absolute;inset:0;border-radius:3px;pointer-events:none;
+  box-shadow:
+    inset 1px 0 0 rgba(255,246,228,.20),
+    inset -1px 0 0 rgba(255,246,228,.20),
+    inset 0 -1px 0 rgba(255,250,236,.34)}
+/* 信封正面那一整张纸：把三块折片留下的 V 缺口补平 ⇒ V 变成一道淡折痕而不是洞，
+   插进去那一段信纸也被它自然挡住（信纸于是"从口子后面抽出来"）。 */
+.envFace{position:absolute;left:8px;right:8px;bottom:0;height:92px;z-index:2;
+  border-radius:3px;pointer-events:none;
+  background:linear-gradient(180deg,#cbb189 0%,#c6ac83 62%,#c2a87f 100%)}
+
+/* ---- 封盖：以上沿为轴翻开，留 14° 倾斜 ---- */
+.flap{
+  position:absolute;left:8px;right:8px;top:calc(100% - 92px);height:49px;z-index:5;
+  transform-origin:top center;transform-style:preserve-3d;
+  transform:rotateX(0deg)}
+.flapFace{
+  position:absolute;inset:0;
+  background:linear-gradient(180deg,#d4ba90 0%,#ccb186 100%);
+  clip-path:polygon(0 0,100% 0,50% 100%);
+  filter:drop-shadow(0 2px 2px rgba(52,38,22,.34))}
+.flapFace::after{content:"";position:absolute;inset:0;
+  clip-path:polygon(0 0,100% 0,50% 100%);
+  background:repeating-linear-gradient(0deg,rgba(122,106,86,.03) 0 1px,transparent 1px 3px);
+  box-shadow:inset 0 0 0 1px rgba(255,246,228,.28)}
+
+/* ---- 火漆印：轮廓由湍流位移成不规则蜡边，字是压进去的 ---- */
+.wax{position:absolute;left:50%;top:236px;z-index:6;width:42px;height:42px;margin-left:-21px;
+  pointer-events:none;opacity:0;transform:scale(.4);
+  filter:drop-shadow(0 4px 7px rgba(0,0,0,.45))}
+.wax svg{width:100%;height:100%;display:block;overflow:visible}
+.wax.shown{opacity:1;transform:scale(1);transition:opacity .45s,transform .55s cubic-bezier(.34,1.56,.4,1)}
+/* 盖印：落到摊开信纸的右下角（必须落在 y<190，否则顶到信纸下缘） */
+.wax.stamped{left:auto;right:28px;top:148px;bottom:auto;margin-left:0;
+  animation:stamp .72s cubic-bezier(.34,1.56,.4,1) forwards}
+@keyframes stamp{
+  0%{opacity:0;transform:scale(1.65) rotate(-15deg)}
+  55%{opacity:1;transform:scale(.94) rotate(-6deg)}
+  100%{opacity:1;transform:scale(1) rotate(-6deg)}}
+
+/* ---- 下方的文案与光轨 ---- */
+.p-stage{margin:20px 0 0;font-size:13px;color:var(--tx2);min-height:22px;text-align:center;
+  transition:opacity .22s}
+.p-stage.swap{opacity:0}
+.track{position:relative;width:320px;max-width:88%;height:2px;margin:16px 0 0;border-radius:2px;
+  background:rgba(255,255,255,.13)}
+.track i{position:absolute;left:0;top:0;height:100%;border-radius:2px;width:var(--p,0%);
+  background:linear-gradient(90deg,rgba(216,207,196,.28),var(--p2));
+  box-shadow:0 0 14px rgba(216,207,196,.55)}
+.track b{position:absolute;top:50%;left:var(--p,0%);width:9px;height:9px;margin:-4.5px 0 0 -4.5px;
+  border-radius:50%;background:var(--p1);
+  box-shadow:0 0 0 4px rgba(216,207,196,.16),0 0 20px 7px rgba(216,207,196,.5)}
+/* 落款行＝程序名。启动画面上一直挂着，不跟着进度淡入淡出。 */
+.p-sign{margin:12px 0 0;font-size:12.5px;color:var(--p3);letter-spacing:2px;
+  opacity:.62}
+
+/* 安装页那串步骤点：启动画面不放（只有三两步，挂上去反而吵）。
+   元素留着 —— atProgress 会写它，display:none 只是不画。 */
+.dots{display:none}
+</style>
+</head>
+<body>
+<div id="bg"><i></i><i></i><i></i></div>
+
+<div class="splash">
+  <div class="stageScale">
+  <div class="envStage">
+    <!-- 内壁（z0）→ 信纸(1) → 信封正面整张纸(2) → 信封前片(3) → 封盖(5) / 火漆印(6) -->
+    <div class="envInner"></div>
+    <div class="sheet" id="sheet">
+      <span class="crease c1"></span><span class="crease c2"></span>
+      <span class="line l1"></span><span class="line l2"></span>
+      <span class="line l3"></span><span class="line l4"></span>
+      <span class="line l5"></span>
+      <span class="sig" id="sheetSig">—— 林离</span>
+    </div>
+    <!-- 摊开用的两块折片：中折 #lidA、顶折 #lidB。信纸本体不变形，翻的是它们俩。 -->
+    <div class="foldLid" id="lidA"></div>
+    <div class="foldLid" id="lidB"></div>
+    <div class="flap" id="flap"><div class="flapFace"></div></div>
+    <div class="env">
+      <div class="pane left"></div>
+      <div class="pane right"></div>
+      <div class="pane bottom"></div>
+      <div class="envGrain"></div>
+      <div class="envEdge"></div>
+    </div>
+    <div class="envFace" id="envFace"></div>
+    <div class="envPaper" id="envPaper"></div>
+    <!-- 纸飞机：纸 → 玻璃两层同形状叠着 -->
+    <div class="plane" id="plane">
+      <div class="pl pl-paper">
+        <i class="pf pf-u"></i><i class="pf pf-l"></i><i class="pf pf-k"></i>
+      </div>
+      <div class="pl pl-glass">
+        <i class="pf pf-u"></i><i class="pf pf-l"></i><i class="pf pf-k"></i>
+      </div>
+      <div class="pl-fold"></div>
+    </div>
+    <!-- 火漆印「离」 -->
+    <div class="wax" id="wax">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <defs>
+          <filter id="waxEdge" x="-40%" y="-40%" width="180%" height="180%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.042" numOctaves="4" seed="9" result="n"/>
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="12"
+                               xChannelSelector="R" yChannelSelector="G"/>
+          </filter>
+          <filter id="waxFine" x="-40%" y="-40%" width="180%" height="180%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.5" numOctaves="2" seed="3" result="g"/>
+            <feDisplacementMap in="SourceGraphic" in2="g" scale="2.2"
+                               xChannelSelector="R" yChannelSelector="G"/>
+          </filter>
+          <radialGradient id="waxBody" cx="34%" cy="26%" r="82%">
+            <stop offset="0%" stop-color="#b2564a"/>
+            <stop offset="38%" stop-color="#8e3a31"/>
+            <stop offset="100%" stop-color="#4e1c17"/>
+          </radialGradient>
+        </defs>
+        <ellipse cx="51" cy="52" rx="46" ry="43" fill="#5b241e" opacity=".5"
+                 transform="rotate(-7 51 52)" filter="url(#waxEdge)"/>
+        <circle cx="49" cy="49" r="37" fill="url(#waxBody)" filter="url(#waxEdge)"/>
+        <ellipse cx="37" cy="32" rx="21" ry="13" fill="#ffffff" opacity=".13"
+                 transform="rotate(-28 37 32)" filter="url(#waxFine)"/>
+        <circle cx="49" cy="50" r="26" fill="none" stroke="#3d1712" stroke-width="3.4"
+                opacity=".75" filter="url(#waxFine)"/>
+        <circle cx="49" cy="50" r="22.4" fill="none" stroke="#d2958a" stroke-width="1"
+                opacity=".30" filter="url(#waxFine)"/>
+        <text x="49" y="52" text-anchor="middle" dominant-baseline="central"
+              font-size="27" font-weight="700" fill="#41150f" opacity=".95"
+              font-family="'STKaiti','KaiTi','Songti SC','SimSun',serif"
+              style="filter:drop-shadow(0 -1px .6px rgba(255,220,205,.55)) drop-shadow(0 1.2px 1.2px rgba(30,8,5,.65))"
+              >离</text>
+      </svg>
+    </div>
+  </div>
+  </div>
+
+  <p class="p-stage" id="stage">正在准备信纸…</p>
+  <div class="track"><i></i><b></b></div>
+  <p class="p-sign" id="sign">OliviaSoul-community独立版</p>
+  <div class="dots" id="dots"></div>
+</div>
+
+<script>
+/* ============================================================
+   启动动画
+   ============================================================ */
+
+/* ★ 七拍。前三拍是外壳实际在干的三件事：预检 → 起运行时 → 探服务；
+   三步走完她就**放飞**（最后一拍）。文案说人话。 */
+const STAGES = [
+  { at:0,   label:"准备",     text:"正在准备信纸…"               },
+  { at:6,   label:"预检",     text:"先看看这台机器能不能真的用起来…" },
+  { at:34,  label:"起运行时", text:"把林离叫起来…"                },
+  { at:43,  label:"探服务",   text:"等她应一声…"                  },
+  { at:52,  label:"完成",     text:"都在，一样不缺。"              },
+  { at:56,  label:"折纸飞机", text:"把它折成一只纸飞机…"           },
+  { at:64,  label:"放飞",     text:"让它飞出去 —— 飞到半路，它会变成玻璃的。" },
+];
+// 关键帧：进度 → 毫秒。★ 总长 **7.5 秒**（与 design-preview 一致）。
+//   拆信 0..56 → 0..3400ms；折飞机 56..64 → 3400..4900ms（1500ms）；
+//   放飞 64..100 → 4900..7500ms（2600ms）。
+const KF = [[0,0],[56,3400],[64,4900],[100,7500]];
+const LETTER_END = 56;   // 信写完、章盖好
+const FOLD_END   = 64;   // 折好纸飞机（＝起飞）
+const GLASS_FROM = 64;   // 一起飞就开始变玻璃
+const GLASS_END  = 90;   // 变完要早于淡出：64..90 ≈ 1.88 秒
+const GONE_FROM  = 96;   // 变完之后再留 90..96 看它**就是玻璃**
+const ENV_OUT    = 92;   // 信封留到玻璃化快完才淡 —— 玻璃要有东西可折光
+
+const track = document.querySelector(".track");
+const sheet = document.getElementById("sheet");
+const flap  = document.getElementById("flap");
+const wax   = document.getElementById("wax");
+const envPaper = document.getElementById("envPaper");
+const stageEl = document.getElementById("stage");
+const sign  = document.getElementById("sign");
+const sheetSig = document.getElementById("sheetSig");
+const lines = [...sheet.querySelectorAll(".line")];
+const creaseC1 = sheet.querySelector(".crease.c1");   // 中折/顶折的折缝
+const creaseC2 = sheet.querySelector(".crease.c2");   // 中折/下折的折缝
+const lidA = document.getElementById("lidA");
+const lidB = document.getElementById("lidB");
+const envFace  = document.getElementById("envFace");
+const envFront = document.querySelector(".env");
+const envInner = document.querySelector(".envInner");
+const plane    = document.getElementById("plane");
+const plPaper  = plane.querySelector(".pl-paper");
+const plGlass  = plane.querySelector(".pl-glass");
+const dotsEl = document.getElementById("dots");
+dotsEl.innerHTML = STAGES.map((s,i)=>`<span class="dot" data-i="${i}">${i+1}. ${s.label}</span>`).join("");
+const dots = [...dotsEl.querySelectorAll(".dot")];
+
+const span = (p, a, b) => Math.max(0, Math.min(1, (p - a) / (b - a)));
+const ease = (t) => t * t * (3 - 2 * t);
+const FOLD = 1 / 3;
+// RISE：把信纸升到"下缘正好落在信封上沿上"（未变换下缘 y=276、信封上沿 y=208 ⇒ 68）
+const RISE = 68;
+
+// 开口里那块纸料的形状 = 信纸下缘以下的"让位"，跟着信纸的行程收
+const PAPER_H = 92, V_TOP_L = 8.7, V_TOP_R = 91.3, V_TIP = 50;
+const V_SLOPE = (V_TIP - V_TOP_L) / V_TIP;
+function riseClip(rise){
+  const y = Math.min(V_TIP, RISE * (1 - rise) / PAPER_H * 100);
+  const xl = V_TOP_L + V_SLOPE * y, xr = V_TOP_R - V_SLOPE * y;
+  return `polygon(${V_TOP_L}% 0,${V_TOP_R}% 0,${xr.toFixed(2)}% ${y.toFixed(2)}%,${xl.toFixed(2)}% ${y.toFixed(2)}%)`;
+}
+
+let raf = null;
+function atProgress(pRaw){
+  pRaw = Math.max(0, Math.min(100, pRaw));
+  track.style.setProperty("--p", pRaw + "%");
+  // 拆信那一段自己的进度：整条 0..56 被换算成 0..100
+  // ⇒ 拆信那一整套（开盖 14-34 / 抽出 36-56 / 摊开 58-80 / 落墨 81-93 / 盖印 96）
+  //   的百分比一个字都不用改。**拆信之后的一切用 pRaw**。
+  const p = Math.min(100, pRaw * 100 / LETTER_END);
+
+  // ① 开盖：以上沿为轴翻开，留 14° 倾斜
+  const open = ease(span(p, 14, 34));
+  flap.style.transform = `rotateX(${(-166 * open).toFixed(2)}deg)`;
+  flap.style.zIndex = open > 0.5 ? "0" : "5";   // 翻过一半就沉到信纸后面
+
+  // 火漆印：开盖前贴在封盖尖上，随封盖一起翻走并淡出；完成时重新盖到信纸上
+  if (p >= 96) {
+    wax.classList.add("stamped", "shown");
+    wax.style.opacity = "";
+    wax.style.transform = "";
+  } else if (p < 14) {
+    wax.classList.remove("stamped");
+    wax.classList.add("shown");
+    wax.style.opacity = "";
+    wax.style.transform = "";
+  } else {
+    wax.classList.remove("stamped", "shown");
+    wax.style.opacity = (1 - ease(span(p, 14, 30))).toFixed(3);
+    wax.style.transform = `translateY(${(-97 * open).toFixed(1)}px) scale(${(1 - 0.3 * open).toFixed(3)})`;
+  }
+
+  // ② 上升：等封盖转完（34%）再起升，只上升、不摊开
+  const rise = ease(span(p, 36, 56));
+  // 抽出来时纸会轻轻晃两下，振幅随行程衰减、rise=1 时正好归零
+  const tilt = 1.1 * Math.sin(rise * Math.PI * 1.6) * (1 - rise);
+
+  // ③ 摊开：两拍，一折一折翻 —— 信纸本体一点不变形，翻的是 .foldLid 那两块折片
+  const tA = span(p, 58, 69);            // 中折：从中折缝翻上来
+  const tB = span(p, 69, 80);            // 顶折：从中折缝翻上来
+  const flat = p >= 80 ? 1 : (p >= 69 ? 2 * FOLD : FOLD);
+  lidA.style.transform = `rotateX(${(-90 * (1 - ease(tA))).toFixed(2)}deg)`;
+  lidB.style.transform = `rotateX(${(-90 * (1 - ease(tB))).toFixed(2)}deg)`;
+  lidA.style.opacity = (p >= 58 && p < 69) ? "1" : "0";
+  lidB.style.opacity = (p >= 69 && p < 80) ? "1" : "0";
+  sheet.style.transform = `translateY(${(-RISE * rise).toFixed(1)}px) rotate(${tilt.toFixed(3)}deg)`;
+  sheet.style.clipPath = `inset(${((1 - flat) * 100).toFixed(3)}% 0 0 0)`;
+  envPaper.style.clipPath = riseClip(rise);
+  creaseC2.style.setProperty("--crease", (1 - ease(tA)).toFixed(3));
+  creaseC1.style.setProperty("--crease", (1 - ease(tB)).toFixed(3));
+
+  // ④ 落墨：摊平之后才落墨，一行一行从左往右写出来
+  lines.forEach((ln, i) => ln.classList.toggle("on", p >= 81 + i * 2.7));
+  sheetSig.classList.toggle("on", p >= 94);
+
+  // ⑤ 折飞机 + 放飞（这一段用 **pRaw**）
+  //   ★★ 要**看得见折**：顿一拍 → 折一 → 顿一拍 → 折二 → 换手（整段 1500ms）
+  const HOLD1 = LETTER_END + 1.0, FOLD1 = LETTER_END + 3.5;   // 顶折 57.0 → 59.5
+  const HOLD2 = LETTER_END + 4.0, FOLD2 = LETTER_END + 6.5;   // 中折 60.0 → 62.5
+  const f1 = ease(span(pRaw, HOLD1, FOLD1));
+  const f2 = ease(span(pRaw, HOLD2, FOLD2));
+  const flyT   = ease(span(pRaw, FOLD_END, 100));
+  const glassT = ease(span(pRaw, GLASS_FROM, GLASS_END));
+  const gone   = ease(span(pRaw, GONE_FROM, 100));
+  if (pRaw >= LETTER_END) {
+    // 信**倒着折回去**：摊开是 clip 从 66.667% 收到 0%，折回去就是 0% → 66.667%。
+    // 分**两拍**收（每拍 33.333%，中间停一拍）⇒ 才是"折了两次"，不是一次缩放。
+    sheet.style.clipPath = `inset(${(33.333 * f1 + 33.333 * f2).toFixed(3)}% 0 0 0)`;
+    const foldTilt = -1.8 * Math.sin(f1 * Math.PI) + 1.8 * Math.sin(f2 * Math.PI);
+    sheet.style.transform = `translateY(${(-RISE).toFixed(1)}px) rotate(${foldTilt.toFixed(3)}deg)`;
+    sheet.style.opacity = (1 - ease(span(pRaw, FOLD2, FOLD_END))).toFixed(3);
+  } else {
+    sheet.style.opacity = "1";
+  }
+  // 飞机：先长出来（不是"啪"地出现），再飞走
+  const born = ease(span(pRaw, FOLD2, FOLD_END));
+  const flyE = 1 - Math.pow(1 - flyT, 2);
+  const dash = Math.pow(span(pRaw, GONE_FROM, 100), 2);
+  const px = 30 * flyE + 40 * dash;
+  const py = -54 * flyE - 12 * Math.sin(flyT * Math.PI) - 30 * dash;
+  const ps = (0.62 + 0.38 * born) * (1 - 0.28 * Math.pow(flyE, 3));
+  const prot = -13 + 9 * flyT + 3.4 * Math.sin(flyT * Math.PI * 2);
+  plane.style.opacity = (born * (1 - gone)).toFixed(3);
+  plane.style.transform = `translate(${px.toFixed(1)}px,${py.toFixed(1)}px) rotate(${prot.toFixed(2)}deg) scale(${ps.toFixed(3)})`;
+  // 材质在飞行途中换：纸 → 玻璃
+  plPaper.style.opacity = (1 - glassT).toFixed(3);
+  plGlass.style.opacity = glassT.toFixed(3);
+  plane.classList.toggle("pl-plane-glassy", glassT > 0.5);
+  const sweepP = span(glassT, 0.28, 0.82);
+  const sweepA = Math.max(0, 1 - Math.abs(sweepP - 0.5) / 0.5);
+  plGlass.style.setProperty("--sheen", sweepP.toFixed(3));
+  plGlass.style.setProperty("--sweep", (sweepA * sweepA).toFixed(3));
+  // 信封在飞机走远时淡出 ⇒ 最后一帧是干净的
+  // ★★ wax 挂着 `animation:stamp ... forwards`，而 animation 压在普通内联样式之上
+  //    ⇒ 淡出必须写 important（important author 排在 animation 之上）才压得住。
+  if (pRaw >= ENV_OUT) {
+    const envOut = (1 - ease(span(pRaw, ENV_OUT, 100))).toFixed(3);
+    for (const el of [envFront, envFace, envInner, envPaper, flap, wax]) {
+      el.style.setProperty("opacity", envOut, "important");
+    }
+  } else {
+    for (const el of [envFront, envFace, envInner, envPaper, flap]) {
+      el.style.removeProperty("opacity");
+    }
+    // 蜡封交给 ① 管，这里不动它
+  }
+
+  let idx = 0;
+  STAGES.forEach((s,i)=>{ if (pRaw >= s.at) idx = i; });
+  dots.forEach((d,i)=>{
+    d.classList.toggle("on", i === idx && pRaw < 100);
+    d.classList.toggle("done", i < idx || pRaw >= 100);
+  });
+  const text = STAGES[idx].text;
+  if (stageEl.textContent !== text){
+    stageEl.classList.add("swap");
+    setTimeout(()=>{ stageEl.textContent = text; stageEl.classList.remove("swap"); }, 170);
+  }
+}
+
+/* ============================================================
+   驱动：自动推进 + C# 打进来的三个拍子
+   ============================================================ */
+const FINISH_FROM = LETTER_END;      // 放飞从"信写完"开始
+const FINISH_MS   = 2600;            // 折飞机 + 飞走：KF 的 4900..7500
+const AUTO_MS     = 7500;            // 什么都不调时的自我播放总长
+
+let pShown = 0;          // 实际渲染到的进度
+let floorP = 0;          // setStage 顶上来的最低进度
+let T0 = 0;              // 自动播放的起点
+let lastT = 0;
+let finT0 = -1;          // finish() 的起点
+let finished = false;
+let doneFired = false;
+
+function kfAt(t){
+  if (t <= 0) return 0;
+  for (let i = 0; i < KF.length - 1; i++){
+    const [p0,t0v] = KF[i], [p1,t1v] = KF[i+1];
+    if (t <= t1v) return p0 + (p1 - p0) * (t - t0v) / (t1v - t0v);
+  }
+  return 100;
+}
+
+// 跑完了告诉外壳一声 —— 由 C# 关窗口
+function fireDone(){
+  if (doneFired) return;
+  doneFired = true;
+  try { window.chrome && window.chrome.webview && window.chrome.webview.postMessage("splash:done"); }
+  catch (e) { /* 不是 WebView2 环境（浏览器里预览）就算了 */ }
+}
+
+function frame(now){
+  if (!T0) T0 = now;
+  if (!lastT) lastT = now;
+  const dt = Math.min(64, now - lastT);
+  lastT = now;
+
+  if (finished){
+    const ft = Math.max(0, now - finT0);
+    if (ft >= FINISH_MS){ atProgress(100); fireDone(); return; }
+    const target = FINISH_FROM + (100 - FINISH_FROM) * (ft / FINISH_MS);
+    if (target > pShown)
+      pShown = Math.min(target, pShown + Math.max(100 / FINISH_MS * dt, (target - pShown) * 0.10));
+    atProgress(pShown);
+    raf = requestAnimationFrame(frame);
+    return;
+  }
+
+  const auto = kfAt(now - T0);
+  if (auto >= 100){ atProgress(100); fireDone(); return; }
+  const target = Math.max(auto, floorP);
+  if (target > pShown)
+    // 正常按 auto 的速率走；C# 顶上来一个大跨步时用 0.10 的比例追过去（约 0.2 秒），
+    // 不是"啪"地跳帧。
+    pShown = Math.min(target, pShown + Math.max(100 / AUTO_MS * dt, (target - pShown) * 0.10));
+  atProgress(pShown);
+  raf = requestAnimationFrame(frame);
+}
+
+/* ---- 对外口子 ---- */
+window.__splash = {
+  /** 阶段推进。n = 0..6（见 STAGES）；text 可选，直接换掉那一拍的文案。 */
+  setStage: function(n, text){
+    n = Math.max(0, Math.min(STAGES.length - 1, n | 0));
+    if (text) STAGES[n].text = String(text);
+    floorP = Math.max(floorP, STAGES[n].at);
+  },
+  /** 最后一段：折飞机 + 飞走。跑完自己报 done（外壳收到就关窗口）。 */
+  finish: function(){
+    if (finished) return;
+    finished = true;
+    finT0 = performance.now();
+    lastT = 0;
+    if (raf == null) { T0 = finT0; raf = requestAnimationFrame(frame); }
+  },
+  /** 直接定位到某一帧（第二组渲安装帧用）。 */
+  at: function(p){ cancelAnimationFrame(raf); raf = null; pShown = Math.max(0, Math.min(100, +p || 0)); atProgress(pShown); },
+  get progress(){ return pShown; },
+  get done(){ return doneFired; },
+  stages: STAGES.map(s => s.label),
+};
+
+/* ---- 起手 ----
+   ?p=NUM（或 #p=NUM）：静态定位，不自动播放（第二组渲安装帧用）。 */
+(function start(){
+  let q = null;
+  try { q = new URLSearchParams(location.search).get("p"); } catch (e) { q = null; }
+  if (q === null){
+    try {
+      const h = new URLSearchParams((location.hash || "").replace(/^#/, "")).get("p");
+      if (h !== null) q = h;
+    } catch (e) { /* 没有就当没有 */ }
+  }
+  if (q !== null && q !== "" && !isNaN(parseFloat(q))){
+    window.__splash.at(parseFloat(q));
+    return;                       // 静态定位：不自动播放
+  }
+  T0 = performance.now();
+  raf = requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

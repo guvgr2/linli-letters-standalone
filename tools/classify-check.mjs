@@ -1,0 +1,10 @@
+import { readdirSync } from "node:fs";
+import { classifyGenre, songMode, LIBRARY_DIR_PATTERN, prettySongName } from "../app/core.mjs";
+const root = process.argv[2] || "E:/linlimusic";
+const dirs = readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).filter(n => LIBRARY_DIR_PATTERN.test(n));
+const rows = dirs.map(n => ({ dir: n, name: prettySongName(n), genre: classifyGenre(n, prettySongName(n)), mode: songMode(n) }));
+const g = {};
+for (const r of rows) (g[r.genre] ||= []).push(r);
+for (const k of Object.keys(g)) console.log(k, g[k].length);
+console.log("--- 非 midi 的明细 ---");
+for (const r of rows.filter(r => r.genre !== "我的上传")) console.log([r.genre, r.mode, r.dir].join("\t"));

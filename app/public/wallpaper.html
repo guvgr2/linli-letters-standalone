@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OliviaSoul-community独立版 · 桌面壁纸层</title>
+<!--
+  ★ 这一页不是给浏览器看的，它是**铺在 Windows 桌面那一层**的背景（外壳的 WallpaperHost
+     把它挂到 WorkerW 下面）。所以：
+       · 不引 styles.css —— 那套是为玻璃窗写的，这里的底色和尺寸完全不一样；
+         引进来只会互相打架。这一页自己带样式，短、独立、好读。
+       · 背景**透明**：底色透出来的是用户原来那张壁纸，不是一块黑
+         （外壳那边把 WebView2 的 DefaultBackgroundColor 设成了 Transparent）。
+         画面只在**真有东西可播**时才盖上来。
+       · 它比桌面图标低一层：图标、任务栏、别的窗口全都压在它上面，所以画面里
+         不要放任何"必须看清"的信息。
+
+  ★ 播什么，两种：
+       · 曲库里有曲子 → 播曲子（跟曲库同口径按时段换变体）；
+       · 一首曲子都没入库 → 播**待机视频 + 待机环境音**（借原版的 Wallpaper_Presence /
+         Wallpaper_Ambience 那套素材，服务端按当前时段挑片）。
+     两种都由服务端说了算，这里只管换。
+  ★ 时段（跟曲库同口径）：06:00–16:00 → TOD12 ／ 16:00–20:00 → TOD1730 ／ 20:00–06:00 → TOD20。
+     跨时段不硬切：待机时先播一段 `Transition` 过场片，播完切新时段的正片；
+     曲库时两枚 video 交叉淡入。
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body { font: 13px/1.4 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+
+  /* ★★ 模糊延伸（2026-10-15 用户拍板）：源是 16:9、用户屏是 16:10（更窄），
+     宽高比不匹配时「满屏 / 不裁内容 / 不变形」三者只能取二：
+       · cover     ：满屏 + 不变形，代价是左右各裁约 5%（主体虽在中间，但终究少东西）
+       · contain   ：不裁 + 不变形，代价是上下各 60px 露出底色（原版就是这条黑带）
+       · fill      ：满屏 + 不裁，代价是纵向拉高 11.1%（人物变瘦长）—— 绝不能用
+       · **本方案**：底层放同一画面的**模糊放大版**铺满，上层 contain 放完整画面 ⇒
+                     满屏 + 不裁 + 不变形全都拿到，代价是上下两条同画面的模糊延伸。
+     ★ 底层不用第二个 video（那要多解一遍 2560×1440 的 HEVC），而是用 canvas
+       每 1.2 秒从**当前在台前的那枚 video** 抓一帧缩成 80×50 再交给 CSS 放大模糊：
+       零额外解码、CPU 可忽略，而且交叉淡入 / 过场片都不用管它（它自己跟着变）。
+       模糊到那个程度，1.2 秒的更新延迟完全看不出来。 */
+  #cbg {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    z-index: 0; pointer-events: none;
+    filter: blur(38px) saturate(1.06);
+    transform: scale(1.14);          /* blur 会让四周发虚露透明，放大一点盖住 */
+    opacity: 1; transition: opacity .9s ease;
+  }
+
+  /* ★ 上层是**完整画面**：contain —— 不能改回 cover（改回去就又开始裁内容了）。
+     它是主角，压在模糊底之上。 */
+  video {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; z-index: 1;
+    opacity: 1; transition: opacity .9s ease;
+  }
+  video.under { opacity: 0; }
+
+  /* 右下角那两个悬浮圆钮 —— 跟原版桌面一样的位置和分量：
+     不抢眼、但一眼能找着。指针穿过它们的空隙时不该被挡住，所以整块容器
+     pointer-events:none，只有按钮自己收事件。 */
+  .dock {
+    position: fixed; right: 78px; bottom: 96px; z-index: 2;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 18px;
+    pointer-events: none; opacity: 0; transition: opacity .6s ease;
+  }
+  body.has-video .dock { opacity: 1; }
+  .dock button {
+    pointer-events: auto; cursor: pointer;
+    width: 58px; height: 58px; border-radius: 50%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px;
+    border: 1px solid rgba(255, 255, 255, .34);
+    background: rgba(255, 255, 255, .14);
+    backdrop-filter: blur(14px) saturate(1.5);
+    -webkit-backdrop-filter: blur(14px) saturate(1.5);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .40), inset 0 1px 0 rgba(255, 255, 255, .34);
+    color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+    transition: background .18s ease, transform .18s ease;
+  }
+  .dock button:hover { background: rgba(255, 255, 255, .26); transform: translateY(-2px); }
+  .dock button:active { transform: translateY(0) scale(.97); }
+  .ico { font-size: 19px; line-height: 1; }
+  .lbl { font-size: 11px; letter-spacing: .06em; opacity: .92; }
+  /* 信箱比音乐再往左一点：两个错开，看着不像一排按钮，像桌面上摆着的两样东西 */
+  .dock button.mail { margin-right: 42px; }
+
+  /* 没曲子、也没待机素材的时候整页什么都不画 —— 这里连提示都不放，桌面不该突然多出一行字 */
+</style>
+</head>
+<body>
+  <!-- 模糊延伸的底层：从当前正在播的 video 抓帧缩成小图，交给 CSS 放大 + 模糊。
+       ★ 它自己不带 src —— 内容由脚本每 1.2 秒填一次（见 pumpBackdrop）。 -->
+  <canvas id="cbg" width="80" height="50"></canvas>
+  <video id="vA" playsinline muted loop autoplay class="under"></video>
+  <video id="vB" playsinline muted loop class="under"></video>
+  <!-- 待机环境音。★ 音量比视频声音小（0.35）—— 原版里它是**背景**；
+       开关在设置页的「待机」卡片里，关掉时前端根本不给它 src。 -->
+  <audio id="amb" loop preload="none"></audio>
+
+  <div class="dock" id="dock">
+    <button class="music" id="btnMusic" type="button" title="音乐">
+      <span class="ico">♪</span><span class="lbl">音乐</span>
+    </button>
+    <button class="mail" id="btnMail" type="button" title="信箱">
+      <span class="ico">✉</span><span class="lbl">信箱</span>
+    </button>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const host = window.chrome && window.chrome.webview;
+  const say = (m) => { try { host && host.postMessage(m); } catch { /* 没有外壳就算了 */ } };
+  // ★ 圆钮上的字是给人看的（音乐/信箱），发回去的是**页面 id** —— 曲库那一页叫 library。
+  //   照着按钮字面写 "open:music"，外壳转发过去页面根本不认，点了没反应。
+  $("btnMusic").addEventListener("click", () => say("open:library"));
+  $("btnMail").addEventListener("click", () => say("open:mail"));
+
+  let active = "A";                                   // 当前在台前的 video
+  let mode = null;                                    // null | "song" | "idle"
+  let songTod = null;                                 // 曲库模式当前的时段
+  let idle = { tod: null, slot: null, scene: null };  // 待机模式的时段 / 文件名后缀 / 场景
+  let timer = null;
+
+  async function api(path, options) {
+    const r = await fetch(path, { cache: "no-store", ...options });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    return r.json();
+  }
+
+  /**
+   * 换一段画面：两枚 video 交叉淡入（跨时段不硬切，跟曲库播放器同一套做法）。
+   * ★ loop=false + onEnded 是给**过场片**用的：过场片是一次性的，播完就切正片。
+   *   复用同一个元素时先把上一轮挂上的 ended 回调摘掉 —— 否则那枚 once 监听
+   *   会串到下一段上，过场片只放一次就再也不放了。
+   */
+  function crossFade(url, opts = {}) {
+    const a = $("vA"), b = $("vB");
+    const incoming = active === "A" ? b : a;
+    const outgoing = active === "A" ? a : b;
+    if (incoming.__onEnded) { incoming.removeEventListener("ended", incoming.__onEnded); incoming.__onEnded = null; }
+    incoming.loop = opts.loop !== false;
+    incoming.src = url;
+    incoming.play().then(() => say("state:on")).catch(() => { /* 静音自动播放被拦时下一轮还会再试 */ });
+    incoming.onerror = () => say("state:off");      // 文件读不出来 ⇒ 别在桌面上留一块黑
+    if (opts.onEnded) {
+      incoming.__onEnded = opts.onEnded;
+      incoming.addEventListener("ended", opts.onEnded, { once: true });
+    }
+    incoming.classList.remove("under");
+    outgoing.classList.add("under");
+    setTimeout(() => { try { outgoing.pause(); } catch { /* 已经停了 */ } }, 950);
+    active = active === "A" ? "B" : "A";
+  }
+
+  // ---- 模糊延伸底：从"当前在台前的那枚 video"抓一帧，缩成小图铺满 ----------
+  // ★ 为什么不用第二个 video 当底：那要多解一遍 2560×1440 的 HEVC，桌面这一层不该扛两份解码。
+  //   canvas 抓帧缩到 80×50 ⇒ 每 1.2 秒一次 drawImage，CPU 可忽略；
+  //   模糊到那个程度，1.2 秒的更新延迟和 80×50 的分辨率都看不出来。
+  // ★ 抓帧按 **cover** 裁源（而不是整幅压进去）：底图要铺满、不能自带黑边；
+  //   它跟上层的构图差一点点无所谓 —— 它整个都是糊的。
+  const cbg = $("cbg");
+  const cctx = cbg.getContext("2d");
+  function pumpBackdrop() {
+    const v = active === "A" ? $("vA") : $("vB");
+    if (!v || v.readyState < 2 || !v.videoWidth) return;
+    const tw = cbg.width, th = cbg.height;
+    const sw = v.videoWidth, sh = v.videoHeight;
+    const ta = tw / th, sa = sw / sh;
+    let cw, ch, cx, cy;
+    if (sa > ta) { ch = sh; cw = sh * ta; cx = (sw - cw) / 2; cy = 0; }
+    else { cw = sw; ch = sw / ta; cx = 0; cy = (sh - ch) / 2; }
+    try { cctx.drawImage(v, cx, cy, cw, ch, 0, 0, tw, th); } catch { /* 还没解出帧 */ }
+  }
+  // 没曲子、也没待机素材时把底也擦干净，别在桌面上留一块糊斑。
+  function clearBackdrop() { cctx.clearRect(0, 0, cbg.width, cbg.height); }
+  setInterval(() => { mode === null ? clearBackdrop() : pumpBackdrop(); }, 1200);
+
+  // ---- 待机环境音 --------------------------------------------------------
+  const amb = $("amb");
+  function playAmbience(url) {
+    if (!url) return stopAmbience();
+    if (amb.getAttribute("src") !== url) { amb.src = url; amb.volume = 0.35; }   // 背景音：压低
+    amb.play().catch(() => { /* 自动播放被策略拦住，等一次用户手势 */ });
+  }
+  function stopAmbience() {
+    try { amb.pause(); } catch { /* 没在播 */ }
+    amb.removeAttribute("src");
+  }
+  // 被自动播放策略拦下的情况：第一次点/按键时再试一次（桌面那层可能一直没手势，那就静音着）。
+  const retryAmbience = () => { if (mode === "idle" && amb.getAttribute("src")) amb.play().catch(() => {}); };
+  document.addEventListener("pointerdown", retryAmbience);
+  document.addEventListener("keydown", retryAmbience);
+
+  // ---- 待机：曲库一首都没入库时才走这里 ----------------------------------
+  function startIdle(n) {
+    mode = "idle";
+    idle = { tod: n.tod, slot: n.slot, scene: n.scene };
+    document.body.classList.add("has-video");
+    crossFade(n.video);
+    if (n.ambienceOn && n.ambience) playAmbience(n.ambience); else stopAmbience();
+  }
+
+  /**
+   * 换时段：先播 `{场景}_Transition_{旧}_{新}.mp4`（一次性、播完切正片），
+   * 过场片缺失就直接切 —— 别让画面卡在上一档上。方向（含 2000→1200 跨零点）由服务端算。
+   */
+  async function idleSwitchSlot(n) {
+    const from = idle.slot;
+    idle.tod = n.tod; idle.slot = n.slot; idle.scene = n.scene;
+    let transUrl = null;
+    try {
+      const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(n.slot)}&scene=${encodeURIComponent(n.scene)}`;
+      transUrl = (await api(`/api/idle/transition?${q}`))?.url ?? null;
+    } catch { /* 拿不到过场片就直切 */ }
+    if (transUrl) crossFade(transUrl, { loop: false, onEnded: () => crossFade(n.video) });
+    else crossFade(n.video);
+    if (n.ambienceOn && n.ambience) playAmbience(n.ambience); else stopAmbience();
+  }
+
+  // ---- 主循环：30 秒问一次，跟原版"跟着时钟换"的口径一致 ------------------
+  async function tick() {
+    const info = await api("/api/stage/next");
+    if (info && info.url) {
+      // 有曲子 ⇒ 走曲库。从待机切过来时顺手把环境音停掉，别两种声音叠着。
+      if (mode !== "song") { mode = "song"; stopAmbience(); songTod = info.tod; document.body.classList.add("has-video"); crossFade(info.url); }
+      else if (info.tod !== songTod) { songTod = info.tod; crossFade(info.url); }
+      return;
+    }
+    const n = await api("/api/idle/next");
+    if (!n.hasAssets || !n.video) {
+      // 没曲子、也没待机素材 ⇒ 请外壳把我关掉（透出用户自己的壁纸，不留黑）
+      say("state:off");
+      document.body.classList.remove("has-video");
+      stopAmbience();
+      mode = null;
+      return;
+    }
+    if (mode !== "idle") startIdle(n);
+    else if (n.tod !== idle.tod) await idleSwitchSlot(n);
+    else if (n.ambienceOn && n.ambience && amb.getAttribute("src") !== n.ambience) playAmbience(n.ambience);
+  }
+
+  async function start() {
+    await tick();
+    if (timer) clearInterval(timer);
+    timer = setInterval(() => { tick().catch(() => { /* 失败就下一轮再试 */ }); }, 30000);
+  }
+
+  start().catch(() => say("state:off"));
+})();
+</script>
+</body>
+</html>
