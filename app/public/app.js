@@ -141,6 +141,9 @@ function renderLetterList() {
 function renderReader() {
   const box = $("reader");
   const empty = $("mailEmpty");
+  // 宿主缺失就直接返回，不要在 null 上设属性：抛出去会被全局 onerror 抓走塞进 toast，
+  // 用户看到的是一句英文 TypeError，而不是「读信区没画出来」这个真问题。
+  if (!box || !empty) return;
   const item = lettersCache.find((l) => l.id === selectedLetterId);
   if (!item) {
     box.hidden = true;
@@ -271,10 +274,12 @@ function stampFallback() {
 }
 
 function showCompose(on) {
-  $("composePanel").hidden = !on;
+  if ($("composePanel")) $("composePanel").hidden = !on;
   if (on) {
-    $("reader").hidden = true;
-    $("mailEmpty").hidden = true;
+    const reader = $("reader");
+    const mailEmpty = $("mailEmpty");
+    if (reader) reader.hidden = true;
+    if (mailEmpty) mailEmpty.hidden = true;
     $("compose")?.focus();
     stampStart();                      // ★ 卡片一露出来就换一支新邮票并开始播
   } else {

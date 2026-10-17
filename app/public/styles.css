@@ -17,6 +17,22 @@
   --tx4: #7d818c;
   --radius: 12px;
   --radius-lg: 20px;
+
+  /* ---- 两支信纸字 ----
+     ★ 兜底**不许撞车**：这两支字的设计意图是「她写的一支、我写的一支」，
+       `.letter .body.mine` 就是靠它们把两种笔迹分开的。可一旦 SentyTEA 取不到
+       （字体不从 bundled 走、用户没放、被清理），两支会**双双**落到各自兜底链上的第一支
+       系统字；两条链若是同一支，`--compose-font` 那条规则就完全看不出效果 ——
+       实测过就是这个结果（2026-10-16《字体适配与排版UI锐评》§1.2）。
+     ⇒ 所以两支各挑一支不同的系统兜底：**她写的 → 华文楷体（端正，适合读），
+       我写的 → 楷体（写字的手感）**，实测像素指纹不同（`4efce6f4` vs `2ce43271`）。
+     ⚠️ 行楷（STXingkai）只能当**最后**的退路，不许排在楷体前面 —— 它是装饰体，
+       20px 正文看着比楷体更飘；而「STXingkai 出现在了两个栈里」正是当初撞车的根因。
+     ⚠️ 写成变量而不是塞在各自的 `font-family` 里：这条判据要能被
+       `tests/ui-typography.test.js` 静态读出来 —— 撞车只在**没字体**的机器上才看得见，
+       而那种机器恰恰是跑测试的地方。 */
+  --letter-font: "SentyTEA", "HanyiSentyTea", "STKaiti", "STKaiTi", "华文楷体", "KaiTi", "楷体", serif;
+  --compose-font: "SentyTEA", "HanyiSentyGarden", "KaiTi", "楷体", "STXingkai", "华文行楷", serif;
 }
 
 /* ---- 信件字体 ----
@@ -220,7 +236,7 @@ textarea { resize: vertical; min-height: 132px; line-height: 1.75; }
    我们只随包了 SentyTEA，就统一用这一个 —— 写的时候和读的时候是同一种字迹，
    这本来也比两种更自然。（别写成 textarea：那是全部输入框，设置页里还有别的。） */
 #compose {
-  font-family: "SentyTEA", "STXingkai", "HanyiSentyGarden", serif;
+  font-family: var(--compose-font);
   font-size: 19px;
   line-height: 1.62;
 }
@@ -338,7 +354,7 @@ button:focus-visible, .rb:focus-visible {
      照抄 UI 的 14px 会让信显得又小又挤。行高也从 1.85 收到 1.5，跟原版一致。 */
 .letter .body {
   white-space: pre-wrap;
-  font-family: "SentyTEA", "STXingkai", "HanyiSentyGarden", serif;
+  font-family: var(--letter-font);
   font-size: 20px;
   line-height: 1.5;
 }
@@ -346,6 +362,126 @@ button:focus-visible, .rb:focus-visible {
    手写体一倾斜就发飘。改用颜色和轻重区分。 */
 .letter .body.pending { color: var(--tx4); }
 .letter .body.err { color: #d98a7a; }
+
+/* ---- 明信片回信卡（.reply-card，app.js replyCard()）----
+   ★ 原版口径（assets/main-31595bd3.js 的 MailBoxReplyContent + index-9ba3e01a.css）：
+     .mail-responsive-card { width:auto; min-width:516px; min-height:290px;
+       max-width:100%; aspect-ratio:16/9 }，底图按状态换三张：
+       letter → postcard_letter.webp（正常回信，米色纸纹）
+       retry  → postcard_retry.webp（失败可重试，两侧打孔的活页纸）
+       video  → postcard_video.webp（她还在写，min-height:250px）
+     这套三态是原版**本来就有**的，不是我们加的。所有底图都是 16:9（1600×900），
+     aspect-ratio 跟底图严丝合缝，不会出现图被裁或留黑边。
+   ★ 底图是浅色纸 ⇒ 正文必须用深墨色，不能沿用界面的 --tx（#e8e9eb 在纸上看不见）。
+     用 --p4（#403630，暖墨），和纸色是一个色系。
+   ★ align-items 必须写 safe center：正文行数超出卡高时，普通 center 会把溢出
+     两端对切 —— 顶上几行永远滚不到（flex 居中的经典坑），safe 前缀让溢出时退回
+     start 对齐，配合正文的 overflow-y:auto 才滚得动。
+   ★ 正文 overflow-y:auto 且**禁止** overflow:hidden：实测 224 字在 290px 卡里
+     scrollHeight 348 > clientHeight 290，hidden 会静默吞掉最后两行
+     （2026-10-16《字体适配与排版UI锐评》必修-2 的原始缺陷就是这个）。 */
+.reply-card {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  justify-content: safe center;
+  width: auto;
+  min-width: 516px;
+  min-height: 290px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-top: 10px;
+  border-radius: 6px;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+.reply-card[data-kind="letter"] {
+  background-image: url("mail/postcard_letter.webp");
+}
+.reply-card[data-kind="retry"] {
+  background-image: url("mail/postcard_retry.webp");
+  /* 这张底图两侧有打孔装订边，正文要避开：左右各让出打孔带的宽度 */
+  padding-left: 56px;
+  padding-right: 56px;
+}
+.reply-card[data-kind="video"] {
+  background-image: url("mail/postcard_video.webp");
+  min-height: 250px;   /* 原版口径：video 态的卡矮一截 */
+}
+.reply-card .reply-text {
+  width: 100%;
+  padding: 24px 28px;
+  font-family: var(--letter-font);
+  font-size: 20px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: #403630;               /* 暖墨：底图是米白纸，深色才读得清 */
+  overflow-y: auto;
+  max-height: 100%;
+}
+.reply-card .reply-text.pending { color: #7d746a; }  /* 等待中：淡一档的墨 */
+.reply-card .reply-text.err { color: #9c4a38; }      /* 错误：暗红，仍在纸上可读 */
+
+/* ---- 往来：左列表 / 右读信（原版 .mail-box 的分栏口径） ----
+   ★ 右栏最小宽度必须容得下 .reply-card 的 min-width:516px —— 那张明信片卡
+     是固定 16:9 比例的，右栏比它窄就横向溢出（卡宽不会自己缩）。
+     所以左列表走 minmax(0, 260px)、右栏走 minmax(516px, 1fr)：
+     窄窗口时先压列表，永远不去压卡。
+   ★ 窗口总宽 < 516+260 时（原生窗口最小 900px 宽，够），整体仍可横滚 —— 兜底而已。 */
+.mail-split {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(516px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.mail-reader { min-width: 0; }
+
+/* 列表行：整行可点，头像块 + 两行字（标题 / 时间·状态），未读在右端一个点。 */
+.mrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tx);
+  font: 400 13px/1.35 inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mrow:hover { background: rgba(255, 255, 255, .05); }
+/* ★ 选中态用左侧一道暖色竖线，而不是整行高亮：列表本身是玻璃面，
+   整行提亮会跟背后的视频抢注意力，用户就分不清「选中」和「反光」。 */
+.mrow.on {
+  background: rgba(255, 255, 255, .075);
+  border-color: rgba(255, 255, 255, .10);
+  box-shadow: inset 2px 0 0 var(--p2);
+}
+.mri { flex: none; width: 18px; text-align: center; opacity: .7; }
+.mrt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mrt b,
+.mrt > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mrt b { font-weight: 600; font-size: 13px; }
+.mrt > span { font-size: 11.5px; color: var(--tx4); }
+
+/* 读信空态：还没选中任何一封时右栏留白，别摆一张空卡。 */
+.mail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 290px;
+  color: var(--tx4);
+  font-size: 13px;
+}
+.mail-empty .es { margin: 0; }
 
 .unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--p2); flex: none; }
 

@@ -48,7 +48,19 @@
 
       <div class="card">
         <h3>往来</h3>
-        <div id="letters"></div>
+        <!-- 左列表、右读信 —— 跟原版 .mail-box 一个分栏口径。
+             ★ 这两个 id 是 app.js 的硬依赖（renderReader():142-148 与 showCompose():276-277），
+               少了它们 renderReader 一上来就在 null 上设 .hidden，整段读信逻辑当场抛错：
+               点一封不会显示内容，而且错误会被全局 onerror 塞进 toast 顶掉正常提示。 -->
+        <div class="mail-split">
+          <div id="letters"></div>
+          <div class="mail-reader">
+            <div id="reader" hidden></div>
+            <div id="mailEmpty" class="mail-empty">
+              <p class="es">还没有信。左下角可以写第一封。</p>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
