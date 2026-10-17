@@ -1,11 +1,11 @@
 // 「OliviaSoul-community独立版」外壳。
 //
-// 职责只有三件：自检 → 拉起内置 Node 跑本机服务 → 用 Edge 的应用窗口打开界面 → 退出时把 Node 收干净。
+// 职责只有三件：自检 → 拉起内置 Node 跑本机服务 → 用 WebView2 打开界面 → 退出时把 Node 收干净。
 // 不做业务逻辑，不碰信件内容。
 //
-// 为什么用 Edge 应用窗口（--app=）：界面要靠 backdrop-filter 做玻璃质感，
-// 只有浏览器引擎能渲染；Edge 每台 Windows 都有，不必再打包一个几十 MB 的内核。
-// 没有 Edge 时退回默认浏览器，功能一样，只是没有独立窗口。
+// 为什么用 WebView2 Runtime（不再是 Edge 的 --app=）：界面要靠 backdrop-filter 做玻璃质感，
+// 只有浏览器引擎能渲染；用系统里自带的 WebView2 Runtime，不必再打包一个几十 MB 的内核。
+// 没有 WebView2 Runtime 时退回默认浏览器，功能一样，只是没有独立窗口。
 //
 // ★ 开机自启动（安装程序写的 Run 项带了 --startup）：只进托盘、不弹窗口。
 //   自己双击打开才是"要用它"，开机被拉起来只是"让它待命" —— 不该一开机就糊一个窗口到脸上。
@@ -23,6 +23,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace LinliLetters;
@@ -34,9 +35,16 @@ internal static class Program
 
     private static NotifyIcon _tray;
     private static Process _node;
+    /// <summary>正在主动收摊（正常退出）。为的是把"我叫它退的"和"它自己死了"分开。</summary>
+    private static volatile bool _shuttingDown;
+    /// <summary>装着 node 的作业对象句柄。句柄一关（含外壳被强杀）⇒ 系统替我们杀掉组内进程。</summary>
+    private static IntPtr _nodeJob = IntPtr.Zero;
     private static string _url;
     private static Mutex _single;
     private static MainWindow _window;
+    private static WallpaperHost _wall;
+    private static SplashWindow _splash;
+    private static Stopwatch _splashAge;      // 动画已经放了多久（1.6 秒下限 / 6 秒上限都看它）
 
     [STAThread]
     private static void Main(string[] args)
@@ -66,6 +74,10 @@ internal static class Program
         string nodeExe = Path.Combine(appDir, "runtime", "node", "node.exe");
         string server = Path.Combine(appDir, "app", "server.mjs");
 
+        // ★ 启动动画必须**在自检之前**就出来：起 Node 那一两秒才是它最该盖住的空档，
+        //   等窗口出来再放就等于没有。--startup（开机自启）不放 —— 那条路只进托盘。
+        if (!startup) ShowSplash(appDir);
+
         Check check = Preflight.Run(appDir, nodeExe, server);
         if (!check.Ok)
         {
@@ -73,6 +85,7 @@ internal static class Program
             _single?.ReleaseMutex();
             return;
         }
+        _splash?.SetStage(1, "这台机器可以用。");   // 第 1 拍：预检
 
         if (!StartNode(nodeExe, server, appDir, out int port, out Check nodeErr))
         {
@@ -82,6 +95,7 @@ internal static class Program
         }
 
         _url = $"http://127.0.0.1:{port}/";
+        _splash?.SetStage(2, "运行时起来了。");     // 第 2 拍：起运行时
 
         // ★ 服务起来了 ≠ 能用。再探一次 /health，确认它真的在应答。
         Check health = WaitForHealth(port, TimeSpan.FromSeconds(15));
@@ -92,12 +106,179 @@ internal static class Program
             _single?.ReleaseMutex();
             return;
         }
+        _splash?.SetStage(3, "她应声了。");         // 第 3 拍：探服务
+
+        // ★ 三步都过了 ⇒ 让她放飞。动画有下限（1.6 秒）也有上限（6 秒）。
+        CloseSplash();
 
         BuildTray(appDir);
+        StartWallpaper();                 // 桌面壁纸：开机自启动也要铺，它就是"待命"时的样子
         if (!startup) OpenWindow();       // --startup ⇒ 只进托盘
         Application.Run();
 
         _single?.ReleaseMutex();
+    }
+
+    // ---------------------------------------------------------------- 启动动画
+
+    /// <summary>
+    /// 把启动动画放出来。
+    /// ★ 页面读不到 / WebView2 起不来时，SplashWindow 自己退化成一句「正在打开……」，
+    ///   这里也不许抛 —— 启动画面上蹦一个报错框，比没有动画更让人懵。
+    /// </summary>
+    private static void ShowSplash(string appDir)
+    {
+        try
+        {
+            _splash = new SplashWindow(appDir);
+            _splash.Show();
+            _splashAge = Stopwatch.StartNew();
+            Application.DoEvents();            // 先把窗体真的画出来，再去跑自检
+        }
+        catch
+        {
+            try { _splash?.Dispose(); } catch { /* 已经没了 */ }
+            _splash = null;
+        }
+    }
+
+    /// <summary>
+    /// 收掉启动动画。
+    /// ★ 有下限也有上限：至少放 <b>1.6 秒</b>（再快就等于闪一下，等于没有），
+    ///   最多 <b>6 秒</b>（用户机器的 Node 再慢也不能把人晾在那儿 —— 到点就走）。
+    /// ★ playOut=false 用在失败分支：报错框要立刻出来，不该再等动画放完。
+    /// </summary>
+    private static void CloseSplash(bool playOut = true)
+    {
+        if (_splash == null) return;
+        try
+        {
+            if (playOut)
+            {
+                long age = _splashAge?.ElapsedMilliseconds ?? 0;
+                if (age < 1600) PumpWait((int)(1600 - age));
+                _splash.Finish();               // 折飞机 + 飞走；跑完页面自己报回来
+                while (!_splash.Done && (_splashAge?.ElapsedMilliseconds ?? 0) < 6000)
+                    PumpWait(40);
+            }
+        }
+        catch { /* 收不掉就算了，主窗口照样要出来 */ }
+        try { _splash.Close(); _splash.Dispose(); } catch { /* 退出时不纠缠 */ }
+        _splash = null;
+    }
+
+    /// <summary>
+    /// ★★ 泵着消息等：<c>Application.DoEvents()</c> + 短暂 Sleep。
+    ///   原来这几处都是 <c>ready.Wait(...)</c> / <c>Thread.Sleep(...)</c> —— **阻塞 UI 线程**，
+    ///   splash 于是冻在那儿不动，动画等于没放。
+    ///   改成"边等边泵"是最小改动：等待之外的逻辑一行没动，也不引入新线程。
+    /// </summary>
+    private static void PumpWait(int ms)
+    {
+        if (ms <= 0) return;
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < ms)
+        {
+            Application.DoEvents();
+            int left = (int)(ms - sw.ElapsedMilliseconds);
+            Thread.Sleep(Math.Min(15, Math.Max(1, left)));
+        }
+    }
+
+    /// <summary>等一个信号，等的同时泵消息（同上）。</summary>
+    private static bool WaitPumped(ManualResetEventSlim ev, TimeSpan limit)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < limit)
+        {
+            if (ev.Wait(40)) return true;
+            Application.DoEvents();
+        }
+        return ev.IsSet;
+    }
+
+    // ---------------------------------------------------------------- 桌面壁纸
+
+    /// <summary>桌面壁纸的开关记在数据目录里。没这个文件 = 默认开（这就是这个程序的样子）。</summary>
+    private static string StageFlagPath => Path.Combine(App.DataDir, "desktop-stage.txt");
+
+    private static bool StageEnabled()
+    {
+        try { return File.ReadAllText(StageFlagPath).Trim() != "0"; }
+        catch { return true; }
+    }
+
+    private static void SetStageEnabled(bool on)
+    {
+        try
+        {
+            Directory.CreateDirectory(App.DataDir);
+            File.WriteAllText(StageFlagPath, on ? "1" : "0");
+        }
+        catch { /* 写不进去就算了，这次开着照样生效，下次打开回到默认 */ }
+    }
+
+    /// <summary>
+    /// 有没有曲子可播。
+    /// ★ 没有就**根本不往桌面上铺窗口** —— 铺上去是一个空窗口，用户看到的就是桌面被糊了一块。
+    ///   （页面那边也有 state:off 兜底：铺上去之后才发现没曲子，会自己请外壳关掉。）
+    /// </summary>
+    private static bool HasStageVideo()
+    {
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create(_url + "api/stage/next");
+            req.Timeout = 4000;
+            req.ServicePoint.Expect100Continue = false;
+            using var resp = (HttpWebResponse)req.GetResponse();
+            using var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8);
+            using var doc = System.Text.Json.JsonDocument.Parse(reader.ReadToEnd());
+            return doc.RootElement.TryGetProperty("url", out var u) && u.ValueKind == System.Text.Json.JsonValueKind.String;
+        }
+        catch { return false; }
+    }
+
+    private static void StartWallpaper()
+    {
+        if (_wall != null) return;
+        if (!StageEnabled()) return;
+        if (!HasStageVideo()) return;     // 曲库是空的 ⇒ 一点也不动用户的桌面
+        try
+        {
+            _wall = new WallpaperHost(_url + "wallpaper.html");
+            _wall.OpenPageRequested += (_, page) =>
+            {
+                OpenWindow();             // 主窗口可能还没建：先建，再让它翻到那一页
+                _window?.Go(page);
+            };
+            // ★ Attach() 只是把窗口 SetParent 到桌面（含 SetWindowPos SWP_SHOWWINDOW），
+            //   但 **Win32 的 SWP_SHOWWINDOW 不会触发 WinForms 的 Load 事件** ——
+            //   Load 走的是托管路径 SetVisibleCore → OnLoad，SetParent 进来时窗口已创建，
+            //   不会再走一遍。而 WallpaperHost 的 WebView2 创建与 Navigate 整段挂在 Load 里
+            //   ⇒ 少了这一句 Show()，桌面就被一块「已挂到桌面层、但里面没内容」的纯黑
+            //   矩形盖住，且页面侧的兜底（没曲子请外壳关窗）挂在 WebMessageReceived 上、
+            //   页面根本没加载 ⇒ 不会自愈，直到用户退出。
+            //   （实测：.NET 探针 f.Handle → SetParent → SetWindowPos(SWP_SHOWWINDOW)
+            //    → 20×DoEvents ⇒ loadFired=False；补一次 Show() 后 loadFired=True。）
+            if (!_wall.Attach())          // 挂不上桌面（多半是 Explorer 没在）⇒ 当没这回事
+            {
+                _wall.Dispose();
+                _wall = null;
+            }
+            else _wall.Show();            // ★ 必须在 Attach() 之后：Load 依赖这一次可见化
+        }
+        catch
+        {
+            if (_wall != null) { try { _wall.Dispose(); } catch { /* 已经没了 */ } }
+            _wall = null;
+        }
+    }
+
+    private static void StopWallpaper()
+    {
+        if (_wall == null) return;
+        try { _wall.Dispose(); } catch { /* 退出时不纠缠 */ }
+        _wall = null;
     }
 
     // ---------------------------------------------------------------- 自检
@@ -120,7 +301,7 @@ internal static class Program
             catch (Exception ex)
             {
                 last = ex;
-                Thread.Sleep(400);
+                PumpWait(400);                // ★ 干等会让启动动画冻住，改成边等边泵消息
             }
         }
         return Check.Fail("E-HEALTH-NO-ANSWER",
@@ -132,6 +313,7 @@ internal static class Program
 
     private static void Report(Check c, string url)
     {
+        CloseSplash(false);                   // ★ 先把动画收掉再弹框，否则动画会糊在报错框后面
         var text = new StringBuilder();
         text.AppendLine(c.Title);
         text.AppendLine();
@@ -234,7 +416,32 @@ internal static class Program
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
 
-        if (!ready.Wait(TimeSpan.FromSeconds(20)))
+        // ★ 2026-10-16 修（审核条目 10 之三）：这里原来设了 EnableRaisingEvents，却**从来没订阅 Exited**。
+        //   服务自己退了（2026-10-16 起致命错误会走 process.exit(1)）时，外壳毫无察觉
+        //   ⇒ 窗口还在、界面全废，用户只能靠猜。⇒ 现在听见它退，就如实告诉用户并收摊。
+        proc.Exited += (_, _) =>
+        {
+            if (_shuttingDown) return;
+            int code = -1;
+            try { code = proc.ExitCode; } catch { }
+            try
+            {
+                if (_tray != null)
+                    _tray.ShowBalloonTip(8000, App.Title,
+                        "后台服务已经退出（代码 " + code + "），程序即将关闭。\n再打开一次就好；反复出现请重装。",
+                        ToolTipIcon.Error);
+            }
+            catch { }
+            try { Application.Exit(); } catch { }
+        };
+
+        // ★ 同条：把 node 挂进本进程的作业对象 —— 外壳被强杀时系统替我们收掉它。
+        //   不做这一步，用户"结束任务"一次就留一个野 node，第二次打开撞上端口被占。
+        AssignNodeToJob(proc);
+
+        // ★ 等端口那 20 秒原来是 ready.Wait(...) 干等 ⇒ UI 线程被堵死、动画是冻的。
+        //   换成 WaitPumped：同样的时间上限，等的同时把消息泵出去。
+        if (!WaitPumped(ready, TimeSpan.FromSeconds(20)))
         {
             string why = firstError ?? (stderr.Length > 0 ? stderr.ToString() : "（没有任何输出）");
             error = Check.Fail("E-NODE-NO-PORT",
@@ -256,8 +463,82 @@ internal static class Program
         return true;
     }
 
+    // ---- Job Object：外壳没了，node 也必须没 --------------------------------------
+    // ★ 2026-10-16 修（审核条目 10 之三）：外壳被任务管理器结束时，它拉起来的 node 会活下来，
+    //   占着端口；用户第二次打开只看到"端口被占"，却不知道第一次的进程还活着。
+    //   ⇒ 把 node 放进一个"关闭句柄即杀掉组内所有进程"的作业对象里。这个句柄属于外壳，
+    //     外壳以任何方式消失（含被强杀），Windows 都会把它关掉 ⇒ node 跟着走。
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr hJob, int infoClass,
+        ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint cbInfo);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private static void AssignNodeToJob(Process proc)
+    {
+        try
+        {
+            IntPtr job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero) return;                 // 建不出来就不强求，退化为"不托管"
+            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            uint len = (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref info, len) ||
+                !AssignProcessToJobObject(job, proc.Handle))
+            {
+                CloseHandle(job);                            // 没配成就别留着这个作业
+                return;
+            }
+            _nodeJob = job;
+        }
+        catch { /* 托管不上不影响主流程 */ }
+    }
+
     private static void KillNode()
     {
+        _shuttingDown = true;
         try
         {
             if (_node != null && !_node.HasExited)
@@ -267,6 +548,11 @@ internal static class Program
             }
         }
         catch { /* 退出时不再纠缠 */ }
+        if (_nodeJob != IntPtr.Zero)
+        {
+            try { CloseHandle(_nodeJob); } catch { }
+            _nodeJob = IntPtr.Zero;
+        }
         _node = null;
     }
 
@@ -281,6 +567,15 @@ internal static class Program
             string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinliLetters");
             if (Directory.Exists(dir)) Process.Start("explorer.exe", dir);
         });
+        // ★ 桌面壁纸的开关。默认开 —— 这就是这个程序"在的时候"的样子。
+        //   关掉它不该需要卸载：有人就是不想让别人看见自己的桌面在动。
+        var stageItem = new ToolStripMenuItem("桌面壁纸层") { CheckOnClick = true, Checked = StageEnabled() };
+        stageItem.CheckedChanged += (_, _) =>
+        {
+            SetStageEnabled(stageItem.Checked);
+            if (stageItem.Checked) StartWallpaper(); else StopWallpaper();
+        };
+        menu.Items.Add(stageItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Shutdown());
 
@@ -352,6 +647,7 @@ internal static class Program
     private static void Shutdown()
     {
         KillNode();
+        StopWallpaper();                  // 窗口销毁后桌面自动回到原样，不用"恢复壁纸"这类收尾
         if (_window != null && !_window.IsDisposed) { _window.Dispose(); _window = null; }
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
         Application.Exit();
@@ -434,6 +730,10 @@ internal static class Native
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     private const int SW_RESTORE = 9;
+    private const int SW_SHOW = 5;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
 
     public static void BringExistingToFront()
     {
@@ -441,6 +741,12 @@ internal static class Native
         {
             IntPtr h = FindWindow(null, "OliviaSoul-community独立版");
             if (h == IntPtr.Zero) return;
+            // ★ 2026-10-16 修（审核条目 10 之四）：原来只判 IsIconic（最小化）。
+            //   我们收进托盘走的是 **Hide**（窗口还在、只是不可见），IsIconic 是 false
+            //   ⇒ 那一支什么也不做，直接跳到 SetForegroundWindow，而 Windows 不允许
+            //   把前台给一个隐藏窗口 ⇒ **第二次双击图标没反应**。
+            //   ⇒ 先判"看不见"，看不见就 Show；再判"最小化"，最小化了才 Restore。
+            if (!IsWindowVisible(h)) ShowWindow(h, SW_SHOW);
             if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
             SetForegroundWindow(h);
         }

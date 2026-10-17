@@ -1,3 +1,16 @@
+; ===========================================================================
+; ★ 这个文件**不是**本项目原创。
+;
+;   它是 Inno Setup 的简体中文语言文件，来自 Inno Setup 官方的
+;   「用户贡献翻译」分发页：https://jrsoftware.org/files/istrans/
+;   Inno Setup 官方站点：https://jrsoftware.org/
+;
+;   原作者的署名与原始说明**一字未改地保留在下方**
+;   （即 Maintainer: Zhenghan Yang (Kira) 那一段），
+;   本仓库只在这里补加了这段来源说明，没有改动任何一条翻译。
+;   相应的署名声明同时收录在仓库根目录的 THIRD-PARTY-NOTICES.txt 第 7 条。
+; ===========================================================================
+;
 ; *** Inno Setup version 6.5.0+ Chinese Simplified messages ***
 ;
 ; To download user-contributed translations of this file, go to:

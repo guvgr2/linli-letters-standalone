@@ -1,4 +1,4 @@
-﻿; 「OliviaSoul-community独立版」安装脚本（Inno Setup 6）
+; 「OliviaSoul-community独立版」安装脚本（Inno Setup 6）
 ;
 ; 三条写在前头的坑：
 ;   1. 桌面快捷方式直接指向 exe 本身，不经任何 .bat / .vbs / .ps1 中转。
@@ -45,6 +45,11 @@ LicenseFile=协议.txt
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
+; ★ 欢迎页**必须开**。Inno 6 的 DisableWelcomePage 默认是 yes（欢迎页不显示），
+;   而 WizardImageFile 那块图位只在**欢迎页**和**完成页**左侧出现 ——
+;   不开欢迎页，安装动画就只能在装完之后那页播上几秒，装的过程中什么也看不到。
+;   用户抱怨的就是"安装动画没有" ⇒ 让这一版的纸质动画从头（欢迎页）就开始播。
+DisableWelcomePage=no
 ; 自定义安装路径：这一页默认就是开着的，显式写出来是怕以后有人顺手关掉。
 DisableDirPage=no
 DisableProgramGroupPage=yes
@@ -169,6 +174,23 @@ Source: "dist\package\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\package\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "dist\package\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "协议.txt"; DestDir: "{app}"; Flags: ignoreversion
+; ★ 开源组件声明：随包带了 Node.js 与 .NET 两个运行时，分发二进制就得把许可一并带上。
+Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+; ★ 2026-10-17 补（审核）：项目自身的 LICENSE（MIT）必须随包 —— MIT 要求随附许可文本，
+;   而之前只带了 THIRD-PARTY-NOTICES.txt（那是**第三方**的声明，不是本项目的许可）。
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+
+; ---- 安装动画的 48 帧（tools\make-install-frames.mjs 用无头 Edge 从
+;      design-preview.html 第①节渲出来的，656×1256、共约 2.2MB）----
+; dontcopy = 只随安装包带着、按需解到 {tmp} 供 [Code] 轮流贴到向导图位上，
+;            **不会**装进目标机 —— 用户目录里不该多出 48 张图。
+; 通配符一行就是这 48 个文件（frame-00.png .. frame-47.png），
+; ExtractTemporaryFile 按文件名逐张解，跟一条一条写等价。
+Source: "installer\frames\frame-*.png"; Flags: dontcopy
+; 播完收尾用：把向导图位换回品牌图（最后一帧是"飞机飞走了"的空画面，
+; 完成页不能停在一张空黑图上）。这张 WizardImageFile 本来就带着，这里只是
+; 再挂一份 dontcopy 供运行时读。
+Source: "installer\wizard-panel.png"; Flags: dontcopy
 
 [Registry]
 ; 开机自启动：值直接是 exe 本体，不挂任何脚本（见文件头第 2 条坑）。
@@ -188,6 +210,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 ; 装完问一句要不要立刻打开。postinstall + skipifsilent ⇒ 用户自己决定，静默安装时不自作主张。
 Filename: "{app}\{#MyAppExeName}"; Description: "现在打开 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+; ★ 2026-10-16 加（全面检查 §2）：覆盖安装时旧文件永远留着 —— 实证是
+;   dist\package\app\public\fonts\SentyTEA.ttf（5.4 MB）：源码里早就删了，
+;   装上去的包里还在，因为 Inno 只往里加、不删多余的。
+; ⇒ 装之前先把整个 app\ 清掉。用户数据在 %APPDATA%\LinliLetters，不在这里，一个字节都不碰。
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\runtime"
 
 [UninstallDelete]
 ; ★ 只删运行时。用户数据（%APPDATA%\LinliLetters）一个字节都不碰。
@@ -393,4 +423,127 @@ begin
       Result := False;
     end;
   end;
+end;
+
+{ ======================= 安装动画：纸质信封逐帧播放 =======================
+  用户在意的「安装动画」：design-preview.html 第①节那套
+    牛皮纸信封 → 开盖 → 抽信纸 → 摊开 → 落墨写「—— 林离」→ 盖火漆印「离」
+    → 折成纸飞机 → 飞向远方（半路变成玻璃飞机），共 48 帧、7500ms 一轮。
+
+  为什么走 [Code]：WizardImageFile 不支持逐帧动画 —— 逗号分隔的多张图是
+    **按 DPI 挑尺寸**用的（官方文档："Setup will automatically select the one
+    that best matches the size of the image area"），不是逐帧。
+    所以把 48 帧以 dontcopy 带在包里，用 SetTimer 每 156ms 往向导图位上贴一张。
+  帧间隔：7500ms / 48 ≈ 156ms，跟 design-preview-安装动画.gif 的播放速度一致
+    （tools\make-install-frames.mjs 也是按这条时间轴采样的，两边必须对上）。
+
+  ★ 显示位置（查证过的事实，不是猜的）：
+    WizardImageFile 只出现在「欢迎页」和「完成页」的左侧大图位 ——
+    WizardBitmapImage = 欢迎页那张、WizardBitmapImage2 = 完成页那张，两个都要换。
+    DisableWelcomePage 在 Inno 6 里默认是 yes（欢迎页不显示），本脚本已在 [Setup] 里
+    显式写了 DisableWelcomePage=no ⇒ 欢迎页是显示的，
+    ⇒ 这套动画从向导开头（欢迎页）就开始播，装完的完成页上同样播（两块图位都换了图）。 }
+
+const
+  ANIM_FRAME_COUNT = 48;
+  ANIM_INTERVAL    = 156;   { 7500ms / 48 帧 }
+
+var
+  AnimTimerID: Longword;
+  AnimFrameIdx: Integer;
+  AnimExtracted: Boolean;
+
+function Anim_SetTimer(hWnd, nIDEvent, uElapse, lpTimerFunc: Longword): Longword;
+  external 'SetTimer@user32.dll stdcall';
+
+function Anim_KillTimer(hWnd, nIDEvent: Longword): Longword;
+  external 'KillTimer@user32.dll stdcall';
+
+{ frame-00.png .. frame-47.png。手动补零，不依赖 Format 的宽度语法 }
+function AnimFrameName(Index: Integer): string;
+begin
+  Result := IntToStr(Index);
+  if Length(Result) < 2 then Result := '0' + Result;
+  Result := 'frame-' + Result + '.png';
+end;
+
+procedure AnimStop;
+begin
+  if AnimTimerID <> 0 then
+  begin
+    Anim_KillTimer(0, AnimTimerID);
+    AnimTimerID := 0;
+  end;
+end;
+
+{ SetTimer 的回调，参数个数/类型必须正好是这四个（CreateCallback 的硬要求） }
+procedure AnimTick(Arg1, Arg2, Arg3, Arg4: Longword);
+var
+  F: string;
+begin
+  if WizardForm = nil then Exit;
+  F := ExpandConstant('{tmp}\') + AnimFrameName(AnimFrameIdx);
+  try
+    { ★ PNG 不能走 Bitmap.LoadFromFile：Pascal Script 的 TBitmap 只认 BMP，
+      PNG 要走 TBitmapImage.PngImage（Inno 6.5.2 起新增的支持类，
+      本机 Examples\CodeClasses.iss 第 381 行原话："Use ...PngImage.LoadFromFile
+      to load .png files"）。
+      WizardBitmapImage 是欢迎页那张、WizardBitmapImage2 是完成页那张，
+      两张不同时显示 ⇒ 按当前页挑一张贴，一帧只解码一次，不给安装拖后腿。 }
+    if WizardForm.CurPageID = wpFinished then
+      WizardForm.WizardBitmapImage2.PngImage.LoadFromFile(F)
+    else
+      WizardForm.WizardBitmapImage.PngImage.LoadFromFile(F);
+  except
+    { 万一这份 Inno 的 PngImage 路子不通，退回 Bitmap 再试一次；
+      还不行就把动画停掉 —— 装个程序不能为一张图弹运行时错误框。 }
+    try
+      if WizardForm.CurPageID = wpFinished then
+        WizardForm.WizardBitmapImage2.Bitmap.LoadFromFile(F)
+      else
+        WizardForm.WizardBitmapImage.Bitmap.LoadFromFile(F);
+    except
+      AnimStop;
+    end;
+  end;
+  AnimFrameIdx := (AnimFrameIdx + 1) mod ANIM_FRAME_COUNT;
+end;
+
+procedure AnimStart;
+var
+  I: Integer;
+begin
+  if AnimTimerID <> 0 then Exit;
+  if not AnimExtracted then
+  begin
+    for I := 0 to ANIM_FRAME_COUNT - 1 do
+      ExtractTemporaryFile(AnimFrameName(I));
+    AnimExtracted := True;
+  end;
+  { 帧是 656×1256，向导图位只有 164:314 那么大 ⇒ 必须由控件缩放。
+    WizardImageFile 静态图是 Inno 自己缩的；运行时换图得把这个开关打开。 }
+  WizardForm.WizardBitmapImage.Stretch := True;
+  WizardForm.WizardBitmapImage2.Stretch := True;
+  AnimFrameIdx := 0;
+  AnimTimerID := Anim_SetTimer(0, 0, ANIM_INTERVAL, CreateCallback(@AnimTick));
+end;
+
+procedure InitializeWizard;
+begin
+  AnimStart;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  { ssDone = 用户点了「完成」。定时器到这一步必须收掉，否则向导关了它还在跑。
+    （安装过程中它由消息循环驱动，主线程忙于解包时自然停下，不会抢安装的 CPU。） }
+  if CurStep = ssDone then
+    AnimStop;
+end;
+
+procedure DeinitializeSetup;
+begin
+  { 兜底：取消安装 / 出错退出 / ssDone 没走到，都在这里收干净 ——
+    定时器不收就是内存泄漏 + 向导销毁后还在访问已释放的控件。 }
+  AnimStop;
 end;

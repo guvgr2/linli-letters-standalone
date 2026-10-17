@@ -51,6 +51,21 @@ $nodeExe = Join-Path $runtimeDir 'node\node.exe'
 if (-not (Test-Path -LiteralPath $nodeExe)) { throw "没找到内置运行时：$nodeExe" }
 Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $nodeDir 'node.exe') -Force
 if (-not (Test-Path -LiteralPath (Join-Path $nodeDir 'node.exe'))) { throw 'runtime\node\node.exe 没拷过去' }
+# 随包分发 node.exe 就必须连它的许可证一起带上（MIT 要求保留版权与许可声明）。
+$nodeLic = Join-Path $runtimeDir 'node\LICENSE'
+if (-not (Test-Path -LiteralPath $nodeLic)) { throw "没找到内置运行时的许可证：$nodeLic（缺它不能分发）" }
+Copy-Item -LiteralPath $nodeLic -Destination (Join-Path $nodeDir 'LICENSE') -Force
+
+# ★ 2026-10-16 加（全面检查 §2）：包里不许出现字体文件。
+#   字体是用户自己从官网下、自己导入的，我们不分发（README 也这么写）。
+#   实证：源码里早就删掉了，dist 的包里还留着 5.4 MB 的 SentyTEA.ttf —— 因为
+#   Inno 只往里加、不删多余的（install.iss 已补 [InstallDelete]）。
+#   ⇒ 这一条是"下次再发生就当场拦下"，不是靠人记得。
+$strayFonts = Get-ChildItem -LiteralPath $packageDir -Recurse -File -Include *.ttf,*.otf,*.ttc,*.woff,*.woff2 -ErrorAction SilentlyContinue
+if ($strayFonts) {
+  $list = ($strayFonts | ForEach-Object { $_.FullName.Replace($packageDir, '') }) -join "`n  "
+  throw "包里出现了字体文件（我们不随包分发字体）：`n  $list"
+}
 Write-Host "   组装完成：$( (Get-ChildItem -LiteralPath $packageDir -Recurse -File).Count ) 个文件"
 
 Write-Host '== 3/3 出安装程序 ==' -ForegroundColor Cyan
