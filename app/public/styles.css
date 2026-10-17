@@ -162,6 +162,10 @@ body.native .win { margin-top: 38px; height: calc(100% - 60px); }
 .rb:hover { background: var(--hi); color: var(--tx); }
 .rb.on { background: var(--p2); color: #121214; border-color: var(--p2); }
 
+/* ---- .rb 真折射玻璃覆盖层 ---- */
+.rb-glass { position: fixed; pointer-events: none; z-index: 50; border-radius: 50%; }
+.rail.glass-on .rb { background: transparent !important; border-color: transparent !important; color: transparent !important; box-shadow: none !important; }
+
 /* ---- 内容区 ---- */
 .main { position: relative; overflow: hidden; }
 .page { display: none; height: 100%; overflow-y: auto; padding: 24px 26px 32px; }
