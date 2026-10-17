@@ -616,23 +616,28 @@ $("pbPlay")?.addEventListener("click", () => {
 });
 $("pbPrev")?.addEventListener("click", () => step(-1));
 $("pbNext")?.addEventListener("click", () => step(1));
-$("pbMute")?.addEventListener("click", () => {
+$("pbMute")?.addEventListener("click", (e) => {
   const v = activeVideo();
   if (!v) return;
   v.muted = !v.muted;
-  $("pbMute").textContent = v.muted ? "🔇" : "🔊";
+  // ★ 用 e.currentTarget 而不是再查一次 DOM：按钮在监听器里一定在，
+  //   再查一次就把「元素还在」这个已知事实变成了一次可能为 null 的取值。
+  e.currentTarget.textContent = v.muted ? "🔇" : "🔊";
 });
 
 function paintProgress() {
   const v = activeVideo();
-  if (!v || !$("pbLine")) return;
+  const fill = $("pbFill"), time = $("pbTime"), play = $("pbPlay");
+  // ★ 四个元素一起判：只判 pbLine 挡不住后面的裸用 —— 播放条控件缺一个，
+  //   timeupdate 每 250ms 抛一次 TypeError，控制台刷屏、进度条也不动。
+  if (!v || !$("pbLine") || !fill || !time || !play) return;
   const total = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
   const pct = total ? Math.min(100, (v.currentTime / total) * 100) : 0;
-  $("pbFill").style.width = `${pct}%`;
+  fill.style.width = `${pct}%`;
   const mmss = (sec) => `${
     String(Math.floor(sec / 60)).padStart(2, "0")}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
-  $("pbTime").textContent = `${mmss(v.currentTime || 0)} / ${mmss(total)}`;
-  $("pbPlay").textContent = v.paused ? "▶" : "❚❚";
+  time.textContent = `${mmss(v.currentTime || 0)} / ${mmss(total)}`;
+  play.textContent = v.paused ? "▶" : "❚❚";
 }
 for (const id of ["vA", "vB"]) {
   const v = $(id);
@@ -1122,7 +1127,7 @@ $("fontFile")?.addEventListener("change", async (e) => {
     const st = await importFontBytes(file, cfg.slot);
     await refreshFont();
     toast(st.ok ? `「${cfg.what}」这支已经导入 —— 字迹换过来了。`
-      : codeText("导入成功，但没能从文件里读出字体名", "FONT_NOT_FONT"));
+      : codeText("导入成功，但没能从文件里读出字体名", "FONT_NAME_UNREADABLE"));
   } catch (error) {
     toast(error.message);
   }

@@ -178,22 +178,32 @@ async function writeModel(patch = {}) {
 
 async function callModel(messages, { maxTokens = 1200, temperature = 1.0 } = {}) {
   const { baseUrl, model, apiKey } = await readModel();
-  if (!apiKey) throw new Error("还没有填写模型 API Key");
+  if (!apiKey) throw new Error(codeMessage("还没有填写模型 API Key", ERR.MODEL_KEY_MISSING));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 180000);
   try {
-    const response = await fetch(`${String(baseUrl).replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, stream: false, max_tokens: maxTokens, temperature }),
-      redirect: "error",
-      signal: controller.signal,
-    });
+    let response;
+    try {
+      response = await fetch(`${String(baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages, stream: false, max_tokens: maxTokens, temperature }),
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } catch (e) {
+      // ★ 一个请求都没发出去（DNS、代理没开、证书、被 abort）—— 这不是「对面返回了错」，
+      //   所以不能报 MODEL_HTTP_FAILED：那个号会让人去改 baseUrl 和模型名，而问题在网络。
+      const why = controller.signal.aborted ? "请求超时（180 秒）" : (e?.cause?.code ?? e?.name ?? "连接失败");
+      throw new Error(codeMessage(`连不上模型接口：${why}`, ERR.MODEL_UNREACHABLE));
+    }
     const raw = await response.text();
-    if (!response.ok) throw new Error(`模型接口 HTTP ${response.status}`);
+    if (!response.ok) throw new Error(codeMessage(`模型接口 HTTP ${response.status}`, ERR.MODEL_HTTP_FAILED));
     const parsed = JSON.parse(raw);
     const content = parsed?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) throw new Error("模型返回空内容");
+    if (typeof content !== "string" || !content.trim()) {
+      throw new Error(codeMessage("模型返回空内容", ERR.MODEL_EMPTY_CONTENT));
+    }
     return content.trim();
   } finally {
     clearTimeout(timer);
@@ -1026,15 +1036,30 @@ async function processQueue() {
       db.prepare("UPDATE letters SET status = ?, error = NULL WHERE id = ?").run(STATUS.LLM_PROCESSING, row.id);
       try {
         const { ledger, blocked } = await runPrecheck(row.content);
-        if (blocked) throw new Error("这封信被安全预检拦下了");
+        // ★ 预检返回了结论行、但那一行不是「拦截/通过」那种能读懂的样子 ——
+        //   这不是「被拦下」，是预检本身没跑成。分开两个号：前者的下一步是改信，
+        //   后者是再试一次 / 换模型。以前两者都并成一句「这封信被安全预检拦下了」。
+        if (blocked) throw new Error(codeMessage("这封信被安全预检拦下了", ERR.REPLY_PRECHECK_BLOCKED));
+        if (!Object.keys(ledger).length) {
+          throw new Error(codeMessage("安全预检没有给出可读的结论", ERR.REPLY_PRECHECK_UNREADABLE));
+        }
         saveLedger(Object.entries(ledger).map(([k, v]) => `${k}　${v}`).join("\n"));
         const draft = await generateReply(row.content, ledger);
         const checked = inspectReply(draft);
-        if (!checked.ok) throw new Error(`回信自检未通过：${checked.reason}`);
+        if (!checked.ok) {
+          throw new Error(codeMessage(`回信自检未通过：${checked.reason}`, ERR.REPLY_SELFCHECK_FAILED));
+        }
         db.prepare("UPDATE letters SET status = ?, reply_text = ?, replied_at = ?, error = NULL WHERE id = ?")
           .run(STATUS.REPLIED, checked.body, nowSeconds(), row.id);
       } catch (error) {
-        db.prepare("UPDATE letters SET status = ?, error = ? WHERE id = ?").run(STATUS.FAILED, error.message, row.id);
+        // ★ 这里写进库的 error 会**原样显示在明信片卡上**（前端 renderReader 直接用）。
+        //   以前存的是裸 error.message ⇒ 用户看到「还没有填写模型 API Key」却没有号，
+        //   而号表里 MODEL_KEY_MISSING 早就备好了却一次也没发出去过。
+        //   callModel 抛出来的已经带号，这里只补那些不带号的。
+        const text = /\uFF08[A-Z][A-Z0-9_]*\uFF09\s*$/u.test(error.message)
+          ? error.message
+          : codeMessage(error.message, ERR.COMMON_INTERNAL);
+        db.prepare("UPDATE letters SET status = ?, error = ? WHERE id = ?").run(STATUS.FAILED, text, row.id);
       }
     }
   } finally {

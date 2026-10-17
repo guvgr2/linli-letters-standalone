@@ -51,6 +51,11 @@ export const ERR = {
   // ── 信件字体
   FONT_FILE_TOO_LARGE: "FONT_FILE_TOO_LARGE",
   FONT_NOT_FONT: "FONT_NOT_FONT",
+  // ★ 「文件不是字体」与「是字体、但读不出名字」必须分两个号：
+  //   前者用户要**换一个文件**（这个根本不是字体），后者字体已经装上了、
+  //   只是 @font-face 的族名不敢猜（猜错会盖住系统里真正的那一支），
+  //   用户什么都不用做 —— 两种完全不同的下一步，压成一个号就把人指向错的动作。
+  FONT_NAME_UNREADABLE: "FONT_NAME_UNREADABLE",
   FONT_SAVE_FAILED: "FONT_SAVE_FAILED",
 
   // ── UserData 导入（.soul 归档）
@@ -75,6 +80,10 @@ export const ERR = {
   MODEL_KEY_MISSING: "MODEL_KEY_MISSING",
   MODEL_HTTP_FAILED: "MODEL_HTTP_FAILED",
   MODEL_EMPTY_CONTENT: "MODEL_EMPTY_CONTENT",
+  // ★ 连不上（DNS 错、代理没开、超时中断）与「连上了但对面回 4xx/5xx」是两件事：
+  //   前者查自己的网络与代理，后者查接口地址、模型名与额度。以前都并进
+  //   MODEL_HTTP_FAILED，用户按号查时会被指去改 baseUrl —— 而问题在网络。
+  MODEL_UNREACHABLE: "MODEL_UNREACHABLE",
 
   // ── 生成队列
   REPLY_PRECHECK_BLOCKED: "REPLY_PRECHECK_BLOCKED",

@@ -18,12 +18,35 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = pathJoin(HERE, "dpapi.ps1");
 
+/**
+ * ★ 给子进程一份**干净**的环境：把 `PSModulePath` 整个摘掉。
+ *
+ *   这是 2026-10-18 实测出来的坑，不是防御性编程。我们调的永远是 `powershell.exe`
+ *   （Windows PowerShell 5.1，硬路径在 System32），而启动我们的进程可能是
+ *   PowerShell 7 —— pwsh 7 会把 `PSModulePath` 扩成
+ *   `…\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;
+ *    c:\program files\powershell\7\Modules;C:\Program Files\WindowsPowerShell\Modules;…`
+ *   然后原样传给子进程。5.1 拿到这份清单会去加载 **7 的** `Microsoft.PowerShell.Security`，
+ *   而那套模块的类型数据（System.Security.AccessControl.ObjectSecurity）跟 5.1 自带的重名，
+ *   于是报 `The member AuditToString is already present`，`ConvertTo-SecureString`
+ *   直接找不到 —— 最终表现是「填了 Key 却提示 DPAPI 失败」，错误信息里一个有用的字都没有。
+ *
+ *   摘掉之后 5.1 按自己的默认值重建路径，正常加载。实测：同一份脚本、同一组参数，
+ *   带继承环境 exit 1，摘掉 PSModulePath exit 0。
+ *   （本条只影响这一个子进程，不动用户环境。）
+ */
+function cleanEnv() {
+  const env = { ...process.env };
+  delete env.PSModulePath;
+  return env;
+}
+
 function run(mode, inFile, outFile) {
   return new Promise((resolve, reject) => {
     execFile(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SCRIPT, "-Mode", mode, "-In", inFile, "-Out", outFile],
-      { windowsHide: true, timeout: 30000, maxBuffer: 1 << 20 },
+      { windowsHide: true, timeout: 30000, maxBuffer: 1 << 20, env: cleanEnv() },
       (error, stdout) => {
         if (error) return reject(new Error(`DPAPI ${mode} 失败：${error.message}`));
         resolve(stdout);

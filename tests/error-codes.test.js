@@ -153,3 +153,42 @@ test("⑧ 号与文档双向覆盖：表里每个号文档都要写，文档里�
   assert.deepEqual(missingInTable, [],
     `「错误号一览.md」里出现了表里没有的号（八成是改了名没同步）：${missingInTable.join("、")}`);
 });
+
+test("⑨ 每个号都得真的发得出去：源码里至少要引用它一次", () => {
+  // ★ 这条抓的是「号表备好了、代码却从不发」—— 2026-10-18 实测撞见过：
+  //   MODEL_KEY_MISSING / MODEL_UNREACHABLE / REPLY_* 六个号一直躺在表里，
+  //   而 server.mjs 抛的是裸 new Error("还没有填写模型 API Key")，
+  //   用户看到的错误没号，按号排查的人根本查不到这条。号表里有、代码里没有，
+  //   测试还是全绿的 —— 因为没人问"这个号到底发不发得出去"。
+  //
+  // ★ 前端也算引用：LETTER_EMPTY / LIBRARY_SONG_NOT_FOUND / FONT_NAME_UNREADABLE
+  //   是前端自己就能判的错，后端永远不抛，只在前端 codeText() 里出现。
+  //
+  // ★ 「暂时还没有出口」的号要显式登记在这里，并写清在等什么 ——
+  //   不登记就是死号，登记了就是一条有主的欠账。
+  const PENDING = new Map([
+    ["IDLE_AMBIENCE_NOT_BOOL", "等 /api/idle/settings 的 POST 移植进来"],
+    ["FONT_FILE_TOO_LARGE", "等 /api/font/import 移植进来"],
+    ["FONT_NOT_FONT", "等 /api/font/import 移植进来"],
+    ["FONT_SAVE_FAILED", "等 /api/font/import 移植进来"],
+  ]);
+
+  const FRONT = read("app/public/app.js");
+  const dead = codes.filter((c) => {
+    if (PENDING.has(c)) return false;
+    return !new RegExp(`ERR\\.${c}\\b`).test(SERVER) && !FRONT.includes(`"${c}"`);
+  });
+  assert.deepEqual(dead, [],
+    `这些号定义了却从来发不出去（用户永远见不到它）：${dead.join("、")}。`
+    + "要么把它接到真正的抛错处，要么删掉；若是「暂时还没有出口」，"
+    + "加进本测试的 PENDING 并写清在等什么。");
+
+  // 反向：PENDING 里的号一旦接上了出口，就该从名单里删掉，别让它变成永久豁免。
+  const stillPending = [...PENDING.keys()].filter((c) => {
+    if (!codes.includes(c)) return true;                                  // 号被删了
+    return new RegExp(`ERR\\.${c}\\b`).test(SERVER) || FRONT.includes(`"${c}"`); // 已经接上了
+  });
+  assert.deepEqual(stillPending, [],
+    `这些号已经不算"暂未接线"了，请从 PENDING 里删掉：${stillPending.join("、")}`);
+});
+
