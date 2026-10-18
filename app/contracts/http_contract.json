@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "contract_version": "1.0.0",
+  "base": {
+    "bind": "127.0.0.1",
+    "auth": {
+      "header": "X-Linli-Token",
+      "scheme": "value",
+      "exempt": [
+        "/",
+        "/favicon.ico",
+        "/api/session",
+        "/api/media",
+        "/api/idle/video",
+        "/api/idle/ambience",
+        "/api/font/file"
+      ]
+    },
+    "content_type": "application/json; charset=utf-8"
+  },
+  "routes": {
+    "/api/session": {
+      "methods": ["GET"],
+      "capability": "core.session",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/letters": {
+      "methods": ["GET", "POST"],
+      "capability": "letters.write",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LETTER_EMPTY", "LETTER_TOO_LONG"]
+    },
+    "/api/letters/:id/read": {
+      "methods": ["POST"],
+      "capability": "letters.read",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LETTER_NOT_FOUND"]
+    },
+    "/api/memory": {
+      "methods": ["GET"],
+      "capability": "memory.ledger",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/library": {
+      "methods": ["GET"],
+      "capability": "library.scan",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/library/dir": {
+      "methods": ["POST"],
+      "capability": "library.dir",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_DIR_NOT_FOUND"]
+    },
+    "/api/library/play": {
+      "methods": ["GET"],
+      "capability": "library.play",
+      "state": "available",
+      "read_only": true,
+      "error_codes": ["LIBRARY_SONG_REQUIRED"]
+    },
+    "/api/library/songs": {
+      "methods": ["GET"],
+      "capability": "library.imported",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/library/import": {
+      "methods": ["POST"],
+      "capability": "library.import",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_SONG_REQUIRED", "LIBRARY_SONG_NOT_FOUND"]
+    },
+    "/api/library/played": {
+      "methods": ["POST"],
+      "capability": "library.played",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_TITLE_REQUIRED"]
+    },
+    "/api/media": {
+      "methods": ["GET"],
+      "capability": "library.media",
+      "state": "binary",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/stage/next": {
+      "methods": ["GET"],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/idle/next": {
+      "methods": ["GET"],
+      "capability": "idle.pick",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/idle/video": {
+      "methods": ["GET"],
+      "capability": "idle.video",
+      "state": "binary",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/idle/ambience": {
+      "methods": ["GET"],
+      "capability": "idle.ambience",
+      "state": "binary",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/idle/transition": {
+      "methods": ["GET"],
+      "capability": "idle.transition",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/idle/settings": {
+      "methods": ["GET", "POST"],
+      "capability": "idle.settings",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["IDLE_AMBIENCE_NOT_BOOL"]
+    },
+    "/api/about": {
+      "methods": ["GET"],
+      "capability": "core.about",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/font/status": {
+      "methods": ["GET"],
+      "capability": "font.status",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/font/file": {
+      "methods": ["GET"],
+      "capability": "font.file",
+      "state": "binary",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/font/import": {
+      "methods": ["POST"],
+      "capability": "font.import",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["FONT_FILE_TOO_LARGE", "FONT_NOT_FONT", "FONT_SAVE_FAILED"]
+    },
+    "/api/model": {
+      "methods": ["GET", "POST"],
+      "capability": "model.settings",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/model/test": {
+      "methods": ["POST"],
+      "capability": "model.test",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/proactive": {
+      "methods": ["GET", "POST"],
+      "capability": "proactive.settings",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["PROACTIVE_SETTINGS_INVALID"]
+    },
+    "/api/proactive/check": {
+      "methods": ["POST"],
+      "capability": "proactive.check",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/import/preview": {
+      "methods": ["POST"],
+      "capability": "import.preview",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["IMPORT_FILE_REQUIRED", "IMPORT_SOUL_TOO_LARGE", "IMPORT_SOUL_UNREADABLE"]
+    },
+    "/api/import/confirm": {
+      "methods": ["POST"],
+      "capability": "import.confirm",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["IMPORT_PREVIEW_REQUIRED", "IMPORT_PREVIEW_STALE", "IMPORT_BACKUP_FAILED"]
+    }
+  },
+  "privacy": {
+    "leaves_machine": ["/api/model", "/api/model/test", "/api/proactive/check"],
+    "note": "只有这三个会离开本机：/api/model 把密钥写进本机 DPAPI（不代表发包），/api/model/test 发一次测试请求，/api/proactive/check 会请模型判断要不要主动来信。其余接口 —— 信、曲库、壁纸、字体、导入 —— 全部只读写这台机器的磁盘，不上传任何内容。"
+  }
+}

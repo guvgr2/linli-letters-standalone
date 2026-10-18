@@ -1,0 +1,85 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "http_contract.schema.json",
+  "title": "linli-letters 本地 HTTP 契约",
+  "description": "本文件的唯一作用是**把接口事实固定下来**：server.mjs 里每一条 /api 路由都必须在这里有一条记录，反之亦然（由 tests/http-contract.test.js 强制）。结构照姊妹端 bside-olivia-community 的 client/contracts/http_contract.schema.json —— 那边用契约层先把跨界交互说清楚再写码，我们吃过反过来的亏：/api/library 长期不回 genre，前端 2584 首全落到 undefined 档，静态读代码看不出来，跑起来才发现。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "base", "routes", "privacy"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "contract_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bind", "auth", "content_type"],
+      "properties": {
+        "bind": {
+          "const": "127.0.0.1",
+          "description": "只绑本机回环。端口由外壳给（LINLI_PORT，0 = 系统挑一个）。"
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["header", "scheme", "exempt"],
+          "properties": {
+            "header": { "const": "X-Linli-Token" },
+            "scheme": { "const": "value" },
+            "exempt": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "不校验令牌的路径。只有二进制流与静态资源 —— 它们被 <video>/<img>/<link> 直接引用，带不了自定义头。"
+            }
+          }
+        },
+        "content_type": { "const": "application/json; charset=utf-8" }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/route" }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leaves_machine", "note"],
+      "properties": {
+        "leaves_machine": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "会离开这台机器的接口。除此之外，一封信、一次播放、一张壁纸都只在本机。"
+        },
+        "note": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods", "capability", "state", "read_only", "error_codes"],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["GET", "POST"] }
+        },
+        "capability": {
+          "type": "string",
+          "pattern": "^[a-z_]+\\.[a-z_]+$",
+          "description": "这条路由属于哪个能力面（letters / library / idle / font / model / proactive / import / settings / core）。"
+        },
+        "state": {
+          "enum": ["available", "binary", "fs_route"],
+          "description": "available = 正常 JSON 接口；binary = 回字节流（视频/音频/字体），走 Range；fs_route = 回磁盘上的静态文件。"
+        },
+        "read_only": { "type": "boolean" },
+        "error_codes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "这条路由可能回的号，必须全部登记在 app/error-codes.mjs 里。二进制的两条（video/ambience）不回 JSON 错，留空数组。"
+        }
+      }
+    }
+  }
+}
