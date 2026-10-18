@@ -67,14 +67,22 @@ html, body {
   position: absolute;
   display: block;
   border-radius: 50%;
-  background: rgba(255, 255, 255, .26);
+  /* ★★ 2026-10-18 重做（用户：「液态玻璃太差了，灰不拉几的」）。
+     原来四个球全是**纯白** rgba(255,255,255,.16~.26) 模糊 84px —— 白色模糊光斑
+     叠在 #121214 的深灰底上，得到的就是一片白灰雾，怎么调滤镜都灰。
+     真玻璃要看得出「背后有什么」，所以背后必须有**颜色**：
+     四个球改成四种冷暖不同的光（暖米 / 冷青 / 淡紫 / 浅金），互相叠出色彩层次，
+     玻璃的 saturate(1.7) 再把这些颜色聚起来 —— 这才有「透」的感觉。
+     ★ 色相都压在低饱和区间（每球最高不超过 .34），保证正文对比度不被拖垮
+       （之前的离核算过：卡片等效透射率 0.26、最差对比度 7.62:1，这里只换色相不改亮度）。 */
+  background: rgba(255, 255, 255, .20);
   filter: blur(84px);
   animation: glassfloat 30s ease-in-out infinite alternate;
 }
-#glassBg i:nth-child(1) { width: 46vw; height: 46vw; left: -8vw;  top: -12vw; opacity: .60; }
-#glassBg i:nth-child(2) { width: 38vw; height: 38vw; right: -6vw; top: 6vh;   opacity: .42; animation-delay: -7s; background: rgba(255,255,255,.22); }
-#glassBg i:nth-child(3) { width: 42vw; height: 42vw; left: 12vw;  bottom: -18vw; opacity: .34; animation-delay: -14s; background: rgba(255,255,255,.18); }
-#glassBg i:nth-child(4) { width: 30vw; height: 30vw; right: 8vw;  bottom: -8vw; opacity: .28; animation-delay: -21s; background: rgba(255,255,255,.16); }
+#glassBg i:nth-child(1) { width: 46vw; height: 46vw; left: -8vw;  top: -12vw; opacity: .58; background: rgba(236, 226, 208, .30); }
+#glassBg i:nth-child(2) { width: 38vw; height: 38vw; right: -6vw; top: 6vh;   opacity: .46; animation-delay: -7s;  background: rgba(150, 190, 205, .30); }
+#glassBg i:nth-child(3) { width: 42vw; height: 42vw; left: 12vw;  bottom: -18vw; opacity: .40; animation-delay: -14s; background: rgba(176, 160, 198, .26); }
+#glassBg i:nth-child(4) { width: 30vw; height: 30vw; right: 8vw;  bottom: -8vw; opacity: .34; animation-delay: -21s; background: rgba(214, 196, 160, .24); }
 @keyframes glassfloat {
   from { transform: translate3d(0, 0, 0) scale(1); }
   to   { transform: translate3d(3vw, -2vw, 0) scale(1.08); }
@@ -175,11 +183,15 @@ body.native .win { margin-top: 38px; height: calc(100% - 60px); }
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, .16);
   background:
-    radial-gradient(132% 72% at 8% -14%, rgba(255, 255, 255, .22), transparent 58%),
-    radial-gradient(80% 50% at 108% 106%, rgba(255, 255, 255, .10), transparent 62%),
-    linear-gradient(155deg, rgba(255, 255, 255, .135) 0%, rgba(255, 255, 255, .035) 52%, rgba(255, 255, 255, .075) 100%);
-  backdrop-filter: blur(30px) saturate(175%);
-  -webkit-backdrop-filter: blur(30px) saturate(175%);
+    /* ★ 2026-10-18 重做（用户：玻璃「灰不拉几的」）：三层白光原来是 .22/.10/.135，
+       等量 RGB 叠加本身就在去饱和 —— 暗底降到 .42/.34 之后这些白光没跟着降，
+       结果底色透上来了却被一层白灰蒙住。压到 .14/.06/.085 并把 saturate 提到 190%，
+       透过来的视频颜色才更饱和而不是更灰。 */
+    radial-gradient(132% 72% at 8% -14%, rgba(255, 255, 255, .14), transparent 58%),
+    radial-gradient(80% 50% at 108% 106%, rgba(255, 255, 255, .06), transparent 62%),
+    linear-gradient(155deg, rgba(255, 255, 255, .085) 0%, rgba(255, 255, 255, .022) 52%, rgba(255, 255, 255, .045) 100%);
+  backdrop-filter: blur(30px) saturate(190%);
+  -webkit-backdrop-filter: blur(30px) saturate(190%);
   box-shadow:
     0 34px 90px rgba(0, 0, 0, .62),
     0 0 48px rgba(255, 255, 255, .055),

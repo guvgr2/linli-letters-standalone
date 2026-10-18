@@ -14,6 +14,15 @@
 <link rel="stylesheet" href="styles-original.css">
 </head>
 <body>
+  <!-- ★ 齿轮图标的唯一定义（各页右上角都用 <use href="#gearIcon"/> 引用）。
+       以前这段 path 只在信箱页写了一份，其余页想加齿轮就得复制那 600 字节。 -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="gearIcon" viewBox="0 0 24 24">
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.49.97Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </symbol>
+  </svg>
+
 <div id="glassBg"><i></i><i></i><i></i><i></i></div>
 
 <!-- ★★ 舞台层（2026-10-18 补）：一支视频都不在时，这里是一片透明，底下的
@@ -49,7 +58,6 @@
       <button class="rb on" data-page="mail">✉</button>
       <button class="rb" data-page="library">♪</button>
       <button class="rb" data-page="memory">记</button>
-      <button class="rb" data-page="settings">⚙</button>
     </div>
   </div>
 
@@ -62,7 +70,7 @@
            右边的卡面由 renderReader() / showCompose() 画。 -->
     <section class="page on is-mail" id="page-mail">
       <!-- ★ 页顶栏（2026-10-18 用户要求）：左边大字「信箱」，右边齿轮。
-           ★ 原版没有「测试版」徽标那东西的等价物是页标题 + 右侧图标按钮，这里只照结构。
+           ★ 原版这里是「页标题 + 右侧图标按钮」的结构，照它来做。
            ★ 齿轮就是去设置页 —— 而不是再做一个独立的设置入口，
              那个入口本来就在左栏第 4 个圆钮上，两者指向同一处（app.js 的 gear 处理器）。
            ★ 内边距跟 .page 原来的 24/26 对齐（量过：#page-mail 的实际内边距是
@@ -70,7 +78,7 @@
              否则内容会被缩进两遍 —— 见 styles-original.css 的 .page-head）。 -->
       <div class="page-head">
         <h1 class="page-head-title">信箱</h1>
-        <button class="page-head-gear" id="mailGear" type="button" title="设置" aria-label="设置">
+        <button class="page-head-gear" id="mailGear" data-gear type="button" title="设置" aria-label="设置">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none"
                   stroke="currentColor" stroke-width="1.6"/>
@@ -123,6 +131,15 @@
          ★ 原版游戏没有「曲库」页（曲子从游戏里来、按当前时段自动播），所以这里只有
            骨架照搬、内容按我们自己的功能来。左上角的目录输入沿用 .mail-header 的内边距。 -->
     <section class="page is-library" id="page-library">
+      <!-- ★ 页顶栏照原版曲库页：左边大字「曲库」，右上齿轮。
+           ★ 用户口径（2026-10-18）：「设置键移到原版游戏的位置，不要单开一个左侧圆按钮」——
+             所以设置入口就是每页右上这枚齿轮，左栏那个 ⚙ 圆钮已去掉。 -->
+      <div class="page-head">
+        <h1 class="page-head-title">曲库</h1>
+        <button class="page-head-gear" data-gear type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><use href="#gearIcon"/></svg>
+        </button>
+      </div>
       <div class="library">
         <div class="library-sidebar">
           <div class="mail-header">
@@ -170,19 +187,31 @@
           </div>
         </div>
 
+        <!-- ★ 右栏照原版「音乐桌面」那张卡片：标题 + 首数 + 右上「歌单」按钮 +
+             居中唱机插画 + 「暂无曲目」。原版语言包 `Y="音乐桌面"`、`Z="暂无曲目"`。
+             ★ 之前这里写的是「演奏 / 全屏看演奏 / 纯黑舞台」—— 那是把播放页塞进了曲库页，
+               跟原版不是一回事（原版曲库里没有这块，演奏是桌面壁纸层在放）。 -->
         <div class="library-content">
-          <div class="mail-content-header" id="libraryHeader">
-            <div class="mail-content-header-text">
-              <div class="mail-content-title">演奏</div>
-              <div class="mail-content-sub" id="libraryState">还没有播放</div>
+          <div class="desk">
+            <div class="desk-head">
+              <span class="desk-title">音乐桌面</span>
+              <span class="desk-count" id="deskCount">0</span>
+              <button class="desk-btn" id="deskListBtn" type="button">歌单</button>
             </div>
-            <div class="mail-content-actions">
-              <button class="library-field button" id="playFullscreen" type="button">全屏看演奏</button>
+            <!-- 唱机插画：纯 CSS 画（黑胶圆盘 + 标签 + 唱臂），不引图片。
+                 空态时它是这块唯一有视觉重量的东西，所以居中。 -->
+            <div class="desk-art" aria-hidden="true">
+              <div class="desk-turntable">
+                <div class="desk-platter"><div class="desk-label"></div></div>
+                <div class="desk-arm"></div>
+              </div>
             </div>
+            <div class="desk-empty" id="deskEmpty">暂无曲目</div>
+            <div class="desk-list" id="deskList"></div>
           </div>
-          <!-- 右侧这块就是原版 .player-container 的同款：纯黑底 + video contain。
-                ★ 之前这里是一排 h3 卡片（曲库里的曲目 / 已导入 / 播放），跟原版完全是两种东西。 -->
-          <div class="library-stage">
+          <!-- 播放器宿主：视频**不在这里播**（用户口径：视频是桌面壁纸，只在那层放）。
+               这块留给「全屏看演奏」按钮那条旧路径，默认收起。 -->
+          <div class="library-stage" hidden>
             <div id="player"><p class="player-hint">还没有播放。左栏点一首的「播放」。</p></div>
           </div>
         </div>
@@ -191,7 +220,12 @@
 
     <!-- 记忆 -->
     <section class="page" id="page-memory">
-      <h2>记忆</h2>
+      <div class="page-head">
+        <h1 class="page-head-title">记忆</h1>
+        <button class="page-head-gear" data-gear type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><use href="#gearIcon"/></svg>
+        </button>
+      </div>
       <p class="sub">跨封账本只认林离已经发出的回信。来信人的设想、疑问和否定单独放在「未决」，不会当成已发生的事。</p>
       <div class="card">
         <h3>跨封账本</h3>
@@ -206,7 +240,10 @@
 
     <!-- 设置 -->
     <section class="page" id="page-settings">
-      <h2>设置</h2>
+      <div class="page-head">
+        <h1 class="page-head-title">设置</h1>
+        <button class="page-head-back" data-page="mail" type="button">返回信箱</button>
+      </div>
       <p class="sub">全部数据在本机。API Key 用 Windows DPAPI 按当前用户加密，不写日志、不进任何导出包。</p>
 
       <div class="card">

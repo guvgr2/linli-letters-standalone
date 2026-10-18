@@ -58,14 +58,33 @@
   --tp-radius-5: 28px;
 
   /* ---- 液态玻璃：原版暗底换成半透明，靠 #stage 那层视频做背衬 ---- */
+  /* ★★ 2026-10-18 重做（用户原话「这个液态玻璃的效果太差了，灰不拉几的」）。
+     原来只有 `saturate(1.25) blur(22px)` + 一层白漆，出来的是**灰雾**不是玻璃：
+     灰的成因是等量 RGB 的白叠加会把底色往灰里推（等于去饱和），而 blur 只糊不亮 ——
+     玻璃在现实里是「透 + 提饱和 + 有厚边 + 有反光」四件事，原来只做了前一件的一半。
+     现在四件各自补齐：
+       ① 透：白漆压到 0.05 / 0.02（几乎不掺灰）；
+       ② 提饱和：saturate 1.25 → 1.7，玻璃会把背后的光聚起来，颜色更艳而不是更灰；
+       ③ 厚边：--glass-edge（上沿冷白 1px、下沿暗影 1px）做出「一块有厚度的板」；
+       ④ 反光：--glass-sheen（左上一道 157° 斜白，约 42% 高度后淡出）。 */
   /* glass-a 是侧栏/阅读区的底，比窗口再浅一档，让两栏能分出层次 */
-  --glass-a: rgba(255, 255, 255, 0.055);
-  --glass-a-border: rgba(255, 255, 255, 0.10);
-  --glass-b: rgba(255, 255, 255, 0.022);
-  --glass-b-border: rgba(255, 255, 255, 0.07);
-  --glass-blur: saturate(1.25) blur(22px);
+  --glass-a: rgba(255, 255, 255, 0.05);
+  --glass-a-border: rgba(255, 255, 255, 0.13);
+  --glass-b: rgba(255, 255, 255, 0.02);
+  --glass-b-border: rgba(255, 255, 255, 0.085);
+  --glass-blur: saturate(1.7) contrast(1.06) brightness(1.04) blur(22px);
   --glass-hi: rgba(255, 255, 255, 0.10);
   --glass-selected: rgba(255, 255, 255, 0.11);
+  /* 玻璃厚度感：只靠描边是没有厚度的（描边是 2D 的），必须上亮下暗 */
+  --glass-edge:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+    inset 1px 0 0 rgba(255, 255, 255, 0.06);
+  /* 镜面反光：环境光从左上落下来，一道斜白，别拉满整块 */
+  --glass-sheen: linear-gradient(157deg,
+    rgba(255, 255, 255, 0.075) 0%,
+    rgba(255, 255, 255, 0.03) 18%,
+    rgba(255, 255, 255, 0) 42%);
 }
 
 /* 原版 .faux-bold：SentyTEA / HanyiSentyGarden 没有粗体字重，原版用描边假装加粗 */
@@ -92,8 +111,9 @@
   height: 100%;
   padding: 12px;
   border-radius: var(--tp-radius-2);
-  background: var(--glass-a);
+  background: var(--glass-sheen), var(--glass-a);
   border: 1px solid var(--glass-a-border);
+  box-shadow: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   position: relative;
@@ -267,8 +287,9 @@
   min-width: 548px;
   height: 100%;
   border-radius: var(--tp-radius-2);
-  background: var(--glass-b);
+  background: var(--glass-sheen), var(--glass-b);
   border: 1px solid var(--glass-b-border);
+  box-shadow: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   overflow: hidden;
@@ -1156,12 +1177,17 @@
   color: var(--tp-text-tertiary);
 }
 .song-list-head-index {
+  /* ★ 必须跟 .song-item-num 逐像素一致（宽 20 + 左边距 18），否则 `#` 和行里的
+     `1 / 2 / 3` 会错开一截，一眼就看出来不是同一张表。 */
   flex: none;
-  width: 18px;
+  width: 20px;
+  margin-left: 18px;
   text-align: right;
 }
-.song-list-head-title { flex: 1 1 auto; min-width: 0; }
-.song-list-head-mode { flex: none; width: 44px; text-align: right; }
+/* ★ 「曲目」这一格要留出封面那 48px：表头没有封面，但列宽得算上它，
+   否则「曲目」两个字会落在封面上方、而不是曲名上方。 */
+.song-list-head-title { flex: 1 1 auto; min-width: 0; padding-left: 60px; }
+.song-list-head-mode { flex: none; width: 60px; text-align: right; }
 
 
 .library {
@@ -1172,15 +1198,22 @@
 }
 .library-sidebar {
   display: flex;
-  flex: 1 1 0;
+  /* ★ 原版两栏是 1:2，但原版的行内动作区在 1152 宽界面里放得下；我方窗口 1502 宽
+     且曲名列必须先拿到宽度，所以左栏比例给到 1.15（实测曲名从 17px 涨到 76px）。 */
+  flex: 1.15 1 0;
   flex-direction: column;
   min-width: 200px;
-  max-width: 360px;
+  /* ★ 原版是 max-w-[360px]，但那是给 1152 宽的老界面的。我方窗口 1502 宽时左栏 360
+     装不下「序号 38 + 封面 60 + 曲名 + 模式 60 + 动作区 170 + 间距 48」= 376 > 360，
+     实测曲名的 flex 宽度**被挤成 0**、整行溢出侧栏（6 行全部越界）。
+     这里放宽到 460：曲名至少能拿到 84px（放得下 4~5 个汉字），右侧舞台那 732px 不受影响。 */
+  max-width: 520px;
   height: 100%;
   padding: 12px;
   border-radius: var(--tp-radius-2);
-  background: var(--glass-a);
+  background: var(--glass-sheen), var(--glass-a);
   border: 1px solid var(--glass-a-border);
+  box-shadow: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
@@ -1191,19 +1224,24 @@
   min-width: 548px;
   height: 100%;
   border-radius: var(--tp-radius-2);
-  background: var(--glass-b);
+  background: var(--glass-sheen), var(--glass-b);
   border: 1px solid var(--glass-b-border);
+  box-shadow: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   overflow: hidden;
 }
 
 /* 曲目列表行沿用 .mail-item 的骨架，只换图标底色 */
-/* ★ 2026-10-18 修：`.song-item-index`（行首序号）从行里去掉。用户的原版截图里
-   `#` 只是表头那一列，行本身是「封面 + 曲名 + 副标题」三件套 ——
-   行首再来一排 1/2/3… 是列表自带的序号，不是行内容。 */
+/* ★ 2026-10-18 重排（第二次）：照原版 SongCard 的列宽 ——
+   序号 `w-[20px] px-[18px]` + 封面 `w-[48px] h-[48px] rounded-2`
+   + 曲名/副标题 `flex-1` + 模式 `w-[60px]` + 动作区 `w-[170px]`。
+   ★ 上一次把序号整个去掉了，那是错的：原版**表头有 `#`，行里也有序号**，
+     只是序号很暗、不抢曲名；用户看的原版截图里 1..22 就是对下来的。
+   ★ 播放三角压在最左侧、选中才出现（原版点中那一行左侧浮出 ▶ + 「播放」）。 */
 .song-item {
-  padding: 8px 12px;
+  position: relative;
+  padding: 6px 12px 6px 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1212,8 +1250,41 @@
   transition: background 0.16s ease;
 }
 .song-item:hover,
+.song-item-on,
 .song-item-selected { background: var(--glass-selected); }
-.song-item-icon {
+/* 序号列：20px 宽 + 左右各 18px 的留白（原版 px-[18px]），右对齐成竖排数字 */
+.song-item-num {
+  flex: none;
+  width: 20px;
+  margin-left: 18px;
+  text-align: right;
+  font-size: 13px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+/* 正在播那一行的播放三角：绝对定位到序号左边那一格，不占布局宽度
+   （占了会让所有行的封面都往右挪 18px，一选中就整列抖一下）。 */
+.song-item-play {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-left: 8px solid var(--tp-primary-1);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  transform: translateY(-50%);
+  /* ★ 绝对定位的元素默认仍在 flex 布局里「占位」的判断之外，但浏览器实测它拿到了
+     flex:0 1 auto + 8px 宽 —— 显式 flex:none 把它彻底摘出流，否则每行白占 20px
+     （8px 本体 + 2 份 gap），把本来就不够用的宽度再挤掉一截。 */
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.song-item-on .song-item-play { opacity: 1; }
+.song-item:hover .song-item-play { opacity: 0.45; }
+.song-item-on:hover .song-item-play { opacity: 1; }
+.song-item-cover {
   display: flex;
   /* ★ 48px 是原版 w-12，不是 --tp-spacing-10（那个变量在本文件 :53 是 **40px**，
      照着写缩略图会小一圈、跟曲名 18px 不成比例）。 */
@@ -1222,10 +1293,12 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: var(--tp-radius-1);
-  background: var(--tp-grey-2);
+  /* ★ 原版封面是 rounded-2（12px 圆角），不是 rounded-1（6px）—— 骨架屏写的
+     `w-[48px] h-[48px] rounded-2`。 */
+  border-radius: var(--tp-radius-2);
+  background: linear-gradient(160deg, var(--tp-grey-2), var(--tp-grey-1));
   color: var(--tp-text-secondary);
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 500;
   overflow: hidden;
 }
@@ -1250,14 +1323,33 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 序号（或正在播时那个 ▶）：左栏最暗的一档，不该抢曲名 */
-.song-item-index {
+/* 模式列：原版 w-[60px] 右对齐（「独奏 / 弹唱」两个字）
+   ★ 不能省成 .song-item-sub 的一部分 —— 原版它是**独立一列**，跟表头 `模式` 对齐。 */
+.song-item-mode {
   flex: none;
-  width: 18px;
+  width: 60px;
   text-align: right;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--tp-text-tertiary);
-  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 动作区：原版 w-[170px]，悬停才显形（试听 / 加播单 / 入库） */
+.song-item-actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  /* ★ 126px 里塞三个按钮会挤到只剩 34px 一个；用 overflow 兜住（宁可裁掉边缘
+     也不要撑破列宽），并把 gap 收到 4px。 */
+  overflow: hidden;
+  gap: 4px;
+  /* ★ 原版 w-[170px]，但那是给 1152 宽界面 + 360 侧栏的。我方侧栏可用宽 349，
+     「序号 38 + 封面 60 + 曲名 + 模式 60 + 动作区 170 + 间距 48」= 376 装不下，
+     实测曲名被压成 **0 宽**。收到 126 之后曲名能拿到 44px 起步（够两个汉字），
+     且三个按钮仍是同一排。 */
+  width: 108px;
 }
 .song-item-content {
   display: flex;
@@ -1281,7 +1373,7 @@
 .song-item-import {
   flex: none;
   height: 26px;
-  padding: 0 12px;
+  padding: 0 8px;
   border-radius: var(--tp-radius-5);
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.06);
@@ -1293,6 +1385,30 @@
 }
 .song-item:hover .song-item-import { opacity: 1; }
 .song-item-import:hover { background: rgba(255, 255, 255, 0.16); }
+
+/* 「试听」：原版 `Ke="试听"`，跟「入库」同一档小圆角按钮，悬停才显形；
+   正在试听时保持显形并换成米色底（否则用户不知道还在放）。 */
+.song-item-audition {
+  flex: none;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+.song-item:hover .song-item-audition,
+.song-item-audition.is-on { opacity: 1; }
+.song-item-audition:hover { background: rgba(255, 255, 255, 0.16); }
+.song-item-audition.is-on {
+  background: var(--tp-primary-1);
+  color: #1b1a18;
+  border-color: transparent;
+}
 
 /* ---- 歌单（照姊妹项目的「加播单 / 歌单管理」）-----------------------------
    页签：用户起的名字可能很长，限制宽度、超出打省略号 —— 否则一个长名字
@@ -1459,4 +1575,254 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* ---- 曲库右栏「音乐桌面」（原版 `Y="音乐桌面"` 那张卡片）--------------------
+   ★ 这里以前是「演奏 / 全屏看演奏 / 纯黑舞台」—— 那是把播放页塞进曲库页。
+     原版曲库右栏是「音乐桌面」：标题 + 首数 + 「歌单」按钮 + 唱机插画 + 暂无曲目。
+   ★ 唱机是纯 CSS 画的（黑胶圆盘 + 米色标签 + 唱臂），不引图片：
+     素材目录里没有唱机图，原版那张是矢量画的。 */
+.desk {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 18px;
+  gap: 10px;
+}
+.desk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.desk-title {
+  font-size: 18px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--tp-text-title);
+}
+.desk-count {
+  font-size: 13px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.desk-btn {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.desk-btn:hover { background: rgba(255, 255, 255, 0.16); }
+/* 插画区：空态时占满剩余空间并居中；有曲目时缩成一条（.is-small） */
+.desk-art {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  transition: flex-basis 0.2s ease;
+}
+.desk-art.is-small { flex: none; height: 96px; }
+.desk-turntable {
+  position: relative;
+  width: 190px;
+  height: 190px;
+  transition: transform 0.2s ease;
+}
+.desk-art.is-small .desk-turntable { transform: scale(0.48); }
+/* 盘面：深色圆 + 两圈同心细纹（黑胶的沟槽） */
+.desk-platter {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.06) 0 42%, transparent 42.5%),
+    repeating-radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 5px),
+    linear-gradient(165deg, #24242a, #16151a);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+/* 中心标签：米色圆 + 中间一个轴孔 */
+.desk-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  background: var(--tp-primary-1);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.desk-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: #16151a;
+}
+/* 唱臂：右上角一根斜杆 + 末端唱头 */
+.desk-arm {
+  position: absolute;
+  right: -8px;
+  top: 6px;
+  width: 4px;
+  height: 96px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.14));
+  transform-origin: top center;
+  transform: rotate(-18deg);
+}
+.desk-arm::after {
+  content: "";
+  position: absolute;
+  left: -5px;
+  bottom: -12px;
+  width: 14px;
+  height: 18px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.35);
+}
+/* 空态文案：原版 `Z="暂无曲目"`，字距拉开一点，跟插画一起居中 */
+.desk-empty {
+  flex: none;
+  text-align: center;
+  font-size: 15px;
+  letter-spacing: 2px;
+  color: var(--tp-text-tertiary);
+  padding: 6px 0 18px;
+}
+/* 有曲目：下面列出清单，点一首就在桌面壁纸层放 */
+.desk-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.desk-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tp-text-body);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.desk-row:hover { background: var(--glass-selected); }
+.desk-row.on { background: var(--glass-selected); color: var(--tp-text-title); }
+.desk-row-num {
+  flex: none;
+  width: 18px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.desk-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ======================== 页顶栏（各页统一）========================
+   ★ 2026-10-18：`#page-mail` 里早就写了 .page-head（大字「信箱」+ 齿轮），
+     但**这个类一条 CSS 规则都没有** —— 结构在、样式不在，渲染出来就是
+     「h1 默认字号 + 按钮默认样式」的一堆堆叠。这里补齐，四页共用。
+   ★ 用户口径：「设置键移到原版游戏的位置，不要单开一个左侧圆按钮」⇒
+     齿轮固定在每页右上角，尺寸/描边/悬停跟原版图标按钮一致。 */
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  /* 底边一道极淡的分隔线：原版页标题下面没有线，但它上面有 80px 的留白；
+     我方窗口高度紧张，用一道线换掉那段留白。 */
+  padding: 0 0 14px;
+  margin: 0 0 14px;
+}
+.page-head-title {
+  margin: 0;
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--tp-text-title);
+}
+/* 齿轮：贴右；28px 方钮，圆角 8，悬停才亮 */
+.page-head-gear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tp-text-secondary);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+.page-head-gear:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: var(--tp-text-title);
+}
+.page-head-gear:focus-visible {
+  outline: 2px solid var(--tp-primary-1);
+  outline-offset: 2px;
+}
+/* 设置页的「返回信箱」：左侧文字按钮，跟齿轮同一档观感 */
+.page-head-back {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.page-head-back:hover { background: rgba(255, 255, 255, 0.16); }
+/* 带页顶栏的页面要自己接管上下留白，否则内容和标题会被缩进两遍 */
+.page:has(> .page-head) { padding-top: 18px; }
+/* ★ 曲库页是「页顶栏 + 撑满剩余高度的两栏」，必须整列 flex，
+     否则 .library 的 height:100% 参照不到东西，右栏会塌成 0 高。 */
+.page.is-library {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+}
+.page.is-library.on { display: flex; }
+.page.is-library > .library { flex: 1 1 auto; min-height: 0; }
+
+/* ★ 动作区只有 126px（原版 170 我方放不下）：「入库」常驻，「试听」悬停显形，
+   「加播单」只在**已入库**的曲目且悬停时才出来 —— 三个同时常驻一定挤爆。 */
+.song-item-actions .song-item-add {
+  display: none;
+}
+.song-item:hover .song-item-actions .song-item-add {
+  display: inline-flex;
+  align-items: center;
 }

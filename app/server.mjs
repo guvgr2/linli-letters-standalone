@@ -61,6 +61,9 @@ import {
   LIBRARY_DIR_PATTERN,
   TIME_SLOT_LABELS,
   TIME_SLOTS,
+  officialSong,
+  songDisplayName,
+  songMode,
 } from "./core.mjs";
 import * as safety from "./data-safety.mjs";
 
@@ -297,10 +300,42 @@ async function scanLibrary() {
   const dir = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
   if (!existsSync(dir)) return { dir, songs: [], error: "目录不存在或还没有挂上" };
   const entries = await readdir(dir, { withFileTypes: true });
-  const songs = entries
-    .filter((entry) => entry.isDirectory() && LIBRARY_DIR_PATTERN.test(entry.name))
-    .map((entry) => ({ name: prettySongName(entry.name), dir: entry.name }))
-    .sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  // ★ 2026-10-18：原来这里只吐 `{name, dir}`，官方曲名/作曲家、时段可用性一个都不给前端。
+  //   而 `officialSong()` / `songDisplayName()` / `songMode()` 早在 core.mjs:1092 就写好了，
+  //   129 条官方曲目逐字钉死在 `OFFICIAL_SONGS` 里 —— 函数摆着没人调，界面就只显示裸目录名
+  //   （`PlaySing The Road Not Taken`），这正是用户截图里"不像原版"的一部分。
+  //   现在把官方曲名、作曲家、可用时段一次算出来带上（都是纯计算，读目录不读视频）。
+  //
+  // ★ 时段（slots）：只认文件名里的 `_TOD1200/1730/2000_`。实测 `E:\linlimusic` 里
+  //   Solo_ 98 + PlaySing_ 31 这 129 首里 **127 首都有三段**，另 2 首没有 ⇒ 这里必须
+  //   如实返回空数组，让界面能标出"这一首没有分时段视频"，而不是假装有。
+  const songs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !LIBRARY_DIR_PATTERN.test(entry.name)) continue;
+    let slots = [];
+    try {
+      const files = await readdir(join(dir, entry.name), { withFileTypes: true });
+      const set = new Set();
+      for (const f of files) {
+        if (!f.isFile() || !/\.mp4$/iu.test(f.name)) continue;
+        const v = parseVariant(f.name);
+        if (v?.tod) set.add(v.tod);
+      }
+      // 按原版时段顺序排（白天 → 傍晚 → 夜晚）—— 时段表定义在 core.mjs，这里只排序。
+      slots = TIME_SLOTS.filter((t) => set.has(t));
+    } catch { slots = []; }   // 单个目录读不了不该让整次扫描失败
+    const official = officialSong(entry.name);
+    songs.push({
+      dir: entry.name,
+      // 官方曲目用原版曲名；表外走裸名清洗（两条分支都在 core.mjs 里，可单测）。
+      name: songDisplayName(entry.name),
+      composer: official?.composer ?? null,
+      mode: songMode(entry.name),
+      genre: classifyGenre(entry.name, songDisplayName(entry.name)),
+      slots,
+    });
+  }
+  songs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
   return { dir, songs, count: songs.length };
 }
 

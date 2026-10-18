@@ -86,10 +86,18 @@ function show(page) {
 for (const btn of document.querySelectorAll(".rb")) {
   btn.addEventListener("click", () => show(btn.dataset.page));
 }
-// 信箱页顶栏那枚齿轮就是「设置」的另一个入口（原版信箱页右上角也有一个齿轮）。
+// ★ 各页右上角那枚齿轮（用户口径 2026-10-18：「设置键移到原版游戏的位置，
+//   不要单开一个左侧圆按钮」）。左栏的设置圆钮已经去掉，所以这里是**唯一**的
+//   设置入口 —— 用 querySelectorAll 兜住全部页，别再写死某一个 id。
 // ★ 走 show("settings") 而不是自己切 class：切页要带的副作用（停播放、加载数据）
 //   都挂在 show() 里，绕过它就只换了个画面。
-$("mailGear")?.addEventListener("click", () => show("settings"));
+for (const gear of document.querySelectorAll("[data-gear]")) {
+  gear.addEventListener("click", () => show("settings"));
+}
+// 「返回信箱」这类回退按钮：同样走 show()。
+for (const back of document.querySelectorAll(".page-head-back[data-page]")) {
+  back.addEventListener("click", () => show(back.dataset.page));
+}
 
 // ---------------------------------------------------------------- 信箱
 
@@ -453,7 +461,12 @@ async function loadLibrary() {
     $("libraryDir").value = data.dir ?? "";
     const total = data.count ?? 0;
     const note = data.error ? data.error : `${total} 首`;
-    $("libraryState").textContent = note;
+    // ★ 这个宿主在曲库页重做时删掉了（右栏换成了「音乐桌面」）。这里必须带 `?.`：
+    //   裸写 `$("libraryState").textContent` 会在解构 null 时抛异常，被外层 catch
+    //   吞成一句 toast，而**后面的 renderSongs() 就永远不执行** —— 表现是
+    //   「曲库目录填了、接口也返回 2584 首，列表却一首都不显示」。
+    const state = $("libraryState");
+    if (state) state.textContent = note;
     allSongs = data.songs ?? [];
     // 设置页那一行要把**分档结果**摊开写出来 —— 这是"导入时自动分类"这件事的凭据：
     // 用户扫一眼就知道分完了，分成了几档，不用自己去点页签数。
@@ -480,11 +493,15 @@ function genreTally() {
 }
 
 /** 曲库列表里的一行。★ 2026-10-18 照原版 SongCard 重排：
- *  48×48 圆角封面（没有封面就用曲名首字）+ 曲名(18px) + 副标题演奏方式(12px)
- *  + 行末 hover 才出现的「入库」。
- *  ★ 原版口径：行 = 「封面 + 曲名 + 副标题」三件套，`#` 序号属于表头那一列，
- *    不在行里重复画（用户 m11700 原话「这个曲库做的太不像了」）。
+ *  `#` 序号 + 48×48 圆角封面 + 曲名(18px) + 副标题 `作曲家 · 时长`(12px)
+ *  + 模式列 + 行末 hover 才出现的「试听 / 加播单」。
+ *  ★ 原版口径（`analysis\_original-ui\feapp\assets\main-31595bd3.js` @368356 的
+ *    SongCard 调用点 + 骨架屏尺寸）：序号 `w-[20px] px-[18px]`、封面 `w-[48px] h-[48px]
+ *    rounded-2`、标题 `flex-1 h-[36px]`、模式 `w-[60px]`、动作区 `w-[170px]`；
+ *    副标题就是 `作曲家 · 时长`，语言包 `Ke="试听"`、`Rs="加播单"`、`de="播放"`。
  *  ★ 原版没有 emoji，缩略图一律用文字/色块。
+ *  ★ 时长还没读（ffprobe 属于第 2 步「曲名与时段」的活），这里先只出作曲家；
+ *    没作曲家就退回落款 `mode`，绝不编一个数字上去。
  */
 function songRow(song, index) {
   const inDesk = deskSongs.some((s) => s.dir === song.dir);
@@ -493,6 +510,7 @@ function songRow(song, index) {
   // 能按当前时段出片；其余是用户自己放进来的。标记用来解释"为什么这首点开是黑的"。
   const official = song.todVariants > 0;
   const initial = (song.name ?? "?").trim().charAt(0) || "?";
+  const sub = [song.composer, song.duration].filter((x) => x).join(" · ") || (song.mode ?? "");
   // 「加播单」只在已入库的曲目上出现：歌单条目要求曲目在 songs 表里
   // （服务端 POST /api/folders/:id/items 会回 LIBRARY_SONG_NOT_FOUND），
   // 界面上就别给一个点了必然失败的按钮。
@@ -500,13 +518,19 @@ function songRow(song, index) {
     ? `<button class="song-item-add" data-add-folder="${escapeHtml(song.dir)}" type="button" title="加进歌单">加播单</button>`
     : "";
   return `<div class="song-item${on ? " song-item-on" : ""}" data-dir="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" title="${escapeHtml(song.dir)}">
-    <span class="song-item-icon">${escapeHtml(initial)}</span>
+    <span class="song-item-num">${index + 1}</span>
+    <span class="song-item-play" aria-hidden="true"></span>
+    <span class="song-item-cover">${escapeHtml(initial)}</span>
     <span class="song-item-content">
       <span class="song-item-title">${escapeHtml(song.name)}${official ? `<span class="song-item-official" title="有原版分时段的演奏视频">官方</span>` : ""}</span>
-      <span class="song-item-sub">${escapeHtml(song.mode ?? "")}</span>
+      <span class="song-item-sub">${escapeHtml(sub)}</span>
     </span>
-    ${addBtn}
-    <button class="song-item-import" data-import="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" type="button">${inDesk ? "已在桌面" : "入库"}</button>
+    <span class="song-item-mode">${escapeHtml(song.mode ?? "")}</span>
+    <span class="song-item-actions">
+      <button class="song-item-audition" data-audition="${escapeHtml(song.dir)}" type="button" title="淡入听一下这首">试听</button>
+      ${addBtn}
+      <button class="song-item-import" data-import="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" type="button">${inDesk ? "已在桌面" : "入库"}</button>
+    </span>
   </div>`;
 }
 
@@ -804,6 +828,36 @@ async function askFolderName(current) {
   return name || null;
 }
 
+/** 曲库页右栏「音乐桌面」：原版那张卡片的同款。
+ *  标题 + 首数 + 右上「歌单」按钮 + 居中唱机插画 + 「暂无曲目」，
+ *  有曲目时插画收小、下面列出曲目（点一首就在桌面壁纸层放）。
+ *  ★ 原版空态文案 `Z="暂无曲目"`，标题 `Y="音乐桌面"`。 */
+function renderDesk() {
+  const count = $("deskCount");
+  if (count) count.textContent = String(deskSongs.length);
+  const art = document.querySelector(".desk-art");
+  const empty = $("deskEmpty");
+  const list = $("deskList");
+  if (!list) return;
+  const has = deskSongs.length > 0;
+  art?.classList.toggle("is-small", has);
+  if (empty) empty.hidden = has;
+  list.hidden = !has;
+  if (!has) { list.innerHTML = ""; return; }
+  list.innerHTML = deskSongs.map((s, i) => `
+    <button class="desk-row${s.dir === player.dir ? " on" : ""}" data-dir="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" type="button" title="${escapeHtml(s.dir)}">
+      <span class="desk-row-num">${i + 1}</span>
+      <span class="desk-row-name">${escapeHtml(s.name)}</span>
+    </button>`).join("");
+  for (const row of list.querySelectorAll(".desk-row")) {
+    row.addEventListener("click", () => void play(row.dataset.dir, row.dataset.name));
+  }
+}
+
+$("deskListBtn")?.addEventListener("click", () => {
+  toast(deskSongs.length ? `音乐桌面上一共 ${deskSongs.length} 首。点任意一首，视频会在桌面壁纸那层放。` : "音乐桌面还是空的。从左栏点一首的「入库」摆上来。");
+});
+
 /** 曲库页底部那条「已入库」：原版是 .mail-footer 那块渐变底，我们照抄。
  *  只列最近 4 首，点一下就在右栏放大播放（列表太长会把左栏顶没了）。 */
 async function loadImported() {
@@ -817,6 +871,7 @@ async function loadImported() {
     //   「N 首在桌面」恒显示"桌面还是空的"，曲库行上的「加播单」按钮也一个都不出现。
     deskSongs = songs ?? [];
     if (label) label.textContent = deskSongs.length ? `${deskSongs.length} 首在桌面` : "桌面还是空的";
+    renderDesk();
     if (!host) return;
     if (!deskSongs.length) {
       host.innerHTML = `<span class="imported-empty">入库后按当前时段播放</span>`;
@@ -852,6 +907,64 @@ async function importSong(dir, name) {
   }
 }
 
+/** 「试听」：淡入放 15 秒就停，不写库、不动队列、不碰桌面壁纸。
+ *  ★ 照姊妹项目「试听起名」的听感约定（听 15 秒）：15 秒够听出旋律，又不会让用户
+ *    以为自己在正式播放。音量从 0 淡入 0.35 秒，避免突兀地响一下。
+ *  ★ 用的是独立的 Audio 对象，不复用底部播放条 —— 试听不该改变「现在在放哪首」。
+ */
+let auditionAudio = null;
+let auditionTimer = null;
+const AUDITION_MS = 15000;
+
+function stopAudition() {
+  if (auditionTimer) { clearTimeout(auditionTimer); auditionTimer = null; }
+  if (auditionAudio) {
+    auditionAudio.pause();
+    auditionAudio.src = "";
+    auditionAudio = null;
+  }
+  for (const el of document.querySelectorAll(".song-item-audition.is-on")) el.classList.remove("is-on");
+}
+
+async function auditionSong(dir) {
+  // 再点同一个按钮就停（原版试听是开关行为）。
+  const wasOn = auditionAudio?.dataset?.dir === dir;
+  stopAudition();
+  if (wasOn) return;
+  const song = allSongs.find((s) => s.dir === dir);
+  if (!song) return;
+  // 曲线：问后端要这首在当前时段的那段片子里的音轨地址。没有片子就没法试听
+  // —— 明说原因，别让用户以为按钮坏了。
+  const data = await api(`/api/stage/next?dir=${encodeURIComponent(dir)}`);
+  if (!data?.url) {
+    toast(codeText("这首在当前时段没有演奏视频，试听不了", "LIBRARY_NO_VIDEO"));
+    return;
+  }
+  const audio = new Audio(data.url);
+  audio.dataset.dir = dir;
+  audio.volume = 0;
+  auditionAudio = audio;
+  const btn = document.querySelector(`[data-audition="${CSS.escape(dir)}"]`);
+  btn?.classList.add("is-on");
+  try {
+    await audio.play();
+  } catch {
+    stopAudition();
+    toast(codeText("试听没能开始播放", "LIBRARY_AUDITION_FAILED"));
+    return;
+  }
+  // 淡入到 0.35：15 秒的短听不需要满音量，也免得盖住用户正在听的别的东西。
+  const t0 = performance.now();
+  const fadeIn = () => {
+    if (auditionAudio !== audio) return;
+    const k = Math.min(1, (performance.now() - t0) / 350);
+    audio.volume = 0.35 * k;
+    if (k < 1) requestAnimationFrame(fadeIn);
+  };
+  requestAnimationFrame(fadeIn);
+  auditionTimer = setTimeout(stopAudition, AUDITION_MS);
+}
+
 // 列表里的点击：点整行＝播放（原版点曲目就直接进演奏页），末尾那个按钮＝入库
 $("songs")?.addEventListener("click", (event) => {
   const imp = event.target.closest("[data-import]");
@@ -863,6 +976,13 @@ $("songs")?.addEventListener("click", (event) => {
   if (add) {
     event.stopPropagation();
     return void openAddToFolderMenu(add, add.dataset.addFolder);
+  }
+  // 「试听」：淡入放一小段就停，不入库、不动队列 —— 原版 `Ke="试听"`。
+  // 它必须拦在「点整行＝播放」前面，否则试听会变成正式播放并顶掉当前曲。
+  const audition = event.target.closest("[data-audition]");
+  if (audition) {
+    event.stopPropagation();
+    return void auditionSong(audition.dataset.audition);
   }
   const row = event.target.closest(".song-item");
   // 曲子已经被删掉（最近演出里的灰行）就不发播放请求 —— 否则后端只会回一首 404。
