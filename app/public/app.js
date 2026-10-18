@@ -1384,7 +1384,7 @@ async function loadSettings() {
     }
     maybeAskProactive(data.shouldAsk);
     fillAbout();
-    void refreshFont();     // 顺带把「信件字体」那张卡片刷新（首次会触发一次引导弹窗）
+    void refreshFont();     // 顺带把「信件字体」那张卡片刷新（不再弹引导窗）
     void refreshIdle();     // 顺带把「待机」那张卡片刷新（场景/状态、素材在不在）
     // ★ 数据备份那张卡必须在这里刷：不刷的话，首屏停在 HTML 里写死的
     //   「正在读取备份列表……」—— 用户看到的是一条永远不动的占位文字，
@@ -1537,13 +1537,12 @@ function renderFontCard(all = fontStatusCache) {
 }
 
 /** 问一次服务端、按结果注入或撤回字体，再把卡片刷新一遍。
- *  ★ 引导弹窗只在**本次会话第一次**刷新时问（ask 默认就走这个"只问一次"），
- *    之后不管是"重新检查"还是重进设置页，都只刷状态、不再弹。
+ *  ★ 原来这里还负责"本次会话第一次刷新时自动弹引导窗"，2026-10-18 取消了
+ *    （理由见下面 renderFontCard 之后那段注释）。ask 参数保留着，
+ *    现在没有调用方传它 —— 留着是为了以后做「点这里补上字体」的显式入口，
+ *    而不是让启动流程再去拦人。
  */
-let fontBooted = false;
-async function refreshFont({ ask = true } = {}) {
-  const shouldAsk = ask && !fontBooted;
-  fontBooted = true;
+async function refreshFont() {
   let all = { letter: { ok: false }, compose: { ok: false } };
   try { all = await api("/api/font/status"); } catch { /* 拿不到就按"两支都不在"渲染 */ }
   fontStatusCache = all;
@@ -1552,8 +1551,12 @@ async function refreshFont({ ask = true } = {}) {
     if (st && st.ok) applyFont(cfg); else clearFont(cfg);
   }
   renderFontCard(all);
-  // ★ 引导弹窗只在两支**都没导入**时才问 —— 只差一支的话，设置页那两行已经写清楚了。
-  if (shouldAsk) window.__maybeAskFont?.(Boolean(all.letter?.ok) && Boolean(all.compose?.ok));
+  // ★ 不再自动弹引导窗（2026-10-18 改）。
+  //   原来两支都没导入时会在启动后弹一个居中的模态框 —— 实测它正好盖住信箱页，
+  //   用户一打开程序看到的就是「字体缺失」而不是信。字体缺失是**可选优化**，
+  //   不是使用前提（缺了退回系统楷体，程序照常能用），所以不该用模态框拦人。
+  //   现在只在设置页那张字体卡里写清楚缺什么、去哪儿下 —— 用户想装自然会去看。
+  //   __maybeAskFont 仍然保留，改成只能被显式调用（比如以后做「点这里补上字体」的入口）。
   return all;
 }
 
