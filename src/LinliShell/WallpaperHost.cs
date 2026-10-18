@@ -109,11 +109,12 @@ internal sealed class WallpaperHost : Form
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter,
                                               string lpszClass, string lpszWindow);
+
+    /// <summary>取窗口类名。找 Progman 用（FindWindow 在这台机器上返回 0，见 AttachToDesktop）。</summary>
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -142,7 +143,20 @@ internal sealed class WallpaperHost : Form
     {
         try
         {
-            IntPtr progman = FindWindow("Progman", null);
+            // ★ 必须用 EnumWindows 自己找 Progman，**不能用 FindWindow("Progman", null)**。
+            //   2026-10-18 真机实测：这台机器上 FindWindow("Progman", null)、
+            //   FindWindow("Progman", "")、以及 CharSet=Unicode/Ansi 两种编组**全部返回 0**，
+            //   而同一时刻 EnumWindows 能扫到 `Progman h=66014 pid=15004`（孩子里有 DefView）。
+            //   后果不是"找不到就算了"——AttachToDesktop 第一行就 return false ⇒ StartWallpaper
+            //   把窗口 Dispose 掉 ⇒ 桌面壁纸从来没铺上过，而日志里一点错都没有。
+            IntPtr progman = IntPtr.Zero;
+            EnumWindows((hwnd, _) =>
+            {
+                var cls = new System.Text.StringBuilder(64);
+                GetClassName(hwnd, cls, cls.Capacity);
+                if (cls.ToString() == "Progman") { progman = hwnd; return false; }
+                return true;
+            }, IntPtr.Zero);
             if (progman == IntPtr.Zero) return false;
 
             // 让 Progman 把 WorkerW 拆出来（0x052C 是未公开消息，动态壁纸的通行做法）

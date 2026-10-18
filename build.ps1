@@ -63,6 +63,18 @@ Copy-Item -LiteralPath $nodeLic -Destination (Join-Path $nodeDir 'LICENSE') -For
 #   ⇒ 这一条是"下次再发生就当场拦下"，不是靠人记得。
 $strayFonts = Get-ChildItem -LiteralPath $packageDir -Recurse -File -Include *.ttf,*.otf,*.ttc,*.woff,*.woff2 -ErrorAction SilentlyContinue
 if ($strayFonts) {
+  # ★ 每个过滤器必须单独 -Include（2026-10-18 实证）：写成 -Include *.ttf,*.otf,... 时，
+  #   PowerShell 把逗号后面那几个当成**位置参数**（这里正是 -LiteralPath 的值），
+  #   于是 -Include 只剩 *.ttf、其余几个变成了不存在的路径，且 -Recurse 被后面的
+  #   位置参数顶掉 ⇒ Get-ChildItem 退化成"列 {packageDir}\*.otf" ⇒ 报错/结果错乱，
+  #   这道护栏就从来没真正生效过。真用回老写法的话，第一次发布就会误报一行
+  #   「包里出现了字体文件」+ 整个目录清单。
+  $strayFonts = @()
+  foreach ($pattern in '*.ttf', '*.otf', '*.ttc', '*.woff', '*.woff2') {
+    $strayFonts += @(Get-ChildItem -LiteralPath $packageDir -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue)
+  }
+}
+if ($strayFonts) {
   $list = ($strayFonts | ForEach-Object { $_.FullName.Replace($packageDir, '') }) -join "`n  "
   throw "包里出现了字体文件（我们不随包分发字体）：`n  $list"
 }

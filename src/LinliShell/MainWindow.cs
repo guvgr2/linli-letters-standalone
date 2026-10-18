@@ -33,6 +33,8 @@ internal sealed class MainWindow : Form
     public event EventHandler RequestClose;
     /// <summary>用户明确要退出（托盘菜单或页面里的「退出」）。</summary>
     public event EventHandler RequestQuit;
+    /// <summary>设置页的「桌面壁纸」开关：true = 铺到桌面，false = 撤掉。</summary>
+    public event EventHandler<bool> WallpaperRequested;
 
     public MainWindow(string url, Icon icon)
     {
@@ -45,16 +47,58 @@ internal sealed class MainWindow : Form
         BackColor = Color.FromArgb(14, 13, 17);   // 跟页面底色一致，免得加载时闪一块白
 
         // 按屏幕大小收敛：别在小屏上开出一个放不下的窗口。
-        Rectangle area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
-        int w = Math.Min(1180, Math.Max(880, area.Width - 120));
-        int h = Math.Min(820, Math.Max(620, area.Height - 90));
-        Size = new Size(w, h);
+        // ★ 2026-10-18 改到第 4 轮，前三轮全错，错因各不相同，全记在这里：
+        //   ① 原始代码写死 `Math.Min(1180,…)`/`Math.Min(820,…)` ⇒ 屏幕再大也只有 1180×820。
+        //   ② 改按 `WorkingArea - 120` ⇒ 实测 1138×679。
+        //   ③ 改按 `WorkingArea × 0.88` 并乘 DPI 系数 ⇒ 实测 1001×584。
+        //   ★★ 三轮都基于一个**错误前提**：以为坐标是逻辑像素。实测（2026-10-18）：
+        //      本进程没声明 per-monitor DPI 感知，但 `Screen.PrimaryScreen.Bounds`
+        //      和 `WorkingArea` 报的**都是物理像素** 2560×1528（GetSystemMetrics 同为 2560×1600）。
+        //      也就是说 WinForms 在这儿不做逻辑/物理换算 —— 我前两轮乘/除 k 纯属自找。
+        //   ④ 现在：直接拿物理像素算，**不乘任何系数**。
+        //      比例 0.88×0.86 ⇒ 2560×0.88=2253、1528×0.86=1314，四周留一圈看得到桌面。
+        //      上下限夹在 900×640 到 2300×1400：小屏不挤，大屏也不至于和最大化没区别。
+        Rectangle area = Screen.FromPoint(Cursor.Position)?.WorkingArea
+                        ?? Screen.PrimaryScreen?.WorkingArea
+                        ?? new Rectangle(0, 0, 1280, 800);
+        int w = Math.Clamp((int)Math.Round(area.Width * 0.88), 900, 2300);
+        int h = Math.Clamp((int)Math.Round(area.Height * 0.86), 640, 1400);
+        int left = area.Left + (area.Width - w) / 2;
+        int top = area.Top + (area.Height - h) / 2;
+        Bounds = new Rectangle(left, top, w, h);
 
         _web = new WebView2 { Dock = DockStyle.Fill };
         Controls.Add(_web);
 
         _web.CoreWebView2InitializationCompleted += (_, _) => { /* 拿到了内核再导航 */ };
         _web.WebMessageReceived += OnWebMessage;
+        // ★ 2026-10-18：页面右上角「放大」按钮点了没反应，查下来两边代码都对，
+        //   只能靠日志定位断在哪一环。这一行只在设了 LINLI_DEBUG_MSG 时才写，
+        //   平常不产生任何文件（用户机器上不留日志垃圾）。
+        //   用法：set LINLI_DEBUG_MSG=1 再启动，然后点一次按钮，
+        //   看 %TEMP%\linli-msg.log 里有没有 "recv: max"。有 ⇒ 外壳收到了；
+        //   没有 ⇒ 断在 WebView2 通道（页面那边 postMessage 没发出去）。
+        if (Environment.GetEnvironmentVariable("LINLI_DEBUG_MSG") == "1")
+        {
+            _web.WebMessageReceived += (_, e) =>
+            {
+                try
+                {
+                    string raw = e?.TryGetWebMessageAsString() ?? "(null)";
+                    File.AppendAllText(Path.Combine(Path.GetTempPath(), "linli-msg.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " recv: " + raw + Environment.NewLine);
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        File.AppendAllText(Path.Combine(Path.GetTempPath(), "linli-msg.log"),
+                            DateTime.Now.ToString("HH:mm:ss.fff") + " recv-ERR: " + ex.GetType().Name + ": " + ex.Message + Environment.NewLine);
+                    }
+                    catch { /* 连日志都写不了就算了 */ }
+                }
+            };
+        }
 
         Load += async (_, _) =>
         {
@@ -130,8 +174,12 @@ internal sealed class MainWindow : Form
         {
             case "drag":    StartDrag(); break;
             case "min":     RequestHide?.Invoke(this, EventArgs.Empty); break;
+            case "max":     ToggleMaximize(); break;
             case "close":   RequestClose?.Invoke(this, EventArgs.Empty); break;
             case "quit":    RequestQuit?.Invoke(this, EventArgs.Empty); break;
+            // 设置页那个「桌面壁纸」开关：页里不播视频了，开关交给外壳去铺/撤桌面那一层。
+            case "wallpaper:on":  WallpaperRequested?.Invoke(this, true); break;
+            case "wallpaper:off": WallpaperRequested?.Invoke(this, false); break;
             default:
                 // "open:<url>" —— 设置页「去官网下载字体」那一处要用系统浏览器打开。
                 if (msg.StartsWith("open:", StringComparison.Ordinal))
@@ -177,6 +225,54 @@ internal sealed class MainWindow : Form
         const int HTCAPTION = 0x2;
         ReleaseCapture();
         SendMessage(Handle, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    }
+
+    /// <summary>
+    /// 放大 / 还原。
+    /// ★ 2026-10-18 补：页面右上角原来只有「收进托盘」和「退出」，没有放大按钮 ——
+    ///   无边框窗口（FormBorderStyle.None）连系统那个都不给，用户就没法把窗口放大了。
+    /// ★ MaximizedBounds 按当前屏幕的工作区（Screen.WorkingArea）而不是整屏：
+    ///   不设的话最大化会盖住任务栏，用户找不回底下的东西。
+    /// </summary>
+    private void ToggleMaximize()
+    {
+        bool dbg = Environment.GetEnvironmentVariable("LINLI_DEBUG_MSG") == "1";
+        if (dbg) LogMsg("ToggleMaximize 进入: state=" + WindowState + " bounds=" + Bounds);
+
+        if (WindowState == FormWindowState.Maximized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+        else
+        {
+            // ★★ 2026-10-18 修（用户实测报的"最大化后窗口被左移到最左上角、右下留一大片空"）：
+            //   原来这里写 `MaximizedBounds = Screen.FromControl(this).WorkingArea;`。
+            //   本机物理屏 2560×1600 @150%，`WorkingArea` 报的是**逻辑像素 1707×1019**，
+            //   而这个无边框窗口的坐标系是**物理像素** —— 拿逻辑尺寸去限制物理窗口，
+            //   窗口就只占了左上角 1707×1019 物理像素，右边和下边全是空桌面。
+            //   （静读代码看不出来：WorkingArea 和 Bounds 都不报单位，只有真最大化量
+            //    GetWindowRect 才发现宽高正好是 1707×1019 而不是 2560×1600。）
+            //
+            //   现在**不设 MaximizedBounds**：让 WinForms 按窗口自身（物理）坐标系去算
+            //   最大化矩形，DPI 由框架统一处理。代价是无边框窗口会盖住任务栏 ——
+            //   所以下面在进入最大化后，用 WM_GETMINMAXINFO 把底边收回到工作区
+            //   （见 WndProc 里的处理），这样既铺满又不挡任务栏。
+            MaximizedBounds = Rectangle.Empty;      // 清掉任何历史值
+            WindowState = FormWindowState.Maximized;
+        }
+
+        if (dbg) LogMsg("ToggleMaximize 退出: state=" + WindowState + " bounds=" + Bounds);
+    }
+
+    /// <summary>诊断日志：只在 LINLI_DEBUG_MSG=1 时写 %TEMP%\linli-msg.log。</summary>
+    private static void LogMsg(string text)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "linli-msg.log"),
+                DateTime.Now.ToString("HH:mm:ss.fff") + " " + text + Environment.NewLine);
+        }
+        catch { /* 写不了就算了，不能因为日志把功能弄挂 */ }
     }
 
     private void FallbackToBrowser(string url, Exception ex)

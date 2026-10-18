@@ -39,33 +39,63 @@ OliviaSoul-community独立版 · 第三方开源组件声明
    许可证：微软提供的 SDK 许可条款，见该 NuGet 包自带的许可信息。
    官方地址：https://learn.microsoft.com/microsoft-edge/webview2/
 
+5) 原版游戏素材（界面美术，随包分发）
+   来源：BSide Olivia Lin Test（米哈游 / miHoYo，版本 0.0.9.627）安装目录内的界面素材。
+   位置：程序目录 app\public\assets\（25 个文件，合计约 14.5 MB）
+   具体清单：
+     · 明信片与信封底图 6 张（.webp）：postcard_letter / postcard_sealed /
+       postcard_user / postcard_video / postcard_retry / postcard_review_failed
+     · 邮票 6 张（.webp）：stamp_1 ~ stamp_6
+     · 写信卡右上角的循环小视频 4 支（.mp4）：mail_stamp_1 ~ mail_stamp_4
+     · 待机状态小动画 4 支（.mp4）：home_idle / idle_normal / idle_thinking / idle_creative
+     · 界面辅助图 5 张：mailbox-empty、h5-feed-bg、mode-focus、mode-interactive（.webp）
+       与 check-*.svg
+   权利归属：上述素材的著作权归米哈游（miHoYo）所有，本项目不主张任何权利，
+     也不以任何形式对其再授权。使用这些素材是为了让界面与原版游戏保持一致；
+     如果你认为这里不该包含它们，请按文末地址联系我们，我们会整块撤下。
+   使用范围：仅限本程序自身的界面展示（明信片卡、信封、邮票、待机动画）。
+     除此之外的原版素材——壁纸视频（Wallpaper_Presence）、环境音、曲目演奏视频——
+     一律不随包：程序只记你自己机器上的目录路径，不搬文件、不代下。
+
 
 二、不随包分发（非本项目再分发，仅在此说明）
+
+6) 字体（不随包，但用途必须写明）
+   本软件不随附、也不代为下载任何字体文件，安装包里没有一个 .ttf。
+   信的字迹按用途分两档，都用汉仪的字体：
+     林离写的信（读信正文、她的回信）用 SentyTEA / 汉仪新蒂下午茶体；
+     你自己写信（输入框与你写的那封信）用 HanyiSentyGarden / 漢儀新蒂花園體。
+   二者的权利均归北京汉仪所有；使用者需自行按汉仪条款安装
+   （个人非商业使用免费）。两支都没导入时退回系统楷体，程序照常可用。
+   程序会在你第一次打开时提示字体缺失，并给出官网地址
+   （https://www.sentyfont.com/sentytea.htm 与 https://www.sentyfont.com/）。
+   程序界面本身用系统界面字体，不涉第三方。
+   相关来源与立场在《协议.txt》第四条与第八条中单独说明，不在本文件的授权范围内。
 ------------------------------------------------------------------------------
 
-5) Microsoft Edge WebView2 Runtime —— 界面渲染引擎
-   说明：本软件**不**再分发 WebView2 运行时。它通常由 Windows 10/11 系统自带，
+7) Microsoft Edge WebView2 Runtime —— 界面渲染引擎
+   说明：本软件不再分发 WebView2 运行时。它通常由 Windows 10/11 系统自带，
          缺少时由用户自行安装微软的 Evergreen Runtime（或系统通过 Windows 更新提供）。
    许可证：受微软软件许可条款约束（Microsoft Software License Terms）。
    官方地址：https://learn.microsoft.com/microsoft-edge/webview2/
 
-6) Inno Setup —— 制作本安装程序所用的打包工具
+8) Inno Setup —— 制作本安装程序所用的打包工具
    许可证：Inno Setup 自有许可（Jordan Russell），
            免费用于商业与非商业用途；完整条款以官方发布为准。
    官方地址：https://jrsoftware.org/   许可信息：https://jrsoftware.org/isinfo.php
 
-7) Inno Setup 简体中文语言文件（ChineseSimplified.isl）
+9) Inno Setup 简体中文语言文件（ChineseSimplified.isl）
    说明：随本仓库一起保存在 installer\ChineseSimplified.isl，非本项目原创。
    维护者：Zhenghan Yang (Kira)
            https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
    来源：Inno Setup 官方的用户贡献翻译分发页 https://jrsoftware.org/files/istrans/
 
 
-8) 液态玻璃（液态玻璃效果的技法来源）
-   说明：本软件界面的"液态玻璃"效果**没有引入任何第三方库或复制任何第三方代码**。
+10) 液态玻璃（液态玻璃效果的技法来源）
+   说明：本软件界面的"液态玻璃"效果没有引入任何第三方库或复制任何第三方代码。
        实现在本仓库内自行完成：app\glass-lens.mjs（透镜位移图的几何数学，纯函数）
        与 app\public\styles.css（玻璃层的 CSS）。
-       下面两个开源项目仅作为**技法与物理推导的参考读物**，其代码未被复制、
+       下面两个开源项目仅作为技法与物理推导的参考读物，其代码未被复制、
        未被打包、也未成为本软件的组成部分：
 
      · xanaxknight/liquid-glass-css-svg
@@ -90,17 +120,15 @@ OliviaSoul-community独立版 · 第三方开源组件声明
 三、说明
 ------------------------------------------------------------------------------
 
-· 本项目自身的代码**没有任何 npm 运行时依赖**：工程内不存在 package.json，
+· 本项目自身的代码没有任何 npm 运行时依赖：工程内不存在 package.json，
   app\server.mjs / app\core.mjs / app\secret-store.mjs 只使用 Node.js 内置模块
   （node:fs、node:http、node:sqlite、node:crypto 等），因此上面按实际使用情况
   列出，不存在第三方 npm 包需要声明。
 
-· 本软件**不**随附任何字体文件。信的字迹按用途分两档，都用汉仪的字体：
-  林离写的信（读信正文、她的回信）用 SentyTEA / 汉仪新蒂下午茶体；
-  你自己写信（输入框与你写的那封信）用 HanyiSentyGarden / 漢儀新蒂花園體。
-  二者的权利均归北京汉仪所有；使用者需自行按汉仪条款安装
-  （个人非商业使用免费）。程序界面本身用系统界面字体，不涉第三方。
-  相关来源与立场在《协议.txt》第四条与第八条中单独说明，不在本文件的授权范围内。
+· 原版素材的再分发范围已在上面 5) 里写清：只随包 25 个界面美术文件（约 14.5 MB），
+  壁纸视频、环境音、曲目演奏视频一概不随包。这与《协议.txt》第四条的说明一致。
+
+· 本软件不随附任何字体文件（见上面 6)）。
 
 · 项目自身的开源许可见仓库根目录的 LICENSE（MIT，Copyright (c) 2026 guvgr2）。
 

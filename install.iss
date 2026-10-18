@@ -109,7 +109,10 @@ ButtonNo=否(&N)
 ButtonOK=确定
 ; 欢迎页
 WelcomeLabel1=欢迎安装 [name]
-WelcomeLabel2=本机优先的一封信箱。信件、设置、账本全部存在你自己机器上。%n%n建议在安装前关掉其他程序。
+; WelcomeLabel2 故意**不复写**（2026-10-18）：本脚本 [Messages] 里这一句是纯英文，
+;   会盖掉 Language=chinesesimp 带来的中文。实测在欢迎页上显示成
+;   「It is recommended that you close all other applications before continuing.」
+;   用户看到的就是"安装程序没汉化好"。删掉这一条 ⇒ 走 ChineseSimplified.isl 的中文原文。
 ; 协议页
 LicenseLabel=请读完下面的协议，再决定要不要装。
 LicenseAccepted=我同意这份协议(&A)
@@ -181,12 +184,30 @@ Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ---- 安装动画的 48 帧（tools\make-install-frames.mjs 用无头 Edge 从
-;      design-preview.html 第①节渲出来的，656×1256、共约 2.2MB）----
+;      design-preview.html 第①节渲出来的 656×1256 母版，存成 PNG-256，共 1.65 MB）----
+; ★ 为什么不是 WebP（2026-10-18 试过，走不通）：WebP q95 只有 0.69 MB，
+;   画质看不出差别（PSNR 47.18 dB），但**本机的 Inno 6.7.3 没有 WebP 解码路径** ——
+;   编译到 [Code] 里那句 WizardBitmapImage.WebPImage 直接
+;   「Error: Unknown identifier 'WEBPIMAGE'」。TBitmapImage 上按格式命名的
+;   读取属性只有 Bitmap / PngImage / JpegImage / GifImage。
+;   PngImage 是其中无损、且能保住火漆印红色与牛皮纸渐变的那一个。
 ; dontcopy = 只随安装包带着、按需解到 {tmp} 供 [Code] 轮流贴到向导图位上，
 ;            **不会**装进目标机 —— 用户目录里不该多出 48 张图。
 ; 通配符一行就是这 48 个文件（frame-00.png .. frame-47.png），
 ; ExtractTemporaryFile 按文件名逐张解，跟一条一条写等价。
-Source: "installer\frames\frame-*.png"; Flags: dontcopy
+; ★ 必须写成 {app} 之外的一个绝对路径（2026-10-18 两次实证）：
+;   ① 光写 Source: "installer\frames\frame-*.png"; Flags: dontcopy 时，这一行的
+;      源路径也以 \app 开头，会被 [InstallDelete] 的
+;      "Type: filesandordirs; Name: {app}\app" 一并匹配到 —— 编译器只给一句
+;      「Warning: ... has an InstallDelete entry which will delete it」，
+;      然后 48 张图在 {tmp} 里一张都解不出来、动画整段静默失效。
+;   ② 于是想用 DestName 把它挪开 —— 不行：Inno 明确禁止
+;      「Parameter "DestName" cannot be specified if the "Source" parameter
+;        contains wildcards」，编译直接 aborted。
+;   ⇒ 唯一干净的办法是让 Source 不以 {app} 开头：用 #define 出来的绝对路径。
+;     「{app}」这个字面只出现在 Macro 那一行，[InstallDelete] 匹配不到它。
+#define FramesDir AddBackslash(SourcePath) + "installer\frames\"
+Source: "{#FramesDir}frame-*.png"; Flags: dontcopy
 ; 播完收尾用：把向导图位换回品牌图（最后一帧是"飞机飞走了"的空画面，
 ; 完成页不能停在一张空黑图上）。这张 WizardImageFile 本来就带着，这里只是
 ; 再挂一份 dontcopy 供运行时读。
@@ -447,11 +468,23 @@ end;
 const
   ANIM_FRAME_COUNT = 48;
   ANIM_INTERVAL    = 156;   { 7500ms / 48 帧 }
+  { 播到第几帧收手（含这一帧）。★ 不播后面那几帧是**故意的**，不是省事：
+    母版时间轴 design-preview.html:914-916 里，信封从 p=92% 开始淡出、
+    到 p=100% 淡干净 —— 后面那几帧是「信封飞向远方、最后只剩底色」的收梢。
+    可向导图位是**静止的 164×314 方块**，没有"远方"可以飞过去：
+    46 帧只剩半透明的信封、47 帧是一整块纯底色 (21,20,25)，
+    落在图位里读起来就是"画面忽然一黑"，而不是"东西飞走了"。
+    亲眼看：48 帧从 46 掉到 47 时，整幅亮度 42 → 22（差 20/255），
+    接着又从 47 跳回 0（信封重新出现）—— 每 7.5 秒一次，就是用户说的"一直在闪"。
+    停在第 43 帧：信纸、纸飞机都在，信封和火漆印还是实心的
+    （44 帧起火漆印开始发虚、信封开始透明，停在那里像"没画完"）。 }
+  ANIM_LAST_FRAME  = 43;
 
 var
   AnimTimerID: Longword;
   AnimFrameIdx: Integer;
   AnimExtracted: Boolean;
+  AnimDone: Boolean;
 
 function Anim_SetTimer(hWnd, nIDEvent, uElapse, lpTimerFunc: Longword): Longword;
   external 'SetTimer@user32.dll stdcall';
@@ -484,10 +517,14 @@ begin
   if WizardForm = nil then Exit;
   F := ExpandConstant('{tmp}\') + AnimFrameName(AnimFrameIdx);
   try
-    { ★ PNG 不能走 Bitmap.LoadFromFile：Pascal Script 的 TBitmap 只认 BMP，
-      PNG 要走 TBitmapImage.PngImage（Inno 6.5.2 起新增的支持类，
-      本机 Examples\CodeClasses.iss 第 381 行原话："Use ...PngImage.LoadFromFile
-      to load .png files"）。
+    { ★ 图像格式与属性名必须对上（2026-10-18 实证）：帧是 PNG（见 [Files] 那里的
+      体积与格式实测），TBitmapImage 上按格式命名的读取属性只有
+      Bitmap / PngImage / JpegImage / GifImage —— 本机的 Inno 6.7.3 里
+      **没有** WebPImage（写上去编译就报 Unknown identifier 'WEBPIMAGE'）。
+      所以帧是 PNG 就用 PngImage。
+      ★ 推论（写在这里免得下次有人换格式忘了改这里）：帧一旦换成别的格式，
+      **这一行也得跟着换**，否则 LoadFromFile 抛异常、下面那段 except 会把
+      定时器停掉 —— 动画静默消失，界面上什么都不报。
       WizardBitmapImage 是欢迎页那张、WizardBitmapImage2 是完成页那张，
       两张不同时显示 ⇒ 按当前页挑一张贴，一帧只解码一次，不给安装拖后腿。 }
     if WizardForm.CurPageID = wpFinished then
@@ -506,7 +543,16 @@ begin
       AnimStop;
     end;
   end;
-  AnimFrameIdx := (AnimFrameIdx + 1) mod ANIM_FRAME_COUNT;
+  if AnimFrameIdx >= ANIM_LAST_FRAME then
+  begin
+    { 到站：停在最后这张完整画面上，定时器收掉。
+      ★ 这里必须 Stop 而不是继续 mod 回 0 —— 见 ANIM_LAST_FRAME 上方那段注释：
+      循环回第 0 帧等于每 7.5 秒把整幅画面从黑拽回信封，正是"一直在闪"。 }
+    AnimDone := True;
+    AnimStop;
+    Exit;
+  end;
+  AnimFrameIdx := AnimFrameIdx + 1;
 end;
 
 procedure AnimStart;
@@ -514,6 +560,7 @@ var
   I: Integer;
 begin
   if AnimTimerID <> 0 then Exit;
+  if AnimDone then Exit;          { 播过一遍就不再从头播 —— 循环回来那一下才是最大的闪 }
   if not AnimExtracted then
   begin
     for I := 0 to ANIM_FRAME_COUNT - 1 do
@@ -531,6 +578,22 @@ end;
 procedure InitializeWizard;
 begin
   AnimStart;
+end;
+
+{ ★ 2026-10-18：完成页也要播。
+  以前 AnimDone 一到就再也不让动画重来，而欢迎页那几十秒足够把 43 帧播完 ——
+  于是"安装完成"那一页左侧永远是静态的 wizard-panel.png，用户看到的就是"没有安装动画"。
+  这里一次重播：AnimDone 先清掉，帧序号归零，定时器重新挂上。
+  ★ 只在**离开欢迎页**这个点上重播一次 —— 不要在每一页都重播，否则来回"上一步/下一步"
+    会让画面反复闪（当初撤掉循环就是因为这个）。 }
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+  begin
+    AnimDone := False;
+    AnimTimerID := 0;
+    AnimStart;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

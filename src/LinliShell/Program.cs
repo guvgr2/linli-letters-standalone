@@ -612,6 +612,12 @@ internal static class Program
                 _window.RequestHide += (_, _) => HideWindow();
                 _window.RequestClose += (_, _) => HideWindow();
                 _window.RequestQuit += (_, _) => Shutdown();
+                // 设置页那个「桌面壁纸」开关：页面不播视频了，铺/撤桌面那一层归外壳。
+                _window.WallpaperRequested += (_, on) =>
+                {
+                    SetStageEnabled(on);
+                    if (on) StartWallpaper(); else StopWallpaper();
+                };
                 _window.FormClosing += (_, e) =>
                 {
                     // Alt+F4 这类系统关闭也按"收进托盘"处理：陪伴类程序不该一点就死。
