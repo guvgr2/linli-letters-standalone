@@ -254,24 +254,22 @@ internal sealed class MainWindow : Form
     /// </summary>
     private void EnableBackdrop()
     {
-        // ---- 第 1 段：DWMWA_SYSTEMBACKDROP_TYPE（Win11 22H2+）----
-        // 逐个试：Acrylic(3) 是真正的"窗后模糊玻璃"，Mica(2) 只是取壁纸主色。
-        foreach (uint backdrop in new uint[] { 3, 2 })
-        {
-            uint v = backdrop;
-            int hr = DwmSetWindowAttribute(Handle, 33, ref v, sizeof(uint));
-            if (hr == 0) return;   // 挂上了
-        }
-
-        // ---- 第 2 段： undocumented composition attribute（Win10 / 早期 Win11）----
+        // ★ 2026-10-18 二次定稿（用户两张截图后的结论）：
+        //   DWMWA_SYSTEMBACKDROP_TYPE(33)=Acrylic(3) 先试过 —— 挂得上（hr=0），
+        //   但系统那套亚克力的**暗化 tint 是定死的**，透出来的桌面偏暗偏灰，
+        //   用户看还是"黑玻璃"。换成 undocumented 的 ACRYLICBLURBEHIND 通道：
+        //   它的 GradientColor 自己调 —— alpha 越低越透，我们定 0x66（40%），
+        //   桌面的颜色和亮暗变化都能进得来（实测 RGB 跟随桌面变化）。
+        //   失败再退 DWM 系统版，再退纯色。
         try
         {
             var accent = new AccentPolicy
             {
                 AccentState = 4,   // ACCENT_ENABLE_ACRYLICBLURBEHIND
-                // GradientColor AABBGGRR：alpha 0xCC ≈ 80% —— 留 20% 透桌面。
                 AccentFlags = 2,
-                GradientColor = 0xCC000000,
+                // AABBGGRR。0x66 = 40% 的暗 tint —— 桌面透 60% 进来，
+                // 玻璃后面的颜色是活的（跟着窗口盖住的桌面区域走）。
+                GradientColor = 0x66000000,
             };
             IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(AccentPolicy)));
             try
@@ -283,11 +281,19 @@ internal sealed class MainWindow : Form
                     SizeOfData = Marshal.SizeOf(typeof(AccentPolicy)),
                     Data = ptr,
                 };
-                SetWindowCompositionAttribute(Handle, ref data);
+                if (SetWindowCompositionAttribute(Handle, ref data)) return;
             }
             finally { Marshal.FreeHGlobal(ptr); }
         }
-        catch { /* 全失败就纯色，不崩 */ }
+        catch { /* 走下面的兜底 */ }
+
+        // ---- 兜底：DWMWA_SYSTEMBACKDROP_TYPE（Win11 22H2+，tint 不可调）----
+        foreach (uint backdrop in new uint[] { 3, 2 })
+        {
+            uint v = backdrop;
+            int hr = DwmSetWindowAttribute(Handle, 33, ref v, sizeof(uint));
+            if (hr == 0) return;   // 挂上了
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]

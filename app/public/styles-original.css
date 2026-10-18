@@ -1753,6 +1753,14 @@
   align-items: center;
   gap: 12px;
   flex: none;
+  /* ★ 2026-10-18 用户实证（两张截图）：页头在滚动流里，下滑时齿轮跟着内容
+     滚上去，最后叠进右上角的窗口控制条（— □ ×）。原版的页头是**固定**的，
+     不随内容滚。修法：sticky 钉在窗口条（34px）下方 —— 滚动时齿轮停在 44px，
+     永远碰不到窗口钮。背景给一层实底，滚过的内容从它底下穿过去不穿帮。 */
+  position: sticky;
+  top: 44px;
+  z-index: 5;
+  background: var(--tp-grey-1, #17181c);
   /* 底边一道极淡的分隔线：原版页标题下面没有线，但它上面有 80px 的留白；
      我方窗口高度紧张，用一道线换掉那段留白。 */
   padding: 0 0 14px;
@@ -1810,6 +1818,13 @@
      在同一块区域里叠着 —— 用户截图里齿轮几乎贴到「放大」键。让到 44px，
      齿轮从窗口条下方开始，两者各归各位。 */
 .page:has(> .page-head) { padding-top: 44px; }
+/* native 玻璃下页头不能是实底横带（会把透明玻璃打穿一块）：
+   半透明 + 轻模糊，滚过的内容从它底下穿过时是"隔着玻璃看"的效果。 */
+body.native .page-head {
+  background: rgba(23, 24, 28, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
 /* ★ 曲库页是「页顶栏 + 撑满剩余高度的两栏」，必须整列 flex，
      否则 .library 的 height:100% 参照不到东西，右栏会塌成 0 高。 */
 .page.is-library {
