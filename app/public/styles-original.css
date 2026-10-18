@@ -1,0 +1,1462 @@
+/* ============================================================================
+   原版排版（BSide Olivia Lin Test 0.0.9.627）· 液态玻璃主题
+   ----------------------------------------------------------------------------
+   这张表逐条照抄原版 feapp\assets\index-9ba3e01a.css 与 webplayer\assets\
+   index-4aa47742.css 的几何与字号，只把颜色/材质换成我们的液态玻璃。
+
+   ★ 所有尺寸、边距、圆角、动画时长与缓动都取自原版原文，改动前先回原版核对：
+     - 信箱两栏：.mail-sidebar（min-w-200 / max-w-360 / p-3 / rounded-2）
+                 .mail-content（flex-[2] / min-w-[548px] / rounded-2）
+     - 列表条目：.mail-item（px-3 py-2 / gap-12px / rounded-8px / 图标 40×40）
+                 选中与悬停都是 background: var(--tp-surface-1)
+     - 明信片  ：.mail-box-reply-content 用 postcard_*.webp 做 100% 100% 背景，
+                 textarea 内边距 24/24/20/20、字号 20px、颜色 --tp-grey-0
+     - 信封    ：.mail-envelope__container 533×455；信纸 485×265 → 671×378；
+                 letter-fly 1.4s cubic-bezier(.4,0,.2,1)；
+                 内层从 scale(.7228) 同步放大到 scale(1)
+     - 播放页  ：.player-container 100vw×100vh 纯黑，video object-fit:contain，
+                 两枚 video 交叉（.active 才 opacity:1 z-index:2）
+     - 水印    ：canvas 平铺，14px sans-serif，rgba(255,255,255,.05)，rotate(-30°)
+   ========================================================================== */
+
+:root {
+  /* ---- 原版设计令牌（数值逐字照搬） ---- */
+  --tp-grey-0: #17181c;
+  --tp-grey-1: #232529;
+  --tp-grey-2: #2f3036;
+  --tp-grey-3: #33343b;
+  --tp-grey-4: #51545c;
+  --tp-grey-5: #63656e;
+  --tp-grey-6: #7d818c;
+  --tp-grey-7: #a1a5ad;
+  --tp-grey-8: #ced2d4;
+  --tp-grey-9: #e8e9eb;
+  --tp-primary-0: #fffbf0;
+  --tp-primary-1: #e6e0d8;
+  --tp-primary-2: #d8cfc4;
+  --tp-primary-3: #b3a69a;
+  --tp-primary-4: #403630;
+  --tp-surface-1: #232529;
+  --tp-text-title: var(--tp-grey-9);
+  --tp-text-body: var(--tp-grey-8);
+  --tp-text-secondary: var(--tp-grey-7);
+  --tp-text-tertiary: var(--tp-grey-6);
+
+  --tp-spacing-1: 4px;
+  --tp-spacing-2: 8px;
+  --tp-spacing-3: 12px;
+  --tp-spacing-4: 16px;
+  --tp-spacing-5: 20px;
+  --tp-spacing-6: 24px;
+  --tp-spacing-7: 28px;
+  --tp-spacing-8: 32px;
+  --tp-spacing-10: 40px;
+
+  --tp-radius-1: 6px;
+  --tp-radius-2: 12px;
+  --tp-radius-3: 16px;
+  --tp-radius-5: 28px;
+
+  /* ---- 液态玻璃：原版暗底换成半透明，靠 #stage 那层视频做背衬 ---- */
+  /* glass-a 是侧栏/阅读区的底，比窗口再浅一档，让两栏能分出层次 */
+  --glass-a: rgba(255, 255, 255, 0.055);
+  --glass-a-border: rgba(255, 255, 255, 0.10);
+  --glass-b: rgba(255, 255, 255, 0.022);
+  --glass-b-border: rgba(255, 255, 255, 0.07);
+  --glass-blur: saturate(1.25) blur(22px);
+  --glass-hi: rgba(255, 255, 255, 0.10);
+  --glass-selected: rgba(255, 255, 255, 0.11);
+}
+
+/* 原版 .faux-bold：SentyTEA / HanyiSentyGarden 没有粗体字重，原版用描边假装加粗 */
+.faux-bold {
+  -webkit-text-stroke: 0.4px currentcolor;
+  paint-order: stroke fill;
+}
+
+/* ======================== 信箱：左列表 + 右阅读 ======================== */
+.mailbox {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 原版 .mail-sidebar：flex-1 min-w-[200px] max-w-[360px] flex-col h-full p-3 rounded-2 */
+.mail-sidebar {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 360px;
+  height: 100%;
+  padding: 12px;
+  border-radius: var(--tp-radius-2);
+  background: var(--glass-a);
+  border: 1px solid var(--glass-a-border);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  position: relative;
+}
+
+/* 原版 .mail-header：padding:4px 0 16px 12px; display:flex; gap:4px */
+.mail-header {
+  padding: 4px 0 16px 12px;
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+.mail-header .mail-header-title {
+  font-size: 16px;
+  color: var(--tp-text-title);
+}
+.mail-header .mail-header-count {
+  font-size: 14px;
+  color: var(--tp-text-secondary);
+}
+
+/* 原版 .mail-list：flex-1 min-h-0 p-3 rounded-2，滚动条 padding 由原版的 pr-3 提供。
+   ★ 2026-10-18 修：这里原来只有 `padding-right: 12px`，而全局 scrollbar 是 styles.css:659
+     的 `::-webkit-scrollbar { width: 9px }`（阴影贴右侧）。两个一叠：滚动条离列表右边
+     还有 12px 间隙，看起来像「白条悬在列表中间」，用户原话「这个信箱的白条是什么，
+     还是不同颜色的」。现在 width/padding 都收窄，并且**给滚动条明确的颜色**（跟原版
+     一致：rgba(255,255,255,.14) + 圆角 3px），不再退回全局样式表的默认值。 */
+.mail-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+.mail-list::-webkit-scrollbar { width: 4px; }
+.mail-list::-webkit-scrollbar-track { background: transparent; }
+.mail-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+}
+.mail-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 原版 .mail-item：px-3 py-2 gap-12 rounded-8，hover/选中都上 --tp-surface-1 */
+.mail-item {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.mail-item:hover,
+.mail-item-selected {
+  background: var(--glass-selected);
+}
+/* 原版 .mail-item-icon：40×40 rounded-6，底色按类型区分 */
+.mail-item-icon {
+  display: flex;
+  height: var(--tp-spacing-10);
+  width: var(--tp-spacing-10);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tp-radius-1);
+  font-size: 20px;
+  line-height: 1;
+}
+.mail-item-icon.is-send { background: #6b645b; color: #efeae3; }
+.mail-item-icon.is-reply { background: #4f6f5e; color: #e7f1f4; }
+.mail-item-icon.is-pending { background: #4f6f5e; color: #e7f1f4; opacity: 0.55; }
+.mail-item-icon.is-error { background: #2f3036; color: var(--tp-primary-2); }
+
+.mail-item-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mail-item-subject {
+  font-size: 16px;
+  color: var(--tp-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-item-subject-unread {
+  font-weight: 700;
+  color: var(--tp-text-title);
+}
+.mail-item-time {
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-item-unread {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tp-primary-2);
+  flex-shrink: 0;
+}
+
+/* 原版侧栏底部：.mail-footer 渐变条 + 圆角 16 + 高度 40 的按钮 */
+.mail-footer {
+  position: relative;
+  padding: 2px;
+  border-radius: 16px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mail-footer-inner {
+  background: linear-gradient(107deg, rgba(23, 24, 28, 0.82) 0%, rgba(47, 48, 54, 0.7) 100%);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  padding: 6px 6px 6px 12px;
+  gap: 8px;
+}
+.mail-footer-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-footer-title {
+  font-size: 14px;
+  color: var(--tp-primary-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mail-footer-sub {
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  white-space: nowrap;
+}
+.mail-footer-action-button {
+  flex-shrink: 0;
+  height: var(--tp-spacing-10);
+  padding: 0 var(--tp-spacing-5);
+  border-radius: var(--tp-radius-5);
+  background: var(--tp-primary-2);
+  border: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--tp-grey-2);
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.mail-footer-action-button:hover { background: var(--tp-primary-1); }
+.mail-footer-action-button:active { background: var(--tp-primary-3); }
+.mail-footer-action-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 原版 .mail-content：flex-[2] min-w-[548px] flex-col h-full rounded-2 */
+.mail-content {
+  display: flex;
+  flex: 2 1 0;
+  flex-direction: column;
+  min-width: 548px;
+  height: 100%;
+  border-radius: var(--tp-radius-2);
+  background: var(--glass-b);
+  border: 1px solid var(--glass-b-border);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  overflow: hidden;
+}
+
+/* 原版 .mail-content-header / .mail-welcome-header：padding 16px 24px + 底部一条 1px 分隔 */
+.mail-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+.mail-content-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 500px;
+}
+.mail-content-title {
+  font-size: 16px;
+  color: var(--tp-text-title);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-content-sub {
+  font-size: 14px;
+  color: var(--tp-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-content-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.mail-content-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+}
+
+/* 原版空态：mailbox-empty 图 300×200 + 两行提示，整体上移 64 */
+.mail-content-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  margin-bottom: 64px;
+  gap: 8px;
+}
+.mailbox-empty-art {
+  height: 200px;
+  width: 300px;
+  background-image: url(assets/mailbox-empty-ea417535.webp);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  opacity: 0.9;
+}
+.mail-content-empty-title {
+  font-size: 18px;
+  color: var(--tp-text-title);
+  margin-top: 8px;
+}
+.mail-content-empty-sub {
+  font-size: 16px;
+  color: var(--tp-text-tertiary);
+}
+
+/* ======================== 明信片（原版 16:9 卡面） ======================== */
+/* ★★ 2026-10-18 实测定案：真正在用的信卡是 mail-ui.js 的 renderCard()，它输出的类是
+     .mail-responsive-card + .mail-card-meta + .mail-box-reply-content-text
+   而这三个里**只有 .mail-responsive-card 有样式**（在 styles.css:421 只定了尺寸）。
+   实测（浏览器里调 renderCard 画一封长信）：字号 14px（应 16）、字族微软雅黑（应 SentyTEA）、
+   色 #e8e9eb 浅色（应 --tp-grey-0 暖墨）——浅色字印在米白纸纹上几乎看不见；
+   overflow-y:visible ⇒ 长信直接溢出卡外，溢出部分既看不到也滚不到。
+   ⇒ 下面这一组就是补这三个类。数值全部取原版 main-31595bd3.js 原文，不是自己定的。 */
+
+/* 原版 .mail-card-content,.mail-responsive-card{min-width:516px;min-height:290px;aspect-ratio:16/9}
+   —— 阅读区只有一张卡时给 width:516px aspect-ratio:16/9 */
+.mail-card {
+  position: relative;
+  width: 516px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--tp-radius-2);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  flex: 0 1 auto;
+}
+.mail-card.is-letter { background-image: url(assets/postcard_letter-d722fc17.webp); }
+.mail-card.is-writing { background-image: url(assets/postcard_user-b56da6ff.webp); }
+.mail-card.is-sealed { background-image: url(assets/postcard_sealed-c25be03c.webp); }
+.mail-card.is-error { background-image: url(assets/postcard_retry-06a08832.webp); }
+.mail-card.is-video {
+  background-image: url(assets/postcard_video-d28a9270.webp);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 250px;
+}
+
+/* ---------- 真实信卡：.mail-responsive-card 一族（mail-ui.js 输出） ---------- */
+/* 卡面本身：原版同一张 16:9 纸。★ 用 width 而不是 min-width —— 右栏只有 548px 时
+   min-width:516 会把卡挤出容器（实测 384×500 的竖条就是这么来的：宽度被压、
+   aspect-ratio 却没锁住高度）。改成 width:516px + max-width:100% 后再锁死高度比例。 */
+.mail-responsive-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* ★ align-items: safe center —— 长信溢出时两端对切，顶上几行永远滚不到（原版同款约束）。 */
+  align-items: safe center;
+  width: 516px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 100%;
+  border-radius: var(--tp-radius-2);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* 署名 · 日期：原版 .mail-envelope__hint 那套小字（tertiary，字距 1px）。 */
+.mail-card-meta {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 18px 28px 0;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 20px;
+  letter-spacing: 0.5px;
+  color: var(--tp-text-tertiary);
+}
+
+/* 正文：原版 .mail-box-reply-content-text
+   margin 20/24；字号 16；行高 1.6；色 --tp-grey-0（暖墨，印在米白纸纹上）；字族 SentyTEA。
+   ★ 必须能滚：长信不许被静默裁掉（tests/ui-typography.test.js 守的就是这条）。 */
+.mail-box-reply-content-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: calc(100% - 56px);
+  margin: 8px 28px 24px;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: SentyTEA, var(--letter-font);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--tp-grey-0);
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+.mail-box-reply-content-text::-webkit-scrollbar { width: 4px; }
+.mail-box-reply-content-text::-webkit-scrollbar-thumb {
+  background: rgba(23, 24, 28, 0.18);
+  border-radius: 2px;
+}
+.mail-box-reply-content-text::-webkit-scrollbar-track { background: transparent; }
+
+/* 写信态（openCompose 画的那张卡）：原版 .mail-box-write-content-textarea
+   右侧让给邮票 180px，字号 20。★ 那张卡的 textarea 用的是 mail-box-write-content-textarea
+   这个类（mail-ui.js:192），不是 mail-box-reply-content-text —— 两者是两套，别混。 */
+.mail-responsive-card-user .mail-box-write-content-textarea {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: calc(100% - 28px - 180px - 28px);
+  margin: 8px 180px 24px 28px;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: HanyiSentyGarden, var(--compose-font);
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--tp-grey-0);
+  resize: none;
+  background: transparent;
+  border: 0;
+  outline: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.mail-box-write-content-textarea::placeholder { color: rgba(23, 24, 28, 0.38); }
+
+/* 原版阅读态正文：.mail-box-reply-content-textarea
+   margin 20/24/20/24；宽 calc(100% - 32px)；高 230px；字号 16；色 --tp-grey-0；
+   字族 SentyTEA（信件）/ HanyiSentyGarden（用户写的） */
+.mail-card-text {
+  display: block;
+  width: calc(100% - 48px);
+  height: calc(100% - 48px);
+  margin: 20px 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--tp-grey-0);
+  overflow: hidden;
+  scrollbar-width: none;
+}
+.mail-card-text::-webkit-scrollbar { display: none; }
+.mail-card-text.font-linli { font-family: SentyTEA, sans-serif; }
+.mail-card-text.font-user { font-family: HanyiSentyGarden, sans-serif; }
+
+/* 写信态：原版 .mail-box-write-content-textarea
+   margin 20/24/20/24（右侧让给邮票 180px）；宽 75%；字号 20；色 --tp-grey-0 */
+.mail-card.is-writing .mail-card-text {
+  width: 75%;
+  margin: 20px 180px 20px 24px;
+  height: calc(100% - 40px);
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--tp-grey-0);
+  overflow-y: auto;
+}
+.mail-card.is-writing .mail-card-text::placeholder { color: rgba(23, 24, 28, 0.38); }
+
+/* 原版邮票：写信态 w-[11.24%] h-[25.17%] top-[5.17%] right-[2.91%]；
+   阅读态（弹窗里）w-[58px] h-[73px] top-[15px] right-[15px] */
+.mail-stamp {
+  position: absolute;
+  top: 5.17%;
+  right: 2.91%;
+  width: 11.24%;
+  height: 25.17%;
+  border-radius: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.mail-stamp img,
+.mail-stamp video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 原版等待回信：一个圆形小视频 + 一行字 */
+.mail-card-waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+}
+.mail-card-waiting-video {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--tp-grey-0);
+}
+.mail-card-waiting-text {
+  font-size: 15px;
+  color: rgba(23, 24, 28, 0.62);
+}
+
+/* 原版失败态：标题 + 提示 + 右下角重试按钮 */
+.mail-card-error-body {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 32px;
+  text-align: center;
+}
+.mail-card-error-title { font-size: 17px; color: rgba(23, 24, 28, 0.86); }
+.mail-card-error-hint { font-size: 14px; color: rgba(23, 24, 28, 0.55); }
+.mail-card-retry {
+  position: absolute;
+  right: 40px;
+  bottom: 32px;
+  padding: 6px 12px;
+  border-radius: var(--tp-radius-3);
+  border: 0;
+  background: var(--tp-primary-2);
+  color: var(--tp-grey-0);
+  font-size: 13px;
+  cursor: pointer;
+}
+.mail-card-retry:hover { background: var(--tp-primary-1); }
+
+/* 原版卡面右下角的放大按钮（悬停才出现） */
+.mail-card-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tp-radius-1);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  border: 0;
+}
+.mail-card:hover .mail-card-zoom { opacity: 1; }
+
+/* ======================== 信封：点击 → 信纸飞出 ======================== */
+/* 原版 .mail-envelope-overlay{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.75);
+   backdrop-filter:blur(6px)} —— 我们沿用，只是把纯黑换成玻璃暗底 */
+.mail-envelope-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+/* ★ `display:flex` 会盖掉 hidden 属性（hidden 只是 UA 样式表里的 display:none），
+   ⇒ 遮罩"关着"的时候仍然铺满整屏：`elementFromPoint` 命中的是信封，整页点不动。
+   显隐交给 .is-visible（mail-ui.js 开关），关着时直接 display:none 最省事也最不会错。 */
+.mail-envelope-overlay[hidden] { display: none; }
+.mail-envelope-overlay.is-visible { opacity: 1; }
+
+.mail-envelope-scene {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* 原版 .mail-envelope{position:relative;display:flex;align-items:center;justify-content:center;
+   cursor:pointer;user-select:none} */
+.mail-envelope {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 原版 .mail-envelope__shell{display:flex;flex-direction:column;align-items:center;
+   transition:transform .8s cubic-bezier(.4,0,.2,1),opacity 1s ease}
+   .is-opening .mail-envelope__shell{transform:translateY(120px);opacity:0;pointer-events:none} */
+.mail-envelope__shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 1s ease;
+}
+.is-opening .mail-envelope__shell {
+  transform: translateY(120px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 原版 .mail-envelope__container{position:relative;width:533px;height:455px} */
+.mail-envelope__container {
+  position: relative;
+  width: 533px;
+  height: 455px;
+}
+.mail-envelope__layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* 原版 .mail-envelope__letter{position:absolute;top:170px;left:calc(50% - 242px);
+   width:485px;height:265px;background:postcard_letter cover;border-radius:4px;
+   z-index:1;overflow:hidden;transform-origin:center center}
+   —— 底色是米白，图没加载出来也不会露出底下信封 */
+.mail-envelope__letter {
+  position: absolute;
+  top: 170px;
+  left: calc(50% - 242px);
+  width: 485px;
+  height: 265px;
+  background-color: #f7f3ea;
+  background-image: url(assets/postcard_letter-d722fc17.webp);
+  background-size: cover;
+  background-position: center;
+  border-radius: 4px;
+  z-index: 1;
+  overflow: hidden;
+  transform-origin: center center;
+}
+.is-opening .mail-envelope__letter {
+  animation: letter-fly 1.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  cursor: default;
+}
+@keyframes letter-fly {
+  0% {
+    top: 170px;
+    left: calc(50% - 242px);
+    width: 485px;
+    height: 265px;
+    box-shadow: none;
+  }
+  40% {
+    top: 30px;
+    left: calc(50% - 242px);
+    width: 485px;
+    height: 265px;
+    box-shadow: none;
+  }
+  to {
+    top: calc(50% - 189px);
+    left: calc(50% - 335px);
+    width: 671px;
+    height: 378px;
+    box-shadow: 0 8px 40px #0000004d;
+  }
+}
+
+/* 原版 .mail-envelope__letter-inner{width:671px;height:378px;overflow:hidden;
+   transform:scale(.7228);transform-origin:top left}
+   —— 信纸放大时里面的正文跟着从 .7228 还原到 1，字不会变形 */
+.mail-envelope__letter-inner {
+  width: 671px;
+  height: 378px;
+  overflow: hidden;
+  transform: scale(0.7228);
+  transform-origin: top left;
+}
+.is-opening .mail-envelope__letter-inner {
+  animation: letter-inner-scale 1.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes letter-inner-scale {
+  0% { transform: scale(0.7228); }
+  40% { transform: scale(0.7228); }
+  to { transform: scale(1); }
+}
+
+/* 原版 .mail-envelope__letter-text{padding:24px 28px;font-family:SentyTEA,serif;
+   font-size:20px;line-height:1.5;color:var(--tp-surface-1);white-space:pre-wrap} */
+.mail-envelope__letter-text {
+  padding: 24px 28px;
+  font-family: SentyTEA, serif;
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--tp-surface-1);
+  white-space: pre-wrap;
+  overflow: hidden;
+  max-height: 100%;
+  box-sizing: border-box;
+}
+
+/* 原版 .mail-envelope__hint{margin-top:28px;color:var(--tp-text-tertiary);
+   font-size:15px;letter-spacing:2px} */
+.mail-envelope__hint {
+  margin-top: 28px;
+  color: var(--tp-text-tertiary);
+  font-size: 15px;
+  letter-spacing: 2px;
+}
+
+/* 原版 .mail-letter__close{top:-40px;right:0;width:32px;height:32px;border-radius:50%;
+   background:rgba(255,255,255,.15)} —— 只在信纸飞出来之后才出现 */
+.mail-letter__close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  border: 0;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  transition: background 0.2s ease;
+  animation: mail-fade-in 0.4s ease 0.6s both;
+}
+.mail-letter__close:hover { background: rgba(255, 255, 255, 0.25); }
+@keyframes mail-fade-in {
+  0% { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ======================== 播放页：全屏视频 + 斜向水印 ======================== */
+/* 原版 .player-container{position:relative;width:100vw;height:100vh;background:#000}
+   .video-wrapper{position:relative;width:100%;height:100%;background:#000}
+   video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;
+        opacity:0;pointer-events:none;z-index:1}
+   video.active{opacity:1;pointer-events:auto;z-index:2}
+   —— 我们把它挂在一个铺满 .main 的容器里（窗口本身是 1180×820，不是整屏） */
+.player-page {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #000;
+  z-index: 60;
+  display: none;
+}
+.player-page.is-on { display: block; }
+
+.player-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.video-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.player-container video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.player-container video.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+/* ★ 原版 webplayer 有一层 .watermark-overlay（canvas 平铺、14px、rgba(255,255,255,.05)、
+   rotate(-30°) 的 uid 水印）。我们**故意不实现**（用户 2026-10-18 拍板：去掉水印；
+   姊妹程序也已有去水印方案）。这里留一段注释，免得后来人照着原版又把它加回来。 */
+
+/* 播放页上部的一条细玻璃条：曲名 + 返回。原版没有这条，但原版是整屏窗口、
+   我们这里是 1180×820 的内嵌窗口，没有它用户出不去。做成悬停才显形，尽量不打扰画面。 */
+.player-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+.player-page:hover .player-topbar,
+.player-page.is-idle-hidden .player-topbar { opacity: 1; }
+.player-back {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: var(--tp-radius-3);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.player-back:hover { background: rgba(255, 255, 255, 0.16); }
+.player-title {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.88);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  text-align: center;
+  z-index: 75;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 15px;
+  pointer-events: none;
+}
+/* ★ 有片在放时这条提示必须消失 —— 它是空态文案（"这一档还没有曲目"），
+   挂在画面正中间会在演员脸上写一行字。有了 .is-on 就说明页面上有货了。 */
+.player-page.is-on .player-hint { display: none; }
+/* 时段那一小行：跟在曲名后面，不抢眼 */
+.player-slot {
+  margin-left: auto;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+/* ===== 底部控制条：照原版 .lite-playback-control 重做（2026-10-18）=====
+   原版骨架（main-31595bd3.js:339701 的 t3/o3/i3/_3 那组模板 + tailwind 类）：
+     `fixed bottom-0 left-0 right-0 z-50 flex items-center px-5 pt-3 pb-2
+      bg-surface-0 border-t border-grey-2`
+   三栏：左 `w-[200px]` 封面+曲名｜中 `flex-1` 控制+进度｜右 `w-[200px]` 画中画。
+   ★ 与原版的差别只有两处，都是有意的：
+     ① 底色不是不透明 surface-0，而是**液态玻璃**（这是本项目的主题方向）；
+     ② 最左边多一个「返回」——原版播放器是独立窗口，我们内嵌在全屏页里，得有路退出去。
+   交互沿用旧版：悬停才浮出来，不挡画面（原版控制条常驻，我们全屏看演奏时不该被条子压住）。 */
+.player-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  /* px-5 pt-3 pb-2 = 20 / 12 / 8；按原版比例真实还原（旧版是 22/18/20 的粗条） */
+  padding: 12px 20px 8px;
+  background: linear-gradient(0deg, rgba(5, 6, 9, 0.82) 0%, rgba(5, 6, 9, 0.46) 72%, rgba(5, 6, 9, 0) 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+.player-page:hover .player-bar,
+.player-page.is-idle-hidden .player-bar { opacity: 1; }
+
+/* 返回：从顶栏挪下来的，尺寸对齐原版那排图标钮（w-8 h-8 = 32） */
+.player-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tp-radius-1);
+  background: transparent;
+  color: var(--tp-text-secondary);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.player-back:hover { background: var(--tp-grey-1); color: var(--tp-text-title); }
+
+/* 左栏 w-[200px]：封面 64×64（w-16 h-16 rounded-1）+ 曲名（text-body-m 14/22，超长跑马灯） */
+.player-now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 200px;
+  flex: none;
+  min-width: 0;
+}
+.player-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: var(--tp-radius-1);
+  background: var(--tp-grey-2);
+  color: var(--tp-primary-2);
+  font-size: 24px;
+  line-height: 28px;
+  overflow: hidden;
+}
+.player-now-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+/* 原版 .lite-marquee：`display:inline-block; animation: lite-marquee 8s linear infinite`
+   （100% → -100% 横移）。曲子名普遍很长（"Solo Air On The G String From Orchestral Suite
+   No3 In D Major BWV 1068"），不跑马灯就只能截断，截断就看不出是第几首。 */
+.player-now-name {
+  display: inline-block;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--tp-text-title);
+  white-space: nowrap;
+  animation: lite-marquee 8s linear infinite;
+}
+.player-now-sub {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--tp-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes lite-marquee {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* 中栏 flex-1：控制一行 + 进度一行 */
+.player-center {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+}
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 图标钮 w-8 h-8(32) hover:bg-grey-1 rounded-1；颜色原版是 text-info（蓝），
+   这里换成 primary-2 —— 原版那套蓝在纯黑画面里太跳，且我方主题是暖白金。 */
+.player-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tp-radius-1);
+  background: transparent;
+  color: var(--tp-primary-2);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.player-btn:hover { background: var(--tp-grey-1); color: var(--tp-primary-1); }
+/* 播放圆钮：原版 `w-10 h-10 rounded-full bg-primary-2 hover:bg-primary-1`，
+   中间那个图标是 text-grey-0（深色，压在米色圆上） */
+.player-btn.is-main {
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  background: var(--tp-primary-2);
+  color: var(--tp-grey-0);
+}
+.player-btn.is-main:hover { background: var(--tp-primary-1); color: var(--tp-grey-0); }
+
+/* 进度行：`flex items-center gap-3 w-full max-w-[480px]`，
+   两端时间都是 text-body-s(12) `w-10`（40px）—— 等宽是为了数字跳动时进度条不跟着晃 */
+.player-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 2px;
+}
+.player-time {
+  flex: none;
+  width: 40px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--tp-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+.player-time + .player-progress + .player-time { text-align: left; }
+.player-progress {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+  cursor: pointer;
+}
+.player-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--tp-primary-2);
+  transition: width 0.2s linear;
+}
+/* 右栏 w-[200px]（原版是画中画按钮；我方留等宽占位让中间那组控制保持居中） */
+.player-right {
+  width: 200px;
+  flex: none;
+}
+
+/* ======================== 曲库页：左曲目 + 右播放 ======================== */
+/* 原版没有独立的曲库页（曲子从游戏里来），但排版沿用同一套两栏骨架 */
+
+/* ★ 2026-10-18 补：原版曲库页顶部的四个页签（古典 / ACG / 轻音乐 / 我的上传）。
+   原版语言包 zh-cn-bd81633d.js：A="古典"、M="抒情"、D="摇滚"、E="爵士"、U="全部"、
+   t="我的上传"；页签容器在原版里就是 #tour-song-list 那一行 flex。
+   当前页签底部一道 2px 实线（原版的 tab-active 下边框），不是整块高亮 ——
+   整块高亮会跟下面的曲目行选中态撞成一片，分不清谁是谁。 */
+.library-tabs {
+  display: flex;
+  gap: 20px;
+  padding: 4px 12px 0;
+  flex-shrink: 0;
+}
+.library-tab {
+  position: relative;
+  padding: 6px 0 8px;
+  border: 0;
+  background: none;
+  font-size: 13px;
+  color: var(--tp-text-tertiary);
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+.library-tab:hover { color: var(--tp-text-secondary); }
+.library-tab.on { color: var(--tp-text-title); }
+.library-tab.on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--tp-primary-1);
+}
+/* 页签上的条数：原版是「古典 48」这种同字号小灰字跟在后面，
+   不做成徽标块（块状会和下划线的选中态打架）。 */
+.library-tab-n {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「最近演出」的行：骨架同 .song-item，只是中间换成 title+sub 两行（复用
+   .song-item-content）、行尾是相对时间。曲子已被删掉（.is-gone）时整行降色并禁用点击。 */
+.song-item.is-gone {
+  opacity: 0.45;
+  cursor: default;
+}
+.song-item.is-gone .song-item-icon { background: var(--tp-grey-1); }
+
+/* ★ 2026-10-18 补：三列表头（# / 曲目 / 模式），原版就这一行，
+   底下一条横贯分隔线。字号比正文小、颜色取 tertiary，是表头不是内容。
+   ★ 它必须排在 #songs **前面**（flex column 顺序）：放在后面表头会掉到列表底下去，
+   把 .mail-footer 挤出 0 高度（实测过，所以 DOM 顺序不要改）。 */
+.song-list-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px 6px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--tp-text-tertiary);
+}
+.song-list-head-index {
+  flex: none;
+  width: 18px;
+  text-align: right;
+}
+.song-list-head-title { flex: 1 1 auto; min-width: 0; }
+.song-list-head-mode { flex: none; width: 44px; text-align: right; }
+
+
+.library {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.library-sidebar {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 360px;
+  height: 100%;
+  padding: 12px;
+  border-radius: var(--tp-radius-2);
+  background: var(--glass-a);
+  border: 1px solid var(--glass-a-border);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.library-content {
+  display: flex;
+  flex: 2 1 0;
+  flex-direction: column;
+  min-width: 548px;
+  height: 100%;
+  border-radius: var(--tp-radius-2);
+  background: var(--glass-b);
+  border: 1px solid var(--glass-b-border);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  overflow: hidden;
+}
+
+/* 曲目列表行沿用 .mail-item 的骨架，只换图标底色 */
+/* ★ 2026-10-18 修：`.song-item-index`（行首序号）从行里去掉。用户的原版截图里
+   `#` 只是表头那一列，行本身是「封面 + 曲名 + 副标题」三件套 ——
+   行首再来一排 1/2/3… 是列表自带的序号，不是行内容。 */
+.song-item {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.song-item:hover,
+.song-item-selected { background: var(--glass-selected); }
+.song-item-icon {
+  display: flex;
+  /* ★ 48px 是原版 w-12，不是 --tp-spacing-10（那个变量在本文件 :53 是 **40px**，
+     照着写缩略图会小一圈、跟曲名 18px 不成比例）。 */
+  height: 48px;
+  width: 48px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tp-radius-1);
+  background: var(--tp-grey-2);
+  color: var(--tp-text-secondary);
+  font-size: 18px;
+  font-weight: 500;
+  overflow: hidden;
+}
+.song-item-title {
+  font-size: 18px;
+  line-height: 22px;
+  /* ★ 原版 .mail-item-subject 是正文色（--tp-text-body = grey-8 #ced2d4）。
+     这里曾写成 --tp-text-secondary（grey-7 #a1a5ad），配上 .song-item-sub 反而是亮的 grey-9，
+     结果**曲名比副标题还暗**——一列看下去主次是反的。 */
+  color: var(--tp-text-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 副标题（演奏方式 / 入库状态）：比曲名小一号、暗一档，主次才对 */
+.song-item-sub,
+.song-item-time {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--tp-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 序号（或正在播时那个 ▶）：左栏最暗的一档，不该抢曲名 */
+.song-item-index {
+  flex: none;
+  width: 18px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.song-item-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 「官方」角标：有原版分时段演奏视频的那批 */
+.song-item-official {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(230, 224, 216, 0.16);
+  color: var(--tp-primary-1);
+  font-size: 11px;
+  line-height: 18px;
+  vertical-align: 2px;
+}
+/* 末尾的「入库」：小圆角按钮，悬停才显出来（原版 .mail-item:hover 那一套） */
+.song-item-import {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+.song-item:hover .song-item-import { opacity: 1; }
+.song-item-import:hover { background: rgba(255, 255, 255, 0.16); }
+
+/* ---- 歌单（照姊妹项目的「加播单 / 歌单管理」）-----------------------------
+   页签：用户起的名字可能很长，限制宽度、超出打省略号 —— 否则一个长名字
+   会把后面所有页签挤出可视区。 */
+.library-tab-folder {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 末尾那个「＋」：比普通页签窄，也不参与下划线选中态。 */
+.library-tab-new {
+  padding: 6px 6px 8px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--tp-text-secondary);
+}
+.library-tab-new:hover { color: var(--tp-text-title); }
+
+/* 行内的「加播单」：与「入库」同款小圆角，同样悬停才显；
+   两个按钮都悬停出现时并排站，中间留 6px。 */
+.song-item-add {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  margin-right: 6px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+.song-item:hover .song-item-add { opacity: 1; }
+.song-item-add:hover { background: rgba(255, 255, 255, 0.16); }
+
+/* 「加播单」弹出来的歌单列表：贴着按钮定位（top/left 由 JS 算），
+   层级要高过播放条（z-index 50），但低于遮罩弹层。 */
+.folder-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: var(--tp-radius-3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(18, 18, 20, 0.92);
+  backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.folder-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--tp-radius-2);
+  font-size: 13px;
+  color: var(--tp-text-body);
+  cursor: pointer;
+}
+.folder-menu-row:hover { background: rgba(255, 255, 255, 0.08); }
+.folder-menu-row input { margin: 0; accent-color: var(--tp-primary-1); }
+.folder-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-menu-count {
+  font-size: 12px;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 歌单内容顶上的工具行：整夹播放 / 改名 / 删除 */
+.folder-tools {
+  display: flex;
+  gap: 8px;
+  padding: 2px 12px 10px;
+}
+.folder-play {
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.10);
+  color: var(--tp-text-title);
+  font-size: 12px;
+  cursor: pointer;
+}
+.folder-play:hover:not(:disabled) { background: rgba(255, 255, 255, 0.20); }
+.folder-play:disabled { opacity: 0.4; cursor: default; }
+.folder-tool {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--tp-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.folder-tool:hover { background: rgba(255, 255, 255, 0.10); color: var(--tp-text-title); }
+.folder-tool-danger:hover { background: rgba(214, 96, 77, 0.22); color: #f0b8ae; }
+
+/* 拖拽重排的视觉：被拖的那行降透明度，落点那行上边加一道亮线 */
+.song-item.is-dragging { opacity: 0.4; }
+.song-item.is-drop { box-shadow: inset 0 2px 0 var(--tp-primary-1); }
+
+/* 原版目录输入框：沿用玻璃材质，但尺寸对齐 .mail-item 的内边距 */
+.library-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0 16px 12px;
+}
+/* 分档结果那一行（古典 48 · ACG 68 · …）：比正文小一号、更暗，是旁注不是内容 */
+.library-note {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tp-text-tertiary);
+}
+.library-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--tp-radius-1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--tp-text-body);
+  font-size: 13px;
+  outline: none;
+}
+.library-field input:focus { border-color: rgba(255, 255, 255, 0.26); }
+.library-field button {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--tp-radius-1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--tp-text-body);
+  font-size: 13px;
+  cursor: pointer;
+}
+.library-field button:hover { background: rgba(255, 255, 255, 0.13); }
+
+/* 曲库右侧：舞台预览。原版播放器是全屏黑底 contain，这里同款但装在卡片里 */
+.library-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+.library-stage video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}

@@ -32,6 +32,33 @@ export const ERR = {
   COMMON_BODY_NOT_JSON: "COMMON_BODY_NOT_JSON",
   COMMON_BODY_NOT_OBJECT: "COMMON_BODY_NOT_OBJECT",
   COMMON_ROUTE_NOT_FOUND: "COMMON_ROUTE_NOT_FOUND",
+  // ★ 2026-10-18：字体引导要「打开官网去下载」，而 `openExternal()` 是唯一能
+  //   把用户带出程序的出口 —— 它一旦被随意传参，就是一个「点一下跳去任意地址」
+  //   的洞。所以前端和外壳两侧各有一份同样的主机名白名单
+  //   （app.js 的 ALLOWED_EXTERNAL_HOSTS / MainWindow.cs 的 AllowedExternalHosts），
+  //   不在名单里的一律不发，并回这个号。
+  //   ★ 归 COMMON 域而不是单开一个 EXTERNAL 域：它是**通用出口护栏**，
+  //     不属于信件/字体/导入任何一个业务域；用户看到「这个网址不在允许打开的名单里」
+  //     —— 下一步不用做任何事（程序自己拦的，不是他填错了什么）。
+  COMMON_EXTERNAL_URL_NOT_ALLOWED: "COMMON_EXTERNAL_URL_NOT_ALLOWED",
+
+  // ── 数据备份与恢复（照姊妹项目 data-safety.js 的号，只改域前缀）
+  //   ★ 归 COMMON 域：它管的是整个数据目录，不属于信件/曲库/字体任何一个业务域。
+  //   ★ 「名字无效」「正在用的库」「这份不存在」「打不开」必须分成四个号：
+  //     用户下一步动作完全不同 —— 名字无效是程序内部问题（贴日志）、正在用的是点错了
+  //     （换一份）、不存在是刷新列表、打不开是这份文件坏了（换一份旧的）。
+  COMMON_BACKUP_NAME_INVALID: "COMMON_BACKUP_NAME_INVALID",
+  COMMON_BACKUP_IS_LIVE: "COMMON_BACKUP_IS_LIVE",
+  COMMON_BACKUP_NOT_FOUND: "COMMON_BACKUP_NOT_FOUND",
+  COMMON_BACKUP_INVALID: "COMMON_BACKUP_INVALID",
+  COMMON_BACKUP_DATABASE_MISSING: "COMMON_BACKUP_DATABASE_MISSING",
+  //   这两个是「没有确认就不许动」：删除和恢复都不可撤销，误点一下少一份退路。
+  COMMON_BACKUP_DELETE_NOT_CONFIRMED: "COMMON_BACKUP_DELETE_NOT_CONFIRMED",
+  COMMON_RESTORE_NOT_CONFIRMED: "COMMON_RESTORE_NOT_CONFIRMED",
+  //   正在等待重启后恢复的那一份不能删 —— 删了就等于把用户自己刚下的决定撤掉了。
+  COMMON_BACKUP_PENDING_RESTORE: "COMMON_BACKUP_PENDING_RESTORE",
+  COMMON_EXPORT_TOO_LARGE: "COMMON_EXPORT_TOO_LARGE",
+
   COMMON_INTERNAL: "COMMON_INTERNAL",
 
   // ── 信件
@@ -44,6 +71,19 @@ export const ERR = {
   LIBRARY_SONG_REQUIRED: "LIBRARY_SONG_REQUIRED",
   LIBRARY_SONG_NOT_FOUND: "LIBRARY_SONG_NOT_FOUND",
   LIBRARY_TITLE_REQUIRED: "LIBRARY_TITLE_REQUIRED",
+
+  // ── 歌单（照姊妹项目的 PLAYLIST_ITEM_INCOMPLETE 一系）
+  // ★ 前缀用 LIBRARY_ 不是 PLAYLIST_：错误号的域是**枚举**（COMMON/LETTER/LIBRARY/
+  //   IDLE/FONT/IMPORT/PROACTIVE/MODEL/REPLY，见 tests/error-codes.test.js 第①条），
+  //   开一个新域要连带改测试与文档。歌单本来就是曲库的一部分 —— 它装的都是曲库曲目，
+  //   曲目不存在时回的还是 LIBRARY_SONG_NOT_FOUND —— 归进 LIBRARY 才对得上。
+  // ★ 「歌单不存在」与「歌单里没有这一首」必须分两个号：前者多半是歌单刚被删、
+  //   界面还拿着旧 id（刷新一下就好），后者是这首压根没加进去（用户要重新加）。
+  LIBRARY_FOLDER_NAME_REQUIRED: "LIBRARY_FOLDER_NAME_REQUIRED",
+  LIBRARY_FOLDER_NAME_TOO_LONG: "LIBRARY_FOLDER_NAME_TOO_LONG",
+  LIBRARY_FOLDER_NOT_FOUND: "LIBRARY_FOLDER_NOT_FOUND",
+  LIBRARY_PLAYLIST_ITEM_INCOMPLETE: "LIBRARY_PLAYLIST_ITEM_INCOMPLETE",
+  LIBRARY_PLAYLIST_ITEM_NOT_FOUND: "LIBRARY_PLAYLIST_ITEM_NOT_FOUND",
 
   // ── 待机素材
   IDLE_AMBIENCE_NOT_BOOL: "IDLE_AMBIENCE_NOT_BOOL",
@@ -72,6 +112,14 @@ export const ERR = {
   IMPORT_SOUL_UNREADABLE: "IMPORT_SOUL_UNREADABLE",
   IMPORT_BACKUP_FAILED: "IMPORT_BACKUP_FAILED",
   IMPORT_PREVIEW_STALE: "IMPORT_PREVIEW_STALE",
+  // ── 导出包（一键导入）那一支：与 .soul 导入同样是「拿一个外部文件进来」，同归 IMPORT 域
+  //    ★ 五个号对应五种不同的坏法，用户动作各不相同：
+  //      不是 zip / zip 里没文件 / 里面没有那个库文件（不是本程序导出的）/ 包太大（先别导）。
+  IMPORT_TOO_LARGE: "IMPORT_TOO_LARGE",
+  IMPORT_NAME_INVALID: "IMPORT_NAME_INVALID",
+  IMPORT_ZIP_INVALID: "IMPORT_ZIP_INVALID",
+  IMPORT_ZIP_EMPTY: "IMPORT_ZIP_EMPTY",
+  IMPORT_LAYOUT_INVALID: "IMPORT_LAYOUT_INVALID",
 
   // ── 主动来信设置
   PROACTIVE_SETTINGS_INVALID: "PROACTIVE_SETTINGS_INVALID",

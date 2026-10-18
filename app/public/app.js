@@ -47,6 +47,11 @@ async function api(path, options = {}) {
   if (method !== "GET" && method !== "HEAD") {
     headers["X-Linli-Token"] = await ensureToken();
   }
+  // ★ options.auth = true：连 GET 也带令牌。数据备份/恢复那一组接口收的是本机敏感数据
+  //   （备份清单、待恢复来源、导出包），服务端对它们的 GET 同样要求令牌 —— 否则同机的
+  //   另一个网页/进程能读到「你的备份都在哪、下次开机会恢复成哪一份」。
+  //   默认仍只在写操作时带，免得每条 GET 都多一次 ensureToken() 的时序耦合。
+  if (options.auth) headers["X-Linli-Token"] = await ensureToken();
   const response = await fetch(path, { method, headers, body: options.body ? JSON.stringify(options.body) : undefined });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -81,6 +86,10 @@ function show(page) {
 for (const btn of document.querySelectorAll(".rb")) {
   btn.addEventListener("click", () => show(btn.dataset.page));
 }
+// 信箱页顶栏那枚齿轮就是「设置」的另一个入口（原版信箱页右上角也有一个齿轮）。
+// ★ 走 show("settings") 而不是自己切 class：切页要带的副作用（停播放、加载数据）
+//   都挂在 show() 里，绕过它就只换了个画面。
+$("mailGear")?.addEventListener("click", () => show("settings"));
 
 // ---------------------------------------------------------------- 信箱
 
@@ -117,95 +126,97 @@ function renderLetterList() {
   const host = $("letters");
   const count = $("mailCount");
   if (count) count.textContent = String(lettersCache.length);
+  if (!host) return;
   if (!lettersCache.length) {
-    host.innerHTML = `<p class="hint">还没有信。点左下角写第一封。</p>`;
+    host.innerHTML = `<p class="hint" style="padding:8px 12px">还没有信。点下面「写信」写第一封。</p>`;
     return;
   }
+  // ★ 2026-10-18 照原版 MailBoxItem 重排：40×40 图标 + 标题 + 时间，选中/悬停同一底色。
+  //   原版图标底色按类型分（寄出 #6B645B / 回信 #4F6F5E / 错误 #2F3036），我们照抄这三个色值。
+  //   未读另加一个小圆点 + 标题加粗（原版 .mail-item-subject-unread）。
   host.innerHTML = lettersCache.map((item) => {
     const her = item.origin === "proactive";
-    const title = her ? `她写来一封：${firstLine(item.reply_text, 14)}` : (firstLine(item.content) || "（空信）");
-    const unread = item.is_read === 0 && item.reply_text ? `<span class="unread-dot"></span>` : "";
-    return `<button class="mrow${item.id === selectedLetterId ? " on" : ""}" data-id="${escapeHtml(item.id)}" type="button">
-      <span class="mri">${her ? "✉" : "✎"}</span>
-      <span class="mrt"><b>${escapeHtml(title)}</b><span>${formatTime(item.replied_at || item.created_at)} · ${letterState(item)}</span></span>
+    const failed = item.status === 5 && item.error;
+    const pending = !item.reply_text && !failed;
+    const title = her
+      ? `她写来一封：${firstLine(item.reply_text, 14)}`
+      : (firstLine(item.content) || "（空信）");
+    const iconClass = failed ? "is-error" : her || pending ? "is-pending" : "is-send";
+    const icon = failed ? "!" : her ? "✉" : pending ? "✎" : "✉";
+    const unread = item.is_read === 0 && item.reply_text ? `<span class="mail-item-unread"></span>` : "";
+    const unreadClass = item.is_read === 0 && item.reply_text ? " mail-item-subject-unread" : "";
+    return `<div class="mail-item${item.id === selectedLetterId ? " mail-item-selected" : ""}" data-id="${escapeHtml(item.id)}" role="button" tabindex="0">
+      <span class="mail-item-icon ${iconClass}">${icon}</span>
+      <span class="mail-item-content">
+        <span class="mail-item-subject${unreadClass}">${escapeHtml(title)}</span>
+        <span class="mail-item-time">${formatTime(item.replied_at || item.created_at)} · ${letterState(item)}</span>
+      </span>
       ${unread}
-    </button>`;
+    </div>`;
   }).join("");
-  for (const row of host.querySelectorAll(".mrow")) {
+  for (const row of host.querySelectorAll(".mail-item")) {
     // ★ 信件 id 是服务端给的 UUID（randomUUID），不是自增整数 —— 别做数字转换。
     row.addEventListener("click", () => selectLetter(row.dataset.id));
+    // 键盘可达：这是 div 不是 button，Enter / 空格要自己接。
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        selectLetter(row.dataset.id);
+      }
+    });
   }
 }
 
-/** 右栏：选中了就显示往来，没选中就是空态。 */
+/** 右栏：选中了就显示往来，没选中就是空态。
+ *  ★ 2026-10-18 照原版 MailBox 重排：右栏不再是"上下两条"，而是**一张 16:9 明信片卡**
+ *    （原版 .mail-responsive-card { min-width:516px; min-height:290px; aspect-ratio:16/9 }），
+ *    点这张卡才拆信封（信封打开那一段在 mail-ui.js 的 openEnvelope）。
+ */
 function renderReader() {
-  const box = $("reader");
   const empty = $("mailEmpty");
   // 宿主缺失就直接返回，不要在 null 上设属性：抛出去会被全局 onerror 抓走塞进 toast，
   // 用户看到的是一句英文 TypeError，而不是「读信区没画出来」这个真问题。
-  if (!box || !empty) return;
+  if (!empty) return;
+  const ui = window.__mailUI;
+  if (!ui) return;
+  // ★ 正在写信时右栏的东家长是那张写信卡，不是信 —— 而 loadLetters 每 5 秒**无条件**
+  //   重画一次右栏，会把用户写到一半的草稿连卡一起清掉（2026-10-18 实测：
+  //   点「写信」后等 6 秒 textarea 就没了）。所以这条轮询必须在这里让路。
+  if (ui.composing) return;
   const item = lettersCache.find((l) => l.id === selectedLetterId);
   if (!item) {
-    box.hidden = true;
-    box.innerHTML = "";
-    empty.hidden = false;
-    const sub = empty.querySelector(".es");
-    if (sub) sub.textContent = lettersCache.length ? "点击左侧信箱栏阅读信件" : "还没有信。左下角可以写第一封。";
+    ui.showEmpty(lettersCache.length ? "点击左侧信箱栏阅读信件" : "还没有信。点下面「写信」写第一封。");
     return;
   }
-  empty.hidden = true;
-  box.hidden = false;
-  const parts = [];
-  // ---- 我写出去的那封：走「明信片」卡（原版 .mail-responsive-card 是 16:9 的横卡）----
-  if (item.origin !== "proactive") {
-    parts.push(`
-      <div class="letter">
-        <div class="meta"><span class="who me">我</span><span class="when">${formatTime(item.created_at)}</span></div>
-        <!-- ★ mine：这封是**用户自己写的**，要用他自己那支字（--compose-font），
-             不能和林离那封同一支 —— 两个人字迹相同，一屏里就分不出谁写的了。 -->
-        <div class="body mine">${escapeHtml(item.content)}</div>
-      </div>`);
-  }
-  parts.push(replyCard(item));
-  box.innerHTML = parts.join("");
+  const card = replyCard(item);
+  if (card) ui.renderCard(card);
 }
 
 /**
- * 她的回信 —— 照原版结构做成一张**16:9 的明信片卡**。
- * ★ 原版口径（assets/main-31595bd3.js 的 MailBoxReplyContent + index-9ba3e01a.css）：
- *   · .mail-responsive-card / .mail-card-content
- *     { width:auto; min-width:516px; min-height:290px; max-width:100%; aspect-ratio:16/9 }
- *   · 正文 .mail-box-reply-content-text
- *     { font-family:SentyTEA; padding:24px 28px; font-size:20px; line-height:1.5;
- *       white-space:pre-wrap; color:var(--tp-surface-1) }
- *   · 底图按状态换三张（这套三态是原版**本来就有**的，不是我们加的）：
- *       postcard_letter.webp  正常回信
- *       postcard_sealed.webp  已封
- *       postcard_retry.webp   失败、可重试
- *   · 另有一张 postcard_video.webp 是「她正在写」时用的（min-height:250px）。
+ * 把一封信折成 renderCard 要的形状 —— 三态照原版（这套态是原版**本来就有**的，不是我们加的）：
+ *   · postcard_letter.webp  正常回信（可拆信封）
+ *   · postcard_sealed.webp  已封
+ *   · postcard_retry.webp   失败、可重试
+ *   · postcard_video.webp   她正在写（min-height:250px）
+ * ★ 2026-10-17：**只有带着 error 的 5 才是失败**。搬进来的旧信也是 5，
+ *   它们没有回信、但也没出过错 —— 按「无回信」渲染，别给它盖一张失败卡。
  */
 function replyCard(item) {
-  const tag = item.origin === "proactive" ? `<span class="tag">她先写的</span>` : "";
-  const when = formatTime(item.replied_at || item.created_at);
-  let kind, body;
-  // ★ 2026-10-17：**只有带着 error 的 5 才是失败**。搬进来的旧信也是 5，
-  //   它们没有回信、但也没出过错 —— 按「无回信」渲染，别给它盖一张失败卡（那张卡是给重试用的）。
+  const pro = item.origin === "proactive";
   if (item.status === 5 && item.error) {
-    kind = "retry";
-    body = `<div class="reply-text err">${escapeHtml(item.error)}</div>`;
-  } else if (item.reply_text) {
-    kind = "letter";
-    body = `<div class="reply-text">${escapeHtml(item.reply_text)}</div>`;
-  } else {
-    // 她还在写：原版这时候用的就是 postcard_video 那张（配一段循环视频）。
-    kind = "video";
-    body = `<div class="reply-text pending">她还在写……</div>`;
+    return { kind: "retry", from: "林离", when: formatTime(item.replied_at || item.created_at), text: item.error, canOpen: false };
   }
-  return `
-    <div class="letter">
-      <div class="meta"><span class="who her">林离</span>${tag}<span class="when">${when}</span></div>
-      <div class="reply-card" data-kind="${kind}">${body}</div>
-    </div>`;
+  if (item.reply_text) {
+    return {
+      kind: "letter",
+      from: pro ? "林离（她先写来）" : "林离",
+      when: formatTime(item.replied_at || item.created_at),
+      text: item.reply_text,
+      canOpen: true,
+    };
+  }
+  // 她还在写
+  return { kind: "video", from: "林离", when: formatTime(item.created_at), text: "她还在写……", canOpen: false };
 }
 
 /** ★ 走 api() 而不是裸 fetch：写操作服务端一律要 X-Linli-Token，
@@ -216,7 +227,6 @@ function markRead(id) {
 
 function selectLetter(id) {
   selectedLetterId = id;
-  showCompose(false);                  // 选中信件 ⇒ 右栏从"写信"切回"读信"
   renderLetterList();
   renderReader();
   const item = lettersCache.find((l) => l.id === id);
@@ -227,73 +237,30 @@ function selectLetter(id) {
   }
 }
 
-/**
- * 写信卡右上角那枚**视频邮票**（原版叫 mail_stamp，见 assets/main-31595bd3.js 的
- * MailBoxWriteContent）。★ 原版口径：
- *   · 4 支循环视频随机挑一支（`i=[Sa,ka,$a,Ca]` + `Math.random`）
- *   · 元素是 <video autoplay muted loop playsinline>，每次卡片**变得可见**时 play()
- *     （`watch(() => isVisible, async A => { if (A) { …await h.value.play() } })`）
- *   · 关掉视频时退回静态邮票图（`useVideoStamp` 为假走 <img>）
- * 我们照抄这套：可见时换一支、播起来；播不动（解码器缺失等）就退回静态图。
+/** 拉信件列表并重画。★ 这个函数在 2026-10-18 重排时被整段替换掉了（连同写信卡），
+ *  可它下面还有 4 处调用，少一行就是整个页面启动即 ReferenceError。
+ *  ★ 轮询每 5 秒跑一次，所以这里**不能**动用户正在阅读的那封：
+ *    选中的还在就保持不动，不在了才退回到"有未读先摆未读"。
  */
-const STAMP_VIDEOS = [
-  "mail/mail_stamp_1.mp4", "mail/mail_stamp_2.mp4",
-  "mail/mail_stamp_3.mp4", "mail/mail_stamp_4.mp4",
-];
-const STAMP_IMAGES = ["mail/stamp_1.webp", "mail/stamp_2.webp", "mail/stamp_3.webp"];
-
-function pickStamp(list) {
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-function stampStart() {
-  const video = $("writeStampVideo");
-  const img = $("writeStampImg");
-  if (!video || !img) return;
-  video.src = pickStamp(STAMP_VIDEOS);
-  img.src = pickStamp(STAMP_IMAGES);
-  video.hidden = false;
-  img.hidden = true;
-  // 每次显示都从头播 —— 原版也是每次可见就 play()，不是接着上一轮的进度。
-  video.currentTime = 0;
-  const p = video.play();
-  if (p && typeof p.catch === "function") {
-    p.catch(() => stampFallback());     // 播不动就退回静态邮票，别留一个空白洞
-  }
-  // 解码中途失败（编解码器缺失、文件被删）也走同一条退路。
-  video.onerror = stampFallback;
-}
-
-function stampFallback() {
-  const video = $("writeStampVideo");
-  const img = $("writeStampImg");
-  if (!video || !img) return;
-  try { video.pause(); } catch { /* 没在播就算了 */ }
-  video.hidden = true;
-  img.hidden = false;
-}
-
-function showCompose(on) {
-  if ($("composePanel")) $("composePanel").hidden = !on;
-  if (on) {
-    const reader = $("reader");
-    const mailEmpty = $("mailEmpty");
-    if (reader) reader.hidden = true;
-    if (mailEmpty) mailEmpty.hidden = true;
-    $("compose")?.focus();
-    stampStart();                      // ★ 卡片一露出来就换一支新邮票并开始播
-  } else {
-    stampStop();
-    renderReader();                    // 复原成"读信 / 空态"
+async function loadLetters(keepSelection = null) {
+  try {
+    const { letters } = await api("/api/letters");
+    lettersCache = letters;
+    const stillThere = selectedLetterId !== null && letters.some((l) => l.id === selectedLetterId);
+    if (!stillThere) {
+      const target = keepSelection ? letters.find((l) => l.id === keepSelection) : null;
+      const unread = target ?? letters.find((l) => l.is_read === 0 && l.reply_text);
+      selectedLetterId = unread ? unread.id : null;
+      if (unread && unread.is_read === 0) markRead(unread.id);
+    }
+    renderLetterList();
+    renderReader();
+    updateComposeQuota();
+  } catch (error) {
+    toast(error.message);
   }
 }
 
-/** 离开写信卡就停掉邮票：让它挂在后台空转是白烧 CPU/电。 */
-function stampStop() {
-  const video = $("writeStampVideo");
-  if (!video) return;
-  try { video.pause(); } catch { /* 没在播就算了 */ }
-}
 
 /** 左下角那条：说今天寄了几封（事实），不编一个我们根本没有的每日限额。 */
 function updateComposeQuota() {
@@ -310,53 +277,25 @@ function updateComposeQuota() {
     : "今天还没有寄出";
 }
 
-async function loadLetters(keepSelection = null) {
-  try {
-    const { letters } = await api("/api/letters");
-    lettersCache = letters;
-    // 已经选中的那封还在 ⇒ 保持不动（每 5 秒一次的轮询不该把用户正在读的信顶掉）。
-    const stillThere = selectedLetterId !== null && letters.some((l) => l.id === selectedLetterId);
-    if (!stillThere) {
-      // 有没读过的就先摆出来给她看；全都读过了就留空态 —— 两个状态都要能到。
-      const target = keepSelection ? letters.find((l) => l.id === keepSelection) : null;
-      const unread = target ?? letters.find((l) => l.is_read === 0 && l.reply_text);
-      selectedLetterId = unread ? unread.id : null;
-      if (unread && unread.is_read === 0) markRead(unread.id);
-    }
-    renderLetterList();
-    renderReader();
-    updateComposeQuota();
-  } catch (error) {
-    toast(error.message);
-  }
-}
+// ---------------------------------------------------------------- 给 mail-ui.js 的接口
+// mail-ui.js 只管排版与交互（信封展开、写信卡），读写接口留在本文件 ——
+// 这样 api() / 令牌 / 错误号那套还只有一份实现，不会在两边各长一套。
 
-$("openCompose")?.addEventListener("click", () => showCompose(true));
-$("cancelCompose")?.addEventListener("click", () => showCompose(false));
-$("mailHelp")?.addEventListener("click", () => toast("左边是你们的往来，点一封就在右边读。收起窗口她照样会写。"));
+window.__mailToast = (text) => toast(text);
+window.__mailCodeText = (message, code) => codeText(message, code);
+window.__mailStopPlayer = () => stopPlayerWatch();
+// 取消写信 / 寄出之后回到读信态。★ 这里**不看** DOM 上还有没有写信卡：
+//   mail-ui.js 每次都先自己把卡拆了再叫这条，那正是我们想要的结果；
+//   按"卡还在就不重画"来挡，等于永远不重画（2026-10-18 踩到）。
+window.__mailRefresh = () => renderReader();
 
-$("sendBtn").addEventListener("click", async () => {
-  const content = $("compose").value.trim();
-  // ★ 前端先挡一次是为了不让用户白等一个来回；但**号必须与后端同一个**（LETTER_EMPTY），
-  //   否则同一个错误会随"谁先发现"而报出两个不同的号，排查时对不上。
-  if (!content) return toast(codeText("信是空的", "LETTER_EMPTY"));
-  const btn = $("sendBtn");
-  btn.disabled = true;
-  btn.textContent = "寄出中……";
-  try {
-    const { id } = await api("/api/letters", { method: "POST", body: { content } });
-    $("compose").value = "";
-    toast("已寄出，等她回信");
-    selectedLetterId = null;
-    await loadLetters(id);             // 刚寄出的那封直接选中，右侧立刻变成"她还在写……"
-    showCompose(false);
-  } catch (error) {
-    toast(error.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "寄出";
-  }
-});
+/** 「寄出信件」：与旧按钮同一条链路（先本地挡空信，再 POST，成功后重拉列表并选中刚寄出的那封）。 */
+window.__mailSend = async (content) => {
+  const { id } = await api("/api/letters", { method: "POST", body: { content } });
+  toast("已寄出，等她回信");
+  selectedLetterId = id;
+  await loadLetters(id);             // 刚寄出的那封直接选中，右侧立刻变成"她还在写……"
+};
 
 // ---------------------------------------------------------------- 曲库
 
@@ -366,6 +305,147 @@ let deskSongs = [];       // 已入库（"音乐桌面"上摆着的）
 //   页签值直接就是分档名，因为分档是服务端算好的：前端不做任何分类判断。
 const LIB_TABS = ["古典", "ACG", "轻音乐", "我的上传"];
 let libTab = LIB_TABS[0];
+// 歌单：左栏页签里的最后几个（在四个分档之后）。名称与顺序跟着服务端，
+// 前端不缓存名字，只缓存 id → 详情，避免改名后两处对不上。
+let folders = [];         // [{id, name, order, count, ...}]
+let openFolderId = null;  // 当前点开的歌单（null = 没点开任何歌单）
+let folderDetail = null;  // 上面那个歌单的完整内容（含条目）
+
+/** 原版「最近演出」的相对时间（语言包 T="刚刚" V="{n}分钟前" W="{n}小时前" X="{month}月{day}日"）。
+ *  ★ 口径照原版：一分钟内说「刚刚」，一小时内说「n 分钟前」，一天内说「n 小时前」，
+ *    超过一天就直接给日期 —— 原版就是这么粗，不要自作聪明加"昨天/前天"。 */
+function recentLabel(playedAt, now) {
+  const delta = Math.max(0, (now ?? Math.floor(Date.now() / 1000)) - playedAt);
+  if (delta < 60) return "刚刚";
+  if (delta < 3600) return `${Math.floor(delta / 60)} 分钟前`;
+  if (delta < 86400) return `${Math.floor(delta / 3600)} 小时前`;
+  const d = new Date(playedAt * 1000);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/** 上一次点「播放」的那首 + 那批「最近演出」。
+ *  ★ 2026-10-18：原来左栏只有四个分档页签，用户根本看不出"我刚才听的去哪了"。
+ *    原版有「最近演出」这一栏（语言包 Q="最近演出"），这里补上。 */
+let recentSongs = [];
+let recentNow = 0;
+
+async function loadRecent() {
+  try {
+    const data = await api("/api/library/recent?limit=12");
+    recentSongs = data.songs ?? [];
+    recentNow = data.now ?? Math.floor(Date.now() / 1000);
+  } catch {
+    recentSongs = [];   // 拿不到就当没有历史，不影响曲库本身
+  }
+}
+
+// ---------------------------------------------------------------- 歌单
+// 照姊妹项目（E:\olivia-soul-community-kit\repo\source\local-service\public\
+// game-favorites.js）的交互：曲目行上「加播单」→ 弹出歌单列表 → 勾选即写入、
+// 取消什么都不做；再点同一个按钮收回。姊妹项目那份是注入进原版游戏的，
+// 我们这边没有原版 feapp，所以同样的交互自己画。
+
+async function loadFolders() {
+  try {
+    const data = await api("/api/folders");
+    folders = data.folders ?? [];
+  } catch {
+    folders = [];   // 拿不到就当没有歌单，不影响曲库本身
+  }
+}
+
+async function openFolder(id) {
+  try {
+    const data = await api(`/api/folders/${encodeURIComponent(id)}`);
+    openFolderId = id;
+    folderDetail = data.folder;
+  } catch (error) {
+    // 这个歌单已经不在了（多半是另一个窗口删的）：退回"没点开"的状态，
+    // 别让左栏停在一个读不到内容的页签上。
+    openFolderId = null;
+    folderDetail = null;
+    toast(error.message);
+    await loadFolders();
+  }
+  renderLibTabs();
+  renderSongs();
+}
+
+/** 把一首歌加进歌单 / 从歌单里拿走。成功后刷新页签计数与当前列表。 */
+async function toggleFolderItem(folderId, dir, add) {
+  try {
+    if (add) {
+      await api(`/api/folders/${encodeURIComponent(folderId)}/items`, { method: "POST", body: { dir } });
+    } else {
+      await api(`/api/folders/${encodeURIComponent(folderId)}/items?dir=${encodeURIComponent(dir)}`, { method: "DELETE" });
+    }
+    await loadFolders();
+    if (openFolderId) await openFolder(openFolderId);
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+}
+
+async function createFolder(name) {
+  try {
+    const data = await api("/api/folders", { method: "POST", body: { name } });
+    folders = data.folders ?? folders;
+    renderLibTabs();
+    return data.folder;
+  } catch (error) {
+    toast(error.message);
+    return null;
+  }
+}
+
+async function renameFolder(folderId, name) {
+  try {
+    const data = await api(`/api/folders/${encodeURIComponent(folderId)}`, { method: "PATCH", body: { name } });
+    folders = data.folders ?? folders;
+    if (openFolderId === folderId && data.folder) folderDetail = data.folder;
+    renderLibTabs();
+    renderSongs();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+}
+
+async function deleteFolder(folderId) {
+  try {
+    const data = await api(`/api/folders/${encodeURIComponent(folderId)}`, { method: "DELETE" });
+    folders = data.folders ?? [];
+    if (openFolderId === folderId) {
+      openFolderId = null;
+      folderDetail = null;
+    }
+    renderLibTabs();
+    renderSongs();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+}
+
+/** 重排：把新的 dir 顺序整份发给服务端（它只认歌单里已有的曲目，缺的按原序接在后面）。 */
+async function reorderFolder(folderId, order) {
+  try {
+    const data = await api(`/api/folders/${encodeURIComponent(folderId)}/items`, {
+      method: "PATCH",
+      body: { order },
+    });
+    if (openFolderId === folderId) folderDetail = data.folder;
+    renderSongs();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+}
 
 async function loadLibrary() {
   try {
@@ -383,6 +463,9 @@ async function loadLibrary() {
         : `${total} 首 · 导入时自动分档：${genreTally()}`;
     }
     await loadImported();              // 表格要知道哪些已入库，所以先拉它
+    await loadRecent();                // 「最近演出」要在页签前拿到，页签上带条数
+    await loadFolders();               // 歌单页签也排在页签行里，条数跟着一起出
+    renderLibTabs();
     renderSongs();
   } catch (error) {
     toast(error.message);
@@ -396,68 +479,358 @@ function genreTally() {
   return LIB_TABS.filter((g) => counts.get(g)).map((g) => `${g} ${counts.get(g)}`).join(" · ");
 }
 
-/** 模式列：独奏 / 弹唱 / 个人上传 —— 跟原版那一列同一个意思。
- *  ★ 以前这里写的是"这一首有哪几个时段的变体"（白天/傍晚/夜晚的小胶囊）。
- *    那是把「模式」这一列读错了：原版的模式说的是**演奏方式**，不是时段。
- *    而且三个小胶囊在一行里最扎眼 —— 用户说"有点乱"就有它一份。
- *    有没有变体、能不能入库，交给右边那个按钮（入库 / 已在桌面）去说。 */
-function modeCell(song) {
-  return `<span class="tr-mode-t">${escapeHtml(song.mode ?? "")}</span>`;
+/** 曲库列表里的一行。★ 2026-10-18 照原版 SongCard 重排：
+ *  48×48 圆角封面（没有封面就用曲名首字）+ 曲名(18px) + 副标题演奏方式(12px)
+ *  + 行末 hover 才出现的「入库」。
+ *  ★ 原版口径：行 = 「封面 + 曲名 + 副标题」三件套，`#` 序号属于表头那一列，
+ *    不在行里重复画（用户 m11700 原话「这个曲库做的太不像了」）。
+ *  ★ 原版没有 emoji，缩略图一律用文字/色块。
+ */
+function songRow(song, index) {
+  const inDesk = deskSongs.some((s) => s.dir === song.dir);
+  const on = song.dir === player.dir;
+  // 「官方」标记：目录名符合原版 TOD 命名（<曲名>_TOD1200/1730/2000_*_L.mp4）的，
+  // 能按当前时段出片；其余是用户自己放进来的。标记用来解释"为什么这首点开是黑的"。
+  const official = song.todVariants > 0;
+  const initial = (song.name ?? "?").trim().charAt(0) || "?";
+  // 「加播单」只在已入库的曲目上出现：歌单条目要求曲目在 songs 表里
+  // （服务端 POST /api/folders/:id/items 会回 LIBRARY_SONG_NOT_FOUND），
+  // 界面上就别给一个点了必然失败的按钮。
+  const addBtn = inDesk
+    ? `<button class="song-item-add" data-add-folder="${escapeHtml(song.dir)}" type="button" title="加进歌单">加播单</button>`
+    : "";
+  return `<div class="song-item${on ? " song-item-on" : ""}" data-dir="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" title="${escapeHtml(song.dir)}">
+    <span class="song-item-icon">${escapeHtml(initial)}</span>
+    <span class="song-item-content">
+      <span class="song-item-title">${escapeHtml(song.name)}${official ? `<span class="song-item-official" title="有原版分时段的演奏视频">官方</span>` : ""}</span>
+      <span class="song-item-sub">${escapeHtml(song.mode ?? "")}</span>
+    </span>
+    ${addBtn}
+    <button class="song-item-import" data-import="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" type="button">${inDesk ? "已在桌面" : "入库"}</button>
+  </div>`;
+}
+
+/** 「加播单」下拉：列出全部歌单，勾选即加入，取消什么都不做。
+ *  ★ 照姊妹项目 game-favorites.js 的行为 —— 再点同一个按钮就收回，
+ *    列表顶部留一行「新建歌单」当作没有歌单时的去处。 */
+function openAddToFolderMenu(anchor, dir) {
+  closeAddToFolderMenu();
+  if (!folders.length) {
+    toast("还没有歌单。先点页签栏最后的「＋」建一个。");
+    return;
+  }
+  const menu = document.createElement("div");
+  menu.className = "folder-menu";
+  // 勾选态要真去问：这首歌可能已经在几个歌单里了。逐个歌单要详情太浪费
+  // （几百个歌单就是几百次请求），所以开菜单时只画、勾选态等答案回来再补。
+  menu.innerHTML = folders.map((f) => `
+    <label class="folder-menu-row" title="${escapeHtml(f.name)}">
+      <input type="checkbox" data-folder-pick="${escapeHtml(f.id)}" disabled>
+      <span class="folder-menu-name">${escapeHtml(f.name)}</span>
+      <span class="folder-menu-count">${f.count ?? 0}</span>
+    </label>`).join("");
+  document.body.appendChild(menu);
+  const box = anchor.getBoundingClientRect();
+  // 贴着按钮弹：默认往下，靠近窗口底边就翻到上面去。
+  const top = box.bottom + 6 + menu.offsetHeight > window.innerHeight
+    ? box.top - menu.offsetHeight - 6
+    : box.bottom + 6;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  for (const input of menu.querySelectorAll("[data-folder-pick]")) {
+    input.addEventListener("change", async () => {
+      const ok = await toggleFolderItem(input.dataset.folderPick, dir, input.checked);
+      if (!ok) input.checked = !input.checked;   // 写失败就把勾去掉，别让界面撒谎
+    });
+  }  // 勾选态：并发问一遍（歌单数一般个位数，够了）。
+  Promise.all(folders.map(async (f) => {
+    try {
+      const data = await api(`/api/folders/${encodeURIComponent(f.id)}`);
+      const hit = (data.folder?.items ?? []).some((it) => it.dir === dir);
+      const input = menu.querySelector(`[data-folder-pick="${CSS.escape(f.id)}"]`);
+      if (input) {
+        input.checked = hit;
+        input.disabled = false;
+      }
+    } catch {
+      // 这个歌单读不到（可能刚被删）：留着禁用态，用户点不动也就不会误操作
+    }
+  }));
+  // 点外面收回（延迟一拍，免得这次点击本身又被当成"点外面"）。
+  // ★ 菜单里点一下**不算**点外面：用户要在同一首歌上连续勾几个歌单，
+  //   一次勾完就收起来会逼他每勾一个都重新点「加播单」，几首歌就得点几十次。
+  setTimeout(() => {
+    document.addEventListener("click", (e) => {
+      if (!menu.isConnected) return;
+      if (menu.contains(e.target)) return;
+      closeAddToFolderMenu();
+    }, { once: true });
+  }, 0);
+}
+
+function closeAddToFolderMenu() {
+  for (const old of document.querySelectorAll(".folder-menu")) old.remove();
+}
+
+/** 整夹播放：把歌单的曲目顺序交给播放队列，从第一首开始。 */
+async function playFolder(folderId) {
+  try {
+    const data = await api(`/api/folders/${encodeURIComponent(folderId)}`);
+    const f = data.folder;
+    if (!f?.items?.length) {
+      toast("这个歌单还是空的。");
+      return;
+    }
+    setQueue(f.items.map((it) => ({ dir: it.dir, name: it.name })), 0);
+    await play(f.items[0].dir, f.items[0].name);
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function renderSongs() {
   const host = $("songs");
-  const inDesk = new Set(deskSongs.map((s) => s.dir));
-  const rows = allSongs.filter((s) => s.genre === libTab);
-  if (!rows.length) {
-    host.innerHTML = `<p class="hint">这一档还没有曲目。（分档是导入时按目录名自动做的，设置页可以改曲库目录）</p>`;
+  if (!host) return;
+  const count = $("songCount");
+  if (count) count.textContent = String(allSongs.length);
+  // 「最近演出」那一栏第三列显示的是相对时间而不是模式，表头跟着换字。
+  const modeHead = document.querySelector(".song-list-head-mode");
+  // 歌单：点开某个歌单时，列表换成它自己的条目，并且出现一条"整夹播放"的工具行。
+  if (openFolderId) {
+    renderFolderSongs(host, modeHead);
     return;
   }
-  // ★ 曲目这一格只放一行曲名。
-  //   以前下面还挂一行目录名（`Solo_Air_On_The_G_String_From_Orchestral_Suite_...`），
-  //   可它跟上面的曲名本来就是同一句话，只是一串下划线 —— 看过去就是重复，是"乱"的一份。
-  //   原版那一行写的是**艺人**（`Rachmaninoff · 4:18`），我们没有艺人，宁可不写，
-  //   也别拿目录名去凑那一行。想看目录名的，鼠标停在整行上有 title。
-  host.innerHTML = rows.map((s, i) => `
-    <div class="trow${s.dir === player.dir ? " on" : ""}" data-dir="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" title="${escapeHtml(s.dir)}">
-      <span class="tr-no">${i + 1}</span>
-      <span class="tr-t">
-        <span class="tr-thumb">${s.dir === player.dir ? "▶" : "♪"}</span>
-        <span class="tr-tt"><b>${escapeHtml(s.name)}</b></span>
-      </span>
-      <span class="tr-mode">${modeCell(s)}</span>
-      <span class="tr-act">
-        <button data-play="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" type="button">试听</button>
-        <button data-import="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" type="button">${inDesk.has(s.dir) ? "已在桌面" : "入库"}</button>
-      </span>
-    </div>`).join("");
-}
-
-async function loadImported() {
-  const host = $("imported");
-  if (!host) return;
-  try {
-    const { songs } = await api("/api/library/songs");
-    deskSongs = songs ?? [];
-    const c = $("deskCount");
-    if (c) c.textContent = String(deskSongs.length);
-    if (!deskSongs.length) {
-      host.innerHTML = `<p class="hint">音乐桌面还是空的。左边任意一行点「入库」，或者点上面「随机入库」。</p>`;
+  // ★ 「最近演出」不是一个分档（也没有 genre），它按 last_played_at 倒排，
+  //   行尾挂的是相对时间而不是「独奏/弹唱」那种模式字 —— 所以单开一条分支，
+  //   不去污染 allSongs 的过滤逻辑。
+  if (libTab === "最近演出") {
+    if (modeHead) modeHead.textContent = "演出时间";
+    if (!recentSongs.length) {
+      host.innerHTML = `<p class="hint" style="padding:8px 12px">还没演过。点一首的「播放」，这里就会记下时间。</p>`;
       return;
     }
-    host.innerHTML = deskSongs.map((s) => `
-      <button class="drow${s.dir === player.dir ? " on" : ""}" data-dir="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" type="button">
-        <span class="di">${s.dir === player.dir ? "▶" : "♪"}</span>
-        <span class="dt">
-          <b>${escapeHtml(s.name)}</b>
-          <span>${escapeHtml(s.mode ?? "")} · ${escapeHtml(s.genre ?? "")} · ${formatDay(s.added_at)}</span>
-        </span>
+    host.innerHTML = recentSongs.map((s) => {
+      // 历史里的曲子可能已经不在当前曲库目录里了（目录改过/文件删了），
+      // 这时仍然显示，但补上真正的分档名当副标题，不假装它是某一档的成员。
+      const known = allSongs.find((x) => x.dir === s.dir);
+      return recentRow(s, known);
+    }).join("");
+    return;
+  }
+  const rows = allSongs.filter((s) => s.genre === libTab);
+  if (modeHead) modeHead.textContent = "模式";
+  if (!rows.length) {
+    host.innerHTML = `<p class="hint" style="padding:8px 12px">这一档还没有曲目。（分档是导入时按目录名自动做的，设置页可以改曲库目录）</p>`;
+    return;
+  }
+  host.innerHTML = rows.map((s, i) => songRow(s, i)).join("");
+}
+
+/** 歌单内容。★ 跟分档列表的区别只有三处：
+ *  ① 有工具行（整夹播放 / 改名 / 删除）；
+ *  ② 每行末尾是「移出」而不是「入库」；
+ *  ③ 行可以拖拽重排（姊妹项目 folder-manager.js 那边也是拖拽排序）。 */
+function renderFolderSongs(host, modeHead) {
+  if (modeHead) modeHead.textContent = "模式";
+  const f = folderDetail;
+  if (!f) {
+    host.innerHTML = `<p class="hint" style="padding:8px 12px">这个歌单读不到了。</p>`;
+    return;
+  }
+  const tools = `<div class="folder-tools">
+    <button class="folder-play" data-folder-play="1" type="button"${f.items.length ? "" : " disabled"}>整夹播放</button>
+    <button class="folder-tool" data-folder-rename="1" type="button">改名</button>
+    <button class="folder-tool folder-tool-danger" data-folder-delete="1" type="button">删除歌单</button>
+  </div>`;
+  if (!f.items.length) {
+    host.innerHTML = `${tools}<p class="hint" style="padding:8px 12px">这个歌单还是空的。在右边任意一首曲目上点「加播单」就能加进来。</p>`;
+    bindFolderTools(host, f);
+    return;
+  }
+  const rows = f.items.map((item) => {
+    const known = allSongs.find((x) => x.dir === item.dir);
+    return folderItemRow(item, known);
+  }).join("");
+  host.innerHTML = tools + rows;
+  bindFolderTools(host, f);
+}
+
+/** 歌单里的一行：骨架同 songRow，行尾换成「移出」。 */
+function folderItemRow(item, known) {
+  const initial = (item.name ?? "?").trim().charAt(0) || "?";
+  const on = item.dir === player.dir;
+  return `<div class="song-item${on ? " song-item-on" : ""}" draggable="true" data-dir="${escapeHtml(item.dir)}" data-name="${escapeHtml(item.name)}" title="${escapeHtml(item.dir)}">
+    <span class="song-item-icon">${escapeHtml(initial)}</span>
+    <span class="song-item-content">
+      <span class="song-item-title">${escapeHtml(item.name)}</span>
+      <span class="song-item-sub">${escapeHtml(known?.mode ?? "")}</span>
+    </span>
+    <button class="song-item-import" data-folder-remove="${escapeHtml(item.dir)}" type="button">移出</button>
+  </div>`;
+}
+
+function bindFolderTools(host, f) {
+  const playBtn = host.querySelector("[data-folder-play]");
+  if (playBtn) playBtn.addEventListener("click", () => playFolder(f.id));
+  const renameBtn = host.querySelector("[data-folder-rename]");
+  if (renameBtn) {
+    renameBtn.addEventListener("click", async () => {
+      const name = await askFolderName(f.name);
+      if (name && name !== f.name) await renameFolder(f.id, name);
+    });
+  }
+  const deleteBtn = host.querySelector("[data-folder-delete]");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", async () => {
+      // ★ 删除是不可逆的（条目没有外键，删了歌单条目一起没了），必须问一句。
+      if (!window.confirm(`删除歌单「${f.name}」？里面的曲目不会从曲库里消失，只是这个歌单没了。`)) return;
+      await deleteFolder(f.id);
+    });
+  }
+  for (const btn of host.querySelectorAll("[data-folder-remove]")) {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await toggleFolderItem(f.id, btn.dataset.folderRemove, false);
+    });
+  }
+  // 拖拽重排：只改顺序，不动内容。
+  let dragDir = null;
+  for (const row of host.querySelectorAll(".song-item[draggable]")) {
+    row.addEventListener("dragstart", () => {
+      dragDir = row.dataset.dir;
+      row.classList.add("is-dragging");
+    });
+    row.addEventListener("dragend", () => {
+      dragDir = null;
+      row.classList.remove("is-dragging");
+    });
+    row.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (dragDir && dragDir !== row.dataset.dir) row.classList.add("is-drop");
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("is-drop"));
+    row.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      row.classList.remove("is-drop");
+      const target = row.dataset.dir;
+      if (!dragDir || dragDir === target) return;
+      const order = f.items.map((it) => it.dir).filter((d) => d !== dragDir);
+      const at = order.indexOf(target);
+      order.splice(at < 0 ? order.length : at, 0, dragDir);
+      await reorderFolder(f.id, order);
+    });
+  }
+}
+
+/** 「最近演出」的一行：骨架跟 songRow 一致（48px 首字封面 + 曲名 + 副标题），
+ *  只是行尾换成原版的相对时间（刚刚 / n 分钟前 / n 小时前 / M月D日），
+ *  并且不可播（曲子已被删）时整行置灰、不给点击。 */
+function recentRow(song, known) {
+  const initial = (song.name ?? "?").trim().charAt(0) || "?";
+  const gone = !known;
+  const sub = gone ? "曲库里已经找不到这一首" : (known.mode ?? "");
+  return `<div class="song-item${gone ? " is-gone" : ""}" data-dir="${escapeHtml(song.dir)}" data-name="${escapeHtml(song.name)}" title="${escapeHtml(song.dir)}">
+    <span class="song-item-icon">${escapeHtml(initial)}</span>
+    <span class="song-item-content">
+      <span class="song-item-title">${escapeHtml(song.name)}</span>
+      <span class="song-item-sub">${escapeHtml(sub)}</span>
+    </span>
+    <span class="song-item-time">${escapeHtml(recentLabel(song.lastPlayedAt, recentNow))}</span>
+  </div>`;
+}
+
+/** 曲库页顶部页签。★ 2026-10-18 照原版补：
+ *  原版（feapp 语言包 zh-cn-bd81633d.js）就是 A="古典" M="抒情" D="摇滚" E="爵士" U="全部"，
+ *  页签行在原版里是 flex 一行、当前项底部一道下划线（tab-active），不是整块高亮 ——
+ *  整块高亮会跟曲目行的选中态撞成一片。
+ *  ★ 最左多一个「最近演出」（原版 Q="最近演出"）：它不是一个分档，而是按 last_played_at
+ *    倒排的历史；有历史才出现，没听过任何东西时不占位。
+ *  ★ 歌单页签排在四个分档之后：分档是"曲库自带的分类"，歌单是"我自己编的"，
+ *    两类东西不该混在一起排。 */
+function renderLibTabs() {
+  const host = $("libraryTabs");
+  if (!host) return;
+  const counts = new Map();
+  for (const s of allSongs) counts.set(s.genre, (counts.get(s.genre) ?? 0) + 1);
+  const tabs = (recentSongs.length ? ["最近演出"] : []).concat(LIB_TABS);
+  const parts = tabs.map((g) => {
+    const n = g === "最近演出" ? recentSongs.length : counts.get(g);
+    const on = !openFolderId && g === libTab;
+    return `<button class="library-tab${on ? " on" : ""}" data-tab="${escapeHtml(g)}" type="button">${escapeHtml(g)}${
+      n ? ` <span class="library-tab-n">${n}</span>` : ""}</button>`;
+  });
+  // 歌单页签：名字是用户起的，可能很长，样式上限制宽度、超出打省略号。
+  for (const f of folders) {
+    const on = openFolderId === f.id;
+    parts.push(`<button class="library-tab library-tab-folder${on ? " on" : ""}" data-folder="${escapeHtml(f.id)}" type="button" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}${
+      f.count ? ` <span class="library-tab-n">${f.count}</span>` : ""}</button>`);
+  }
+  parts.push(`<button class="library-tab library-tab-new" data-new-folder="1" type="button" title="新建歌单">＋</button>`);
+  host.innerHTML = parts.join("");
+  for (const btn of host.querySelectorAll(".library-tab")) {
+    btn.addEventListener("click", async () => {
+      if (btn.dataset.newFolder) {
+        const name = await askFolderName(null);
+        if (name) await createFolder(name);
+        return;
+      }
+      if (btn.dataset.folder) {
+        if (openFolderId === btn.dataset.folder) return;
+        await openFolder(btn.dataset.folder);
+        return;
+      }
+      // ★ 从歌单页签切回普通页签时**不能**因为"libTab 没变"就 return：
+      //   libTab 一直是上次选的分档，切进歌单时它并没有被改；真正要退掉的是 openFolderId。
+      //   所以先看有没有退掉歌单，再看是不是原地没动。
+      const leavingFolder = Boolean(openFolderId);
+      if (leavingFolder) {
+        openFolderId = null;
+        folderDetail = null;
+      }
+      if (!leavingFolder && libTab === btn.dataset.tab) return;
+      libTab = btn.dataset.tab;
+      renderLibTabs();
+      renderSongs();
+    });
+  }
+}
+
+/** 新建 / 改名歌单的输入框。用原生 prompt 是刻意的：这首歌单名最长 40 个字，
+ *  一句话就够，为它单独做一套弹层不值得（而且 prompt 在 WebView2 里是可用的）。 */
+async function askFolderName(current) {
+  const answer = window.prompt(current ? "歌单新名字" : "新建歌单，起个名字", current ?? "");
+  if (answer === null) return null;
+  const name = answer.replace(/\s+/gu, " ").trim();
+  return name || null;
+}
+
+/** 曲库页底部那条「已入库」：原版是 .mail-footer 那块渐变底，我们照抄。
+ *  只列最近 4 首，点一下就在右栏放大播放（列表太长会把左栏顶没了）。 */
+async function loadImported() {
+  const host = $("imported");
+  const label = $("importedCount");
+  if (label) label.textContent = deskSongs.length ? `${deskSongs.length} 首在桌面` : "桌面还是空的";
+  try {
+    const { songs } = await api("/api/library/songs");
+    // ★ 先落数据、再管渲染：`#imported` 这块宿主在曲库页重做时已经删了，
+    //   老代码在这里 `if (!host) return;` 提前返回，导致 deskSongs 永远是空数组 ——
+    //   「N 首在桌面」恒显示"桌面还是空的"，曲库行上的「加播单」按钮也一个都不出现。
+    deskSongs = songs ?? [];
+    if (label) label.textContent = deskSongs.length ? `${deskSongs.length} 首在桌面` : "桌面还是空的";
+    if (!host) return;
+    if (!deskSongs.length) {
+      host.innerHTML = `<span class="imported-empty">入库后按当前时段播放</span>`;
+      return;
+    }
+    host.innerHTML = deskSongs.slice(-4).map((s) => `
+      <button class="imported-chip${s.dir === player.dir ? " on" : ""}" data-dir="${escapeHtml(s.dir)}" data-name="${escapeHtml(s.name)}" type="button" title="${escapeHtml(s.dir)}">
+        <span>${s.dir === player.dir ? "▶" : "♪"}</span>${escapeHtml(s.name)}
       </button>`).join("");
-    for (const row of host.querySelectorAll(".drow")) {
+    for (const row of host.querySelectorAll(".imported-chip")) {
       row.addEventListener("click", () => play(row.dataset.dir, row.dataset.name));
     }
   } catch (error) {
-    host.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`;
+    host.innerHTML = `<span class="imported-empty">${escapeHtml(error.message)}</span>`;
   }
 }
 
@@ -479,22 +852,37 @@ async function importSong(dir, name) {
   }
 }
 
-// 表格里的点击：试听 / 入库 / 点整行也算试听
-$("songs").addEventListener("click", (event) => {
-  const playBtn = event.target.closest("[data-play]");
-  if (playBtn) return void play(playBtn.dataset.play, playBtn.dataset.name);
+// 列表里的点击：点整行＝播放（原版点曲目就直接进演奏页），末尾那个按钮＝入库
+$("songs")?.addEventListener("click", (event) => {
   const imp = event.target.closest("[data-import]");
-  if (imp) return void importSong(imp.dataset.import, imp.dataset.name);
-  const row = event.target.closest(".trow");
-  if (row && row.dataset.dir) play(row.dataset.dir, row.dataset.name);
+  if (imp) {
+    event.stopPropagation();
+    return void importSong(imp.dataset.import, imp.dataset.name);
+  }
+  const add = event.target.closest("[data-add-folder]");
+  if (add) {
+    event.stopPropagation();
+    return void openAddToFolderMenu(add, add.dataset.addFolder);
+  }
+  const row = event.target.closest(".song-item");
+  // 曲子已经被删掉（最近演出里的灰行）就不发播放请求 —— 否则后端只会回一首 404。
+  if (row && row.dataset.dir && !row.classList.contains("is-gone")) {
+    // ★ 在哪一栏点开，就按那一栏的顺序当队列：在歌单里点下一首就是歌单的下一首，
+    //   不会跳到曲库里毫不相干的一首。
+    const list = listRowsForQueue();
+    if (list.length) setQueue(list);
+    play(row.dataset.dir, row.dataset.name);
+  }
 });
 
-for (const tab of document.querySelectorAll("#libTabs .tab")) {
-  tab.addEventListener("click", () => {
-    libTab = tab.dataset.tab;
-    for (const t of document.querySelectorAll("#libTabs .tab")) t.classList.toggle("on", t === tab);
-    renderSongs();
-  });
+/** 当前列表栏里能播的那些行，按显示顺序 —— 给 step() 当队列用。
+ *  只取带 dir 且不是灰行的（灰行点都点不动，放进队列后面必然 404）。 */
+function listRowsForQueue() {
+  const host = $("songs");
+  if (!host) return [];
+  return [...host.querySelectorAll(".song-item[data-dir]")]
+    .filter((el) => !el.classList.contains("is-gone"))
+    .map((el) => ({ dir: el.dataset.dir, name: el.dataset.name }));
 }
 
 $("libHelp")?.addEventListener("click", () => toast("曲子来自你填的那个本机目录，只存路径、不随包。入库＝摆到「音乐桌面」上，可以按当前时段播放。"));
@@ -512,12 +900,12 @@ function minutesToBoundary() {
   for (const b of SLOT_BOUNDARIES) if (m < b) return b - m;
   return SLOT_BOUNDARIES[0] + 1440 - m; // 跨到次日 06:00
 }
-function activeVideo() { return player.active === "A" ? $("vA") : $("vB"); }
+function activeVideo() { return player.active === "A" ? $("playVideoA") : $("playVideoB"); }
 
 function stopPlayerWatch() {
   if (player.timer) clearInterval(player.timer);
   if (player.warmed) player.warmed.el.remove();
-  for (const v of [$("vA"), $("vB")]) { try { v?.pause(); } catch { /* 没在播 */ } }
+  for (const v of [$("playVideoA"), $("playVideoB")]) { try { v?.pause(); } catch { /* 没在播 */ } }
   player = { dir: null, name: null, tod: null, active: "A", timer: null, warmed: null };
   // 播放条上的字留着不清：停掉之后还显示上一首，比清成空白更好读
 }
@@ -536,13 +924,26 @@ async function play(dir, name) {
     player.dir = dir;
     player.name = name;
     player.tod = info.tod;
-    const v = $("vA");
-    $("vB").classList.add("under");
-    $("vB").removeAttribute("src");
+    const v = $("playVideoA");
+    const b = $("playVideoB");
+    if (b) { b.classList.add("under"); b.removeAttribute("src"); }
     v.classList.remove("under");
+    // ★ .active 是原版 webplayer 的显隐开关（`video{opacity:0} video.active{opacity:1}`）：
+    //   没有它，片子在播、元素也是满尺寸的，但整页是黑的 —— 看起来像"播放失败"。
+    v.classList.add("active");
     v.src = info.url;
+    // ★ 2026-10-18：曲子是"演奏录像"，播完必须有下一拍，不能停在那里。
+    //   原版 webplayer 播完一场是回到列表；我们是单页内嵌窗口，停住反而像卡死 ——
+    //   所以照它同屏循环：`ended` 时从头再来（原版 .player-container 也没有播完态）。
+    //   过场片那套（stageCrossFade 的 loop:false + onEnded）是另一条线，与此无关。
+    v.loop = PLAY_MODES[playMode].key === "single";
     v.play().catch(() => { /* 需要用户先点一下才出声也没关系 */ });
     writePlayerMeta(info, name);
+    paintNowPlaying();
+    paintProgress();
+    // ★ 原版点一首就直接进全屏演奏页（.player-container 铺满）。我们照做，
+    //   但页面里带着「返回」和曲名 —— 原版是独立窗口，我们是内嵌窗口，得有路退出来。
+    window.__mailUI?.openPlayer(name);
 
     player.timer = setInterval(async () => {
       try {
@@ -558,7 +959,12 @@ async function play(dir, name) {
     }, 30000);
 
     setSetting2("last_played_title", name);
-    api("/api/library/played", { method: "POST", body: { title: name } }).catch(() => {});
+    // ★ 播放一落库就顺手刷「最近演出」：这一行的时间会从「刚刚」一路走到「n 分钟前」，
+    //   页签上的条数也可能因为这首第一次被听而变化。失败不打扰用户（不影响播放本身）。
+    api("/api/library/played", { method: "POST", body: { title: name, dir } })
+      .then(() => loadRecent())
+      .then(() => renderLibTabs())
+      .catch(() => {});
     renderSongs();                     // 让正在播的那一行亮起来
     loadImported();
   } catch (error) {
@@ -566,33 +972,52 @@ async function play(dir, name) {
   }
 }
 
+/** 右栏上方那条：曲名 + 时段 + 变体数。
+ *  ★ info.file 是素材的内部文件名（形如 TOD2000_NI_L.mp4），那是给机器看的，
+ *    原样贴出来等于把内部代号丢给用户。只留人话：时段 + 有几个变体。 */
 function writePlayerMeta(info, name) {
-  const t = $("pbTitle"), m = $("pbMeta"), s = $("pbSlot");
-  if (t) t.textContent = name ?? "还没有在播";
-  // ★ info.file 是素材的内部文件名（形如 TOD2000_NI_L.mp4），那是给机器看的，
-  //   原样贴出来等于把内部代号丢给用户。播放条上只留人话：时段 + 有几个变体。
-  if (m) m.textContent = info
-    ? `${info.label} · ${info.variantCount} 个变体`
-    : "点左边任意一首的「试听」";
-  if (s) s.textContent = info ? `${info.label}` : "—";
+  const t = $("playerTitle"), s = $("playerSlot");
+  if (t) t.textContent = info ? (name ?? "") : "还没有在播";
+  if (s) s.textContent = info ? `${info.label} · ${info.variantCount} 个变体` : "点左边任意一首开始";
+  // 播放条左栏也走同一份数据，别让它和顶栏显示的曲名对不上
+  paintNowPlaying();
+  // 顶上那个时段标签跟播放条里的 slot 是同一条信息，这里一并刷新
+  const sub = $("pbSlot");
+  if (sub) sub.textContent = info ? info.label : "";
 }
 
 function crossFadeTo(info, name) {
-  const a = $("vA"), b = $("vB");
+  const a = $("playVideoA"), b = $("playVideoB");
   const incoming = player.active === "A" ? b : a;
   const outgoing = player.active === "A" ? a : b;
   incoming.src = info.url;
+  // 与 play() 一致：单曲循环时才开 loop，其余模式靠 ended 事件往下走
+  incoming.loop = PLAY_MODES[playMode].key === "single";
   incoming.play().catch(() => {});
   incoming.classList.remove("under");
+  incoming.classList.add("active");
   outgoing.classList.add("under");
+  outgoing.classList.remove("active");
   // 转场走完把旧的停掉，别让它继续占解码
   setTimeout(() => outgoing.pause(), 950);
   player.active = player.active === "A" ? "B" : "A";
   writePlayerMeta(info, name);
 }
 
-// ---- 播放条上的按钮 / 进度 ----
+// ---- 演奏页上的控制条（原版那边是 webplayer 独立的 PlaybackView，这里收成一条浮在底部） ----
+// ★ 2026-10-18 队列：以前「上一首 / 下一首」永远走 deskSongs（没有就走整个曲库），
+//   所以在歌单里点「下一首」会跳到曲库里完全无关的一首去。现在哪来的就从哪走：
+//   整夹播放 / 从某个页签点开一首 → 都先把那批顺序塞进 queue，step() 按它走。
+//   queue 为空时才退回原来的 deskSongs → allSongs 兜底（直接点播放条时的老行为）。
+let queue = [];
+
+/** 设定接下来按什么顺序播。list = [{dir, name}]，at = 从第几首开始（只用于定位当前）。 */
+function setQueue(list, at = 0) {
+  queue = Array.isArray(list) ? list.filter((s) => s && s.dir).map((s) => ({ dir: s.dir, name: s.name })) : [];
+}
+
 function playlist() {
+  if (queue.length) return queue;
   // 上一首 / 下一首在"音乐桌面"里走；桌面是空的时候退回到整个曲库，别让按钮点了没反应。
   return deskSongs.length ? deskSongs : allSongs;
 }
@@ -601,7 +1026,9 @@ async function step(delta) {
   const list = playlist();
   if (!list.length) return;
   const at = list.findIndex((s) => s.dir === player.dir);
-  const next = list[(at + delta + list.length) % list.length] ?? list[0];
+  // 当前这首不在列表里（比如刚从别处点开）时：从列表头开始，而不是原地打转。
+  const base = at < 0 ? (delta > 0 ? -1 : 0) : at;
+  const next = list[(base + delta + list.length) % list.length] ?? list[0];
   await play(next.dir, next.name);
 }
 
@@ -616,30 +1043,86 @@ $("pbPlay")?.addEventListener("click", () => {
 });
 $("pbPrev")?.addEventListener("click", () => step(-1));
 $("pbNext")?.addEventListener("click", () => step(1));
+// 循环方式：顺序 → 列表循环 → 单曲循环 → 随机，四态轮转。
+// ★ 单曲循环靠 video 的 loop 属性落地，不是「播完再 seek(0)」——
+//   后者在片尾会有一次到空帧的闪，前者是无缝衔接。
+$("pbMode")?.addEventListener("click", (e) => {
+  playMode = (playMode + 1) % PLAY_MODES.length;
+  const mode = PLAY_MODES[playMode];
+  const btn = e.currentTarget;
+  btn.innerHTML = mode.icon;
+  btn.title = mode.label;
+  btn.classList.toggle("is-active", mode.key !== "order");
+  const v = activeVideo();
+  if (v) v.loop = mode.key === "single";
+  toast(mode.label);
+});
 $("pbMute")?.addEventListener("click", (e) => {
   const v = activeVideo();
   if (!v) return;
   v.muted = !v.muted;
-  // ★ 用 e.currentTarget 而不是再查一次 DOM：按钮在监听器里一定在，
-  //   再查一次就把「元素还在」这个已知事实变成了一次可能为 null 的取值。
-  e.currentTarget.textContent = v.muted ? "🔇" : "🔊";
+  // ★ 按钮里是内联 SVG，不能再改 textContent（会连 svg 一起抹掉）。
+  //   静音态用"喇叭 + 一道斜杠"的 alt 图标整体替换 innerHTML。
+  //   （这里不许用 emoji：原版全站零 emoji。）
+  const btn = e.currentTarget;
+  btn.innerHTML = v.muted
+    ? `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9h3l4.5-3.5v13L7 15H4z" fill="currentColor"/><path d="M15.5 9.5l5 5m0-5l-5 5" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg>`
+    : `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9h3l4.5-3.5v13L7 15H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg>`;
 });
+
+/** 秒 → `m:ss`（原版 x() 就是这个格式：`${M}:${A.padStart(2,"0")}`，
+ *  **分钟不补零**。旧版写成 `MM:SS` 两边都补零，跟原版对不上。 */
+function mmss(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+}
+
+/** 播放条上那排按钮的图标。★ 一律内联 SVG —— 原版全站零 emoji。
+ *  播放/暂停要能互换，所以抽成函数而不是写死在 HTML 里。 */
+const ICON_PLAY = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>`;
+const ICON_STOP = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5" fill="currentColor"/></svg>`;
+/** 四种循环方式（原版 ot 枚举：Repeat / Shuffle / Single / 顺序） */
+const PLAY_MODES = [
+  { key: "order", label: "顺序播放", icon: `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 7h13M14 4l3 3-3 3M20 17H7M10 14l-3 3 3 3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>` },
+  { key: "repeat", label: "列表循环", icon: `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9m0 0l-3-3m3 3l-3 3M20 15a5 5 0 0 1-5 5H6m0 0l3 3m-3-3l3-3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>` },
+  { key: "single", label: "单曲循环", icon: `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9m0 0l-3-3m3 3l-3 3M20 15a5 5 0 0 1-5 5H6m0 0l3 3m-3-3l3-3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="12" y="16" font-size="8" fill="currentColor" text-anchor="middle">1</text></svg>` },
+  { key: "shuffle", label: "随机播放", icon: `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6h4l12 12h-4M4 18h4L20 6h-4" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>` },
+];
+let playMode = 0;
 
 function paintProgress() {
   const v = activeVideo();
-  const fill = $("pbFill"), time = $("pbTime"), play = $("pbPlay");
-  // ★ 四个元素一起判：只判 pbLine 挡不住后面的裸用 —— 播放条控件缺一个，
+  const fill = $("pbFill"), play = $("pbPlay"), now = $("pbNow"), total = $("pbTime");
+  // ★ 元素一起判：只判 pbLine 挡不住后面的裸用 —— 播放条控件缺一个，
   //   timeupdate 每 250ms 抛一次 TypeError，控制台刷屏、进度条也不动。
-  if (!v || !$("pbLine") || !fill || !time || !play) return;
-  const total = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
-  const pct = total ? Math.min(100, (v.currentTime / total) * 100) : 0;
+  if (!v || !$("pbLine") || !fill || !play || !now || !total) return;
+  const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  const pct = dur ? Math.min(100, (v.currentTime / dur) * 100) : 0;
   fill.style.width = `${pct}%`;
-  const mmss = (sec) => `${
-    String(Math.floor(sec / 60)).padStart(2, "0")}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
-  time.textContent = `${mmss(v.currentTime || 0)} / ${mmss(total)}`;
-  play.textContent = v.paused ? "▶" : "❚❚";
+  // 原版是**两端各一个时间**（左已播、右总长），不是 `a / b` 拼在一起。
+  now.textContent = mmss(v.currentTime || 0);
+  total.textContent = mmss(dur);
+  // ★ 播放/暂停互换图标走 innerHTML —— 按钮里是 svg，改 textContent 会连 svg 一起抹掉。
+  play.innerHTML = v.paused ? ICON_PLAY : ICON_STOP;
 }
-for (const id of ["vA", "vB"]) {
+
+/** 播放条左栏（封面 + 曲名 + 时段）跟着当前曲目刷新。
+ *  封面没有图，用曲名首字充数 —— 跟曲库里 .song-item-icon 同一套口径。 */
+function paintNowPlaying() {
+  const st = player;
+  const name = st?.name || "";
+  const el = $("pbName"), sub = $("pbSlot"), cover = $("pbCoverText");
+  if (el) {
+    el.textContent = name || "还没有播放";
+    // 名字装得下就别跑马灯（一直晃是噪音）。装不下才开动画。
+    el.style.animation = name && name.length > 26 ? "" : "none";
+  }
+  if (sub) sub.textContent = st?.slot ? `第 ${st.slot} 档` : "";
+  if (cover) cover.textContent = (name.trim().charAt(0) || "♪").toUpperCase();
+}
+// ★ 这里以前写 ["vA","vB"]，而页面上的 id 是 stageVideo/stageVideoB —— 取到 null，
+//   进度条与按钮状态从来没更新过。现在统一走 playVideoA/playVideoB（演奏页那两枚）。
+for (const id of ["playVideoA", "playVideoB"]) {
   const v = $(id);
   v?.addEventListener("timeupdate", () => { if (v === activeVideo()) paintProgress(); });
   v?.addEventListener("loadedmetadata", () => { if (v === activeVideo()) paintProgress(); });
@@ -666,7 +1149,7 @@ async function warmNextSlot(st) {
 
 function setSetting2(key, value) { try { localStorage.setItem(key, value); } catch { /* 无痕模式下忽略 */ } }
 
-$("saveLibraryDir").addEventListener("click", async () => {
+$("saveLibraryDir")?.addEventListener("click", async () => {
   try {
     await api("/api/library/dir", { method: "POST", body: { dir: $("libraryDir").value.trim() } });
     toast("已保存");
@@ -676,10 +1159,9 @@ $("saveLibraryDir").addEventListener("click", async () => {
   }
 });
 
-$("importRandom").addEventListener("click", async () => {
+$("importRandom")?.addEventListener("click", async () => {
   const btn = $("importRandom");
-  btn.disabled = true;
-  btn.textContent = "入库中……";
+  if (btn) { btn.disabled = true; btn.textContent = "入库中……"; }
   try {
     const data = await api("/api/library");
     const songs = data.songs ?? [];
@@ -692,8 +1174,7 @@ $("importRandom").addEventListener("click", async () => {
   } catch (error) {
     toast(error.message);
   } finally {
-    btn.disabled = false;
-    btn.textContent = "随机入库";
+    if (btn) { btn.disabled = false; btn.textContent = "随机入库"; }
   }
 });
 
@@ -905,6 +1386,10 @@ async function loadSettings() {
     fillAbout();
     void refreshFont();     // 顺带把「信件字体」那张卡片刷新（首次会触发一次引导弹窗）
     void refreshIdle();     // 顺带把「待机」那张卡片刷新（场景/状态、素材在不在）
+    // ★ 数据备份那张卡必须在这里刷：不刷的话，首屏停在 HTML 里写死的
+    //   「正在读取备份列表……」—— 用户看到的是一条永远不动的占位文字，
+    //   只有点了某个按钮才会变（实测过：点「现在备份一份」之后才突然正确）。
+    void dsLoad();
   } catch (error) {
     toast(error.message);
   }
@@ -1072,8 +1557,32 @@ async function refreshFont({ ask = true } = {}) {
   return all;
 }
 
+// ★ 前端这一侧也要**独立**校验一次白名单，不能只信外壳：
+//   ① 浏览器里没有外壳通道（壳没起来 / 用浏览器开着调试页），走 window.open 兜底 —— 那条路
+//      完全在外壳管控之外，天然拿不到白名单保护；
+//   ② 页面本身由本机服务吐出，万一被注入，攻击者改不了外壳里的 AllowedExternalHosts，
+//      但改得了这里传进去的字符串 —— 两边各校验一次，任何一侧失守都不会把 ShellExecute 交出去。
+// ★ 与 src/LinliShell/MainWindow.cs 的 AllowedExternalHosts 必须保持一致（改一处就要改两处）。
+const ALLOWED_EXTERNAL_HOSTS = Object.freeze([
+  "sentyfont.com", "www.sentyfont.com",
+  "hanyi.com.cn", "www.hanyi.com.cn",
+]);
+
+/** 网址是否在「允许用系统浏览器打开」的白名单里：必须 https，且主机名精确命中。 */
+function externalUrlAllowed(url) {
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  if (u.protocol !== "https:") return false;   // 挡掉 file: / javascript: / 自定义协议
+  return ALLOWED_EXTERNAL_HOSTS.includes(u.hostname.toLowerCase());
+}
+
 /** 打开外部网址。外壳里走 C# 那条通道（那边有域名白名单）；浏览器里直接开新标签。 */
 function openExternal(url) {
+  if (!externalUrlAllowed(url)) {
+    // 不静默失败：白名单外的网址多半是配置写错了，直接提示，免得用户点了没反应还不知道为什么。
+    toast(codeText("这个网址不在允许打开的名单里", "COMMON_EXTERNAL_URL_NOT_ALLOWED"));
+    return;
+  }
   const host = window.chrome && window.chrome.webview;
   if (host) {
     try { host.postMessage("open:" + url); return; } catch { /* 通道断了就走下面的兜底 */ }
@@ -1601,18 +2110,20 @@ async function stageTick() {
   } catch { /* 轮询失败就下一轮再试 */ }
 }
 
+// ★ 2026-10-18 口径更正（用户原话）：「视频是壁纸，不要播放在程序里，要播放在桌面」。
+//   原版游戏就是这么分工的：**程序窗口里只有信箱界面**，演奏视频铺在 Windows 桌面那一层
+//   （由外壳 WallpaperHost.cs 挂到 Progman 的 WorkerW 上，走 wallpaper.html）。
+//   所以这里不在窗口里起任何视频 —— startStage 保号只是为了按住老调用点，
+//   真正的壁纸在 C# 侧，和页面无关。
 async function startStage() {
-  if (localStorage.getItem("stage_wallpaper") === "0") return stopStage();
-  await stageTick();
-  if (stage.timer) clearInterval(stage.timer);
-  // 跨时段时换片。30 秒一次，跟曲库、壁纸那边的轮询同频。
-  stage.timer = setInterval(() => { void stageTick(); }, 30000);
+  stopStage();   // 把以前可能已经在播的舞台视频收掉（老版本会在这里起片）
 }
 
 $("stageWallpaper")?.addEventListener("change", (e) => {
   setSetting2("stage_wallpaper", e.target.checked ? "1" : "0");
-  if (e.target.checked) startStage(); else stopStage();
-  toast(e.target.checked ? "背景视频已开" : "背景视频已关");
+  // 开关交给外壳：它读的就是这条设置，决定要不要往桌面上铺壁纸层。
+  try { window.chrome?.webview?.postMessage(e.target.checked ? "wallpaper:on" : "wallpaper:off"); } catch { /* 浏览器里没有这个通道 */ }
+  toast(e.target.checked ? "桌面壁纸已开" : "桌面壁纸已关");
 });
 
 // ---------------------------------------------------------------- 原生窗口
@@ -1634,7 +2145,10 @@ $("stageWallpaper")?.addEventListener("change", (e) => {
   // 拖动：按在这条上（按钮除外）就叫窗口跟着走。
   bar.addEventListener("mousedown", (e) => { if (e.target.closest(".wc")) return; say("drag"); });
   document.getElementById("wcMin")?.addEventListener("click", () => say("min"));
+  document.getElementById("wcMax")?.addEventListener("click", () => say("max"));
   document.getElementById("wcQuit")?.addEventListener("click", () => say("quit"));
+  // ★ 双击窗口条＝最大化/还原（Windows 的通用手势，原版是系统标题栏所以自带）。
+  bar.addEventListener("dblclick", (e) => { if (e.target.closest(".wc")) return; say("max"); });
 })();
 
 // ---------------------------------------------------------------- 启动
@@ -1662,3 +2176,251 @@ startStage();
 
 loadLetters();
 setInterval(loadLetters, 5000);
+
+// ---------------------------------------------------------------- 数据备份与恢复
+// 三条约束（照姊妹项目 data-safety.js，都是踩过坑立的），界面上必须让人看见：
+//   ① 恢复/导入**不当场生效**：点了之后只排进队列，关掉程序再打开才换库；
+//   ② 换库之前当前这一份会自动留档成 before-restore-*.sqlite；
+//   ③ 导出包会清掉 API Key（它可能被发出去）。
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function fmtTime(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function dsStatus(text, kind = "") {
+  const el = $("dataSafetyStatus");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `ds-status${kind ? ` is-${kind}` : ""}`;
+}
+
+/** 把一份备份排进待恢复；确认框里要说清"现在这份会先留档"。 */
+async function dsAskRestore(file) {
+  const ok = window.confirm(
+    `恢复这份备份？\n\n${file}\n\n`
+    + "· 现在这份库会先自动留档成 before-restore-*.sqlite\n"
+    + "· 恢复要关掉程序再打开才生效",
+  );
+  if (!ok) return;
+  try {
+    await api("/api/data/restore", { method: "POST", body: { file, confirm: true }, auth: true });
+    toast("已安排恢复：关掉程序再打开就生效");
+    await dsLoad();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function dsAskDelete(file) {
+  const ok = window.confirm(`删除这份备份？\n\n${file}\n\n删了就找不回来了。`);
+  if (!ok) return;
+  try {
+    await api("/api/data/delete", { method: "POST", body: { file, confirm: true }, auth: true });
+    await dsLoad();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function renderDsPending(pending) {
+  const host = $("dsPending");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!pending) { host.hidden = true; return; }
+  host.hidden = false;
+  const line = document.createElement("div");
+  line.className = "ds-pending-text";
+  line.textContent = `⚠ 已安排一次恢复：关掉程序再打开就生效 —— ${pending.label || pending.source}`;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ds-inline";
+  btn.textContent = "取消这次恢复";
+  btn.addEventListener("click", async () => {
+    try {
+      await api("/api/data/cancel-restore", { method: "POST", body: {}, auth: true });
+      toast("已取消");
+      await dsLoad();
+    } catch (error) { toast(error.message); }
+  });
+  host.append(line, btn);
+}
+
+function renderDsList(list, pendingSource) {
+  const host = $("dsList");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "ds-empty";
+    empty.textContent = "还没有备份。点「现在备份一份」留个退路。";
+    host.appendChild(empty);
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.className = "ds-row";
+    const waiting = pendingSource && pendingSource === item.file;
+    const main = document.createElement("div");
+    main.className = "ds-row-main";
+    main.innerHTML = `<span class="ds-row-kind"></span><span class="ds-row-time"></span><span class="ds-row-size"></span>`;
+    main.querySelector(".ds-row-kind").textContent = item.kind;
+    main.querySelector(".ds-row-time").textContent = fmtTime(item.at);
+    main.querySelector(".ds-row-size").textContent = fmtBytes(item.bytes);
+    const acts = document.createElement("div");
+    acts.className = "ds-row-acts";
+    if (waiting) {
+      const tag = document.createElement("span");
+      tag.className = "ds-row-waiting";
+      tag.textContent = "等待重启恢复，不能删";
+      acts.appendChild(tag);
+    } else {
+      const inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "ds-inline";
+      inspect.textContent = "看内容";
+      inspect.addEventListener("click", async () => {
+        try {
+          const detail = await api("/api/data/inspect", { method: "POST", body: { file: item.file }, auth: true });
+          const tables = Object.entries(detail.tables ?? {}).map(([k, v]) => `${k} ${v}`).join(" · ");
+          dsStatus(`${item.file}：${tables || "（没有表）"}`);
+        } catch (error) { dsStatus(error.message, "bad"); }
+      });
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "ds-inline";
+      restore.textContent = "恢复这一个";
+      restore.addEventListener("click", () => dsAskRestore(item.file));
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "ds-inline ds-danger";
+      del.textContent = "删除";
+      del.addEventListener("click", () => dsAskDelete(item.file));
+      acts.append(inspect, restore, del);
+    }
+    row.append(main, acts);
+    host.appendChild(row);
+  }
+}
+
+async function dsLoad() {
+  const listHost = $("dsList");
+  if (!listHost) return;
+  try {
+    const st = await api("/api/data/status", { auth: true });
+    $("dataSafetySummary").textContent = st.total
+      ? `备份目录里共 ${st.total} 份，占 ${fmtBytes(st.bytes)}（当前库 ${fmtBytes(st.live)}）`
+      : "备份目录里还没有备份文件。";
+    renderDsPending(st.pending);
+    renderDsList(st.items ?? [], st.pending?.source ?? null);
+    const periodic = st.periodic ?? { enabled: true, days: 1, keep: 7 };
+    $("dsPeriodicEnabled").checked = Boolean(periodic.enabled);
+    $("dsPeriodicDays").value = String(periodic.days);
+    $("dsPeriodicKeep").value = String(periodic.keep);
+    const periodicCount = (st.items ?? []).filter((i) => i.kind === "周期自动备份").length;
+    $("dsPeriodicStatus").textContent = periodic.enabled
+      ? `开着：每 ${periodic.days} 天一份，只保留最近 ${periodic.keep} 份周期备份（手动备份与升级前备份不会被清理）。目前有 ${periodicCount} 份。`
+      : "周期备份已关闭。";
+  } catch (error) {
+    dsStatus(error.message, "bad");
+  }
+}
+
+$("dsBackup")?.addEventListener("click", async () => {
+  dsStatus("正在备份…");
+  try {
+    const st = await api("/api/data/backup", { method: "POST", body: {}, auth: true });
+    dsStatus(`✓ 已备份 ${st.made.file}（${fmtBytes(st.made.bytes)}）`, "good");
+    await dsLoad();
+  } catch (error) { dsStatus(error.message, "bad"); }
+});
+
+$("dsExport")?.addEventListener("click", async () => {
+  dsStatus("正在导出…");
+  try {
+    const res = await fetch("/api/data/export", {
+      method: "POST",
+      headers: { "X-Linli-Token": await ensureToken(), "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.error || `导出失败（${res.status}）`);
+    }
+    const blob = await res.blob();
+    const name = decodeURIComponent(res.headers.get("X-Export-Name") || "linli-userdata.zip");
+    const urlv = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = urlv;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(urlv), 4000);
+    dsStatus(`✓ 已导出 ${name}（${fmtBytes(blob.size)}，其中的 API Key 已被清掉）`, "good");
+  } catch (error) { dsStatus(error.message, "bad"); }
+});
+
+$("dsImport")?.addEventListener("click", () => $("dsImportFile")?.click());
+$("dsImportFile")?.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (!window.confirm(`导入 ${file.name}？\n\n· 现在这份库会先自动留档\n· 导入要关掉程序再打开才生效`)) return;
+  dsStatus("正在导入…");
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch(`/api/data/import?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "X-Linli-Token": await ensureToken(), "Content-Type": "application/octet-stream" },
+      body: buf,
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || `导入失败（${res.status}）`);
+    dsStatus("✓ 已导入：关掉程序再打开就生效（旧库已自动留档）", "good");
+    await dsLoad();
+  } catch (error) { dsStatus(error.message, "bad"); }
+  e.target.value = "";
+});
+
+$("dsPeriodicCleanup")?.addEventListener("click", async () => {
+  if (!window.confirm("清理超出保留份数的周期备份？\n\n只删周期自动备份，手动备份与升级前备份不会动。")) return;
+  try {
+    const done = await api("/api/data/periodic-cleanup", { method: "POST", body: { confirm: true }, auth: true });
+    dsStatus(done.removed.length ? `✓ 清理了 ${done.removed.length} 份，留下 ${done.kept} 份` : "没有需要清理的", "good");
+    await dsLoad();
+  } catch (error) { dsStatus(error.message, "bad"); }
+});
+$("dsPeriodicSave")?.addEventListener("click", async () => {
+  try {
+    await api("/api/data/periodic", {
+      method: "POST",
+      body: {
+        enabled: $("dsPeriodicEnabled").checked,
+        days: Number($("dsPeriodicDays").value),
+        keep: Number($("dsPeriodicKeep").value),
+      },
+    });
+    toast("已保存");
+    await dsLoad();
+  } catch (error) { dsStatus(error.message, "bad"); }
+});
+
+// 备份目录是用户自己的文件夹，用外壳的白名单之外的方式打开是不行的 ——
+// 走系统默认处理（explorer），不经过网页跳转，所以不碰 openExternal 的白名单。
+$("dsReveal")?.addEventListener("click", async () => {
+  try {
+    const st = await api("/api/data/status", { auth: true });
+    await fetch("/api/data/reveal", { method: "POST", headers: { "X-Linli-Token": await ensureToken(), "Content-Type": "application/json" }, body: JSON.stringify({ dir: st.dir }) });
+  } catch { /* 打不开就算了，不影响别的 */ }
+});

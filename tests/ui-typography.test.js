@@ -17,12 +17,17 @@ import { readFile } from "node:fs/promises";
 
 const CSS = new URL("../app/public/styles.css", import.meta.url);
 const raw = await readFile(CSS, "utf8");
+// ★ 2026-10-18：信卡那一族的规则在 styles-original.css（照原版排版的那张表），
+//   不在这里。护栏必须看**真实生效的那张表**，否则守的是一堆没人用的旧类（见 ③ 的注释）。
+const CSS_ORIGINAL = new URL("../app/public/styles-original.css", import.meta.url);
+const rawOriginal = await readFile(CSS_ORIGINAL, "utf8");
 
 /** 剥掉 /* *\/ 注释（含跨行），返回纯规则文本。 */
 function stripComments(s) {
   return s.replace(/\/\*[\s\S]*?\*\//gu, "");
 }
 const css = stripComments(raw);
+const cssOriginal = stripComments(rawOriginal);
 
 /** 取某个 `--变量: …;` 的完整值（变量定义可能跨行）。 */
 function cssVar(name) {
@@ -72,17 +77,44 @@ test("② 兜底里 STXingkai 不许再排在楷体/华文楷体之前（行楷�
   }
 });
 
+/** ★ 2026-10-18 改：守**真实生效的类**，不是没人用的旧类。
+ *
+ * 改之前这两条断言查的是 `.reply-card .reply-text` / `.reply-card` —— 那套类是
+ * app.js 早期版本画的明信片卡，**全仓已经没有任何 JS 产出它**（grep `reply-card`
+ * 只命中 styles.css 自己与这两个测试）。也就是说护栏一直绿着，而真正在读信用的那套
+ * （mail-ui.js 的 renderCard → `.mail-responsive-card` + `.mail-box-reply-content-text`）
+ * **一条样式都没有**：
+ *   实测（浏览器里调 renderCard 画长信）改前 → 字号 14px、微软雅黑、色 #e8e9eb（浅色字
+ *   印在米白纸纹上）、overflow-y:visible、卡片 384×500（被压成竖条）。长信溢出卡外，
+ *   既看不到也滚不到。
+ * ⇒ 护栏改到真实类上，并补一条「这些类必须真有宿主」的反向断言：
+ *    守一个没人用的选择器，比不守更糟 —— 它给的是「已保护」的错觉。
+ */
+const CARD = ".mail-responsive-card";
+const TEXT = ".mail-box-reply-content-text";
+
 test("③ ★ 明信片正文必须能滚（长信不许被静默裁掉）", () => {
-  // 取 .reply-card .reply-text 那段规则体
-  const m = /\.reply-card\s+\.reply-text\s*\{([^}]*)\}/u.exec(css);
-  assert.ok(m, "没找到 .reply-card .reply-text 规则");
+  const m = new RegExp(`\\${TEXT}\\s*\\{([^}]*)\\}`, "u").exec(cssOriginal);
+  assert.ok(m, `没找到 ${TEXT} 规则（styles-original.css）`);
   const body = m[1];
   assert.match(body, /overflow-y:\s*auto/u, "正文必须 overflow-y:auto —— 否则长信最后一截被吞掉且没法滚");
   assert.doesNotMatch(body, /overflow:\s*hidden/u, "正文不能再是 overflow:hidden（会把内容静默裁掉）");
+  // 字与色也必须钉住：没有 font/color 时浏览器按继承算，实测就是 14px 浅灰字的「隐形信」。
+  assert.match(body, /font-size:\s*16px/u, "正文字号必须是原版的 16px");
+  assert.match(body, /color:\s*var\(--tp-grey-0\)/u, "正文必须是暖墨 --tp-grey-0（浅色字印在米白纸上读不出来）");
+  assert.match(body, /font-family:\s*SentyTEA/u, "正文必须优先 SentyTEA（原版信件体）");
 });
 
 test("④ 居中必须用 safe（否则 flex 居中会把溢出两端对切，顶上几行永远滚不到）", () => {
-  const card = /\.reply-card\s*\{([^}]*)\}/u.exec(css);
-  assert.ok(card, "没找到 .reply-card 规则");
-  assert.match(card[1], /align-items:\s*safe\s+center/u, ".reply-card 必须是 align-items: safe center");
+  const card = new RegExp(`\\${CARD}\\s*\\{([^}]*)\\}`, "u").exec(cssOriginal);
+  assert.ok(card, `没找到 ${CARD} 规则（styles-original.css）`);
+  assert.match(card[1], /align-items:\s*safe\s+center/u, `${CARD} 必须是 align-items: safe center`);
+  assert.match(card[1], /aspect-ratio:\s*16\s*\/\s*9/u, `${CARD} 必须锁住 16:9（不锁会被容器压成竖条）`);
+});
+
+test("⑤ 信卡的类必须真有 JS 产出（反向断言：守无人使用的选择器等于没守）", async () => {
+  const js = stripComments(await readFile(new URL("../app/public/mail-ui.js", import.meta.url), "utf8"));
+  for (const cls of ["mail-responsive-card", "mail-card-meta", "mail-box-reply-content-text"]) {
+    assert.ok(js.includes(cls), `mail-ui.js 里没有产出 .${cls} —— 那么 CSS 里那组规则就是死的`);
+  }
 });

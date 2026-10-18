@@ -89,6 +89,34 @@
       "read_only": false,
       "error_codes": ["LIBRARY_TITLE_REQUIRED"]
     },
+    "/api/folders": {
+      "methods": ["GET", "POST"],
+      "capability": "library.folders",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_FOLDER_NAME_REQUIRED", "LIBRARY_FOLDER_NAME_TOO_LONG"]
+    },
+    "/api/folders/:id": {
+      "methods": ["GET", "PATCH", "DELETE"],
+      "capability": "library.folder",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_FOLDER_NOT_FOUND", "LIBRARY_FOLDER_NAME_REQUIRED", "LIBRARY_FOLDER_NAME_TOO_LONG"]
+    },
+    "/api/folders/:id/items": {
+      "methods": ["POST", "DELETE", "PATCH"],
+      "capability": "library.folder_items",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["LIBRARY_FOLDER_NOT_FOUND", "LIBRARY_SONG_NOT_FOUND", "LIBRARY_PLAYLIST_ITEM_INCOMPLETE", "LIBRARY_PLAYLIST_ITEM_NOT_FOUND"]
+    },
+    "/api/library/recent": {
+      "methods": ["GET"],
+      "capability": "library.recent",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
     "/api/media": {
       "methods": ["GET"],
       "capability": "library.media",
@@ -207,6 +235,83 @@
       "state": "available",
       "read_only": false,
       "error_codes": ["IMPORT_PREVIEW_REQUIRED", "IMPORT_PREVIEW_STALE", "IMPORT_BACKUP_FAILED"]
+    },
+    "/api/data/status": {
+      "methods": ["GET"],
+      "capability": "data.status",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/data/backup": {
+      "methods": ["POST"],
+      "capability": "data.backup",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_BACKUP_DATABASE_MISSING"]
+    },
+    "/api/data/inspect": {
+      "methods": ["POST"],
+      "capability": "data.inspect",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_NOT_FOUND", "COMMON_BACKUP_INVALID", "COMMON_BACKUP_IS_LIVE"]
+    },
+    "/api/data/delete": {
+      "methods": ["POST"],
+      "capability": "data.delete",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_BACKUP_DELETE_NOT_CONFIRMED", "COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_IS_LIVE", "COMMON_BACKUP_PENDING_RESTORE", "COMMON_BACKUP_NOT_FOUND"]
+    },
+    "/api/data/restore": {
+      "methods": ["POST"],
+      "capability": "data.restore",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_RESTORE_NOT_CONFIRMED", "COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_NOT_FOUND"]
+    },
+    "/api/data/cancel-restore": {
+      "methods": ["POST"],
+      "capability": "data.restore",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/data/export": {
+      "methods": ["POST"],
+      "capability": "data.export",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_EXPORT_TOO_LARGE", "COMMON_BACKUP_DATABASE_MISSING"]
+    },
+    "/api/data/import": {
+      "methods": ["POST"],
+      "capability": "data.import",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["IMPORT_TOO_LARGE", "IMPORT_FILE_REQUIRED", "IMPORT_NAME_INVALID", "IMPORT_ZIP_INVALID", "IMPORT_ZIP_EMPTY", "IMPORT_LAYOUT_INVALID"]
+    },
+    "/api/data/periodic": {
+      "methods": ["POST"],
+      "capability": "data.periodic",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/data/periodic-cleanup": {
+      "methods": ["POST"],
+      "capability": "data.periodic",
+      "state": "available",
+      "read_only": false,
+      "error_codes": ["COMMON_BACKUP_DELETE_NOT_CONFIRMED"]
+    },
+    "/api/data/reveal": {
+      "methods": ["POST"],
+      "capability": "data.reveal",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
     }
   },
   "privacy": {

@@ -9,6 +9,9 @@
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="shortcut icon" href="/favicon.ico">
 <link rel="stylesheet" href="styles.css">
+<!-- ★ 原版排版表（2026-10-18）：信箱两栏 / 明信片 / 信封动画 / 全屏播放页的几何
+     逐条照抄原版游戏，只把材质换成液态玻璃。放在 styles.css 之后，同优先级时后写的赢。 -->
+<link rel="stylesheet" href="styles-original.css">
 </head>
 <body>
 <div id="glassBg"><i></i><i></i><i></i><i></i></div>
@@ -30,10 +33,13 @@
 </div>
 
 <!-- ★ 只在原生窗口里露出来。外壳的 MainWindow 是**无边框**窗口，
-     拖动 / 收进托盘 / 退出这三件事 Windows 不会再替我们做，得页面发一句话给 C#。
-     在浏览器里打开时这一整条不显示 —— 那时浏览器自带标题栏，不该再来一套。 -->
+     拖动 / 最小化 / 放大 / 退出这四件事 Windows 不会再替我们做，得页面发一句话给 C#。
+     在浏览器里打开时这一整条不显示 —— 那时浏览器自带标题栏，不该再来一套。
+     ★ 放大钮（2026-10-18 补）：之前只有「收进托盘」和「退出」，用户报过少一个放大键。
+       它是**切换**：已是最大化就还原。图标由 app.js 的 syncMaxIcon() 跟着窗口状态改。 -->
 <div class="winchrome" id="winchrome" hidden>
   <button class="wc" id="wcMin" type="button" title="收进托盘" aria-label="收进托盘">—</button>
+  <button class="wc" id="wcMax" type="button" title="放大窗口" aria-label="放大窗口">□</button>
   <button class="wc wc-x" id="wcQuit" type="button" title="退出程序" aria-label="退出程序">×</button>
 </div>
 
@@ -48,74 +54,138 @@
   </div>
 
   <div class="main">
-    <!-- 信箱 -->
-    <section class="page on" id="page-mail">
-      <h2>信箱</h2>
-      <p class="sub">写给她，等她回。也偶尔，她会先写给你。</p>
-
-      <div class="card">
-        <h3>写一封信</h3>
-        <textarea id="compose" placeholder="想说什么就写什么。短一点也没关系。"></textarea>
-        <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
-          <button class="pri" id="sendBtn">寄出</button>
-          <span class="hint" id="composeHint">一封信最多 4000 字</span>
-        </div>
-        <!-- 明信片上的邮戳小片（4 支 mail_stamp_*.mp4 + 静态 webp 兜底）。
-             ★ 视频解码失败（缺 HEVC 解码器、文件被删）时 stampFallback() 把它换成图，
-               所以这两枚必须同时在，缺一个那张卡就没有邮戳。 -->
-        <div class="write-stamp" id="writeStamp" aria-hidden="true">
-          <video id="writeStampVideo" muted playsinline preload="auto" hidden></video>
-          <img id="writeStampImg" alt="" hidden>
-        </div>
+    <!-- 信箱（2026-10-18 照原版重排）：左 mail-sidebar 列表 + 右 mail-content 阅读区。
+         ★ 原版口径：.mail-sidebar 是 flex-1 min-w-200 max-w-360 p-3 rounded-2，
+           .mail-content 是 flex-[2] min-w-[548px]，两者 h-full，中间 gap 12px。
+         ★ 写信用的是侧栏底部的 .mail-footer 条（原版就长这样），不再是一张卡。
+         ★ #letters / #writer 里的行由 app.js 的 renderMailList() 画，
+           右边的卡面由 renderReader() / showCompose() 画。 -->
+    <section class="page on is-mail" id="page-mail">
+      <!-- ★ 页顶栏（2026-10-18 用户要求）：左边大字「信箱」，右边齿轮。
+           ★ 原版没有「测试版」徽标那东西的等价物是页标题 + 右侧图标按钮，这里只照结构。
+           ★ 齿轮就是去设置页 —— 而不是再做一个独立的设置入口，
+             那个入口本来就在左栏第 4 个圆钮上，两者指向同一处（app.js 的 gear 处理器）。
+           ★ 内边距跟 .page 原来的 24/26 对齐（量过：#page-mail 的实际内边距是
+             24px 26px 32px；顶栏接管这层留白后，.page 自己的 padding 归零，
+             否则内容会被缩进两遍 —— 见 styles-original.css 的 .page-head）。 -->
+      <div class="page-head">
+        <h1 class="page-head-title">信箱</h1>
+        <button class="page-head-gear" id="mailGear" type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none"
+                  stroke="currentColor" stroke-width="1.6"/>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34
+                     1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06
+                     a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11
+                     a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34
+                     H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06
+                     a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.11
+                     a1.7 1.7 0 0 0-1.49.97Z"
+                  fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
+      <div class="mailbox">
+        <div class="mail-sidebar">
+          <div class="mail-header">
+            <span class="mail-header-title">我的信箱</span>
+            <span class="mail-header-count" id="mailCount">0</span>
+          </div>
+          <div class="mail-list" id="letters"></div>
+          <div class="mail-footer">
+            <div class="mail-footer-inner">
+              <div class="mail-footer-label">
+                <span class="mail-footer-title">给林离写信</span>
+                <span class="mail-footer-sub" id="composeQuota"></span>
+              </div>
+              <button class="mail-footer-action-button" id="writeBtn" type="button">写信</button>
+            </div>
+          </div>
+        </div>
 
-      <div class="card">
-        <h3>往来</h3>
-        <!-- 左列表、右读信 —— 跟原版 .mail-box 一个分栏口径。
-             ★ 这两个 id 是 app.js 的硬依赖（renderReader():142-148 与 showCompose():276-277），
-               少了它们 renderReader 一上来就在 null 上设 .hidden，整段读信逻辑当场抛错：
-               点一封不会显示内容，而且错误会被全局 onerror 塞进 toast 顶掉正常提示。 -->
-        <div class="mail-split">
-          <div id="letters"></div>
-          <div class="mail-reader">
-            <div id="reader" hidden></div>
-            <div id="mailEmpty" class="mail-empty">
-              <p class="es">还没有信。左下角可以写第一封。</p>
+        <div class="mail-content">
+          <div class="mail-content-header" id="mailHeader"></div>
+          <!-- ★ 右栏里只有「空态」是固定 DOM。读信卡与写信卡都由 mail-ui.js **自己建元素**
+               塞进这个 #mailBody（renderCard / openCompose），这里不能再放第二套 ——
+               放了就会生成重复 id（openCompose 自己也建 #compose / #sendBtn）。 -->
+          <div class="mail-content-body" id="mailBody">
+            <div class="mail-content-empty" id="mailEmpty">
+              <div class="mailbox-empty-art"></div>
+              <div class="mail-content-empty-title">未选中任何信件</div>
+              <div class="mail-content-empty-sub">点击左侧信箱栏阅读信件</div>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 曲库 -->
-    <section class="page" id="page-library">
-      <h2>曲库</h2>
-      <p class="sub">指向本机目录，不随包发放 —— 那批曲子 48.65 GB，塞不进安装包。</p>
-      <div class="card">
-        <h3>曲库目录</h3>
-        <div style="display:flex;gap:10px;align-items:center">
-          <input id="libraryDir" placeholder="E:\linlimusic" style="flex:1">
-          <button class="pri" id="saveLibraryDir">保存</button>
+    <!-- 曲库（2026-10-18 照原版重排）：左曲目列表 + 右播放区，沿用信箱那套两栏骨架。
+         ★ 原版游戏没有「曲库」页（曲子从游戏里来、按当前时段自动播），所以这里只有
+           骨架照搬、内容按我们自己的功能来。左上角的目录输入沿用 .mail-header 的内边距。 -->
+    <section class="page is-library" id="page-library">
+      <div class="library">
+        <div class="library-sidebar">
+          <div class="mail-header">
+            <span class="mail-header-title">曲库</span>
+            <span class="mail-header-count" id="songCount">0</span>
+          </div>
+          <!-- ★ 原版曲库页的四个页签（古典 / ACG / 轻音乐 / 我的上传），
+               当前页签底下有一道 2px 的下划线；文案来自原版语言包
+               zh-cn-bd81633d.js：A="古典"、M="抒情"、D="摇滚"、E="爵士"、
+               U="全部"，页签框用的是 tour-song-list。 -->
+          <div class="library-tabs" id="libraryTabs"></div>
+          <!-- 曲库目录的说明按钮（那个 (i)）。★ 2026-10-18 之前没有宿主 ——
+               app.js 里 `$("libHelp")?.addEventListener(...)` 的 ?. 把它静默吞了，
+               点下去什么都不发生，也不报错。 -->
+          <button class="library-help" id="libHelp" type="button"
+                  title="曲子目录怎么用" aria-label="说明">i</button>
+          <div class="library-field">
+            <input id="libraryDir" placeholder="E:\linlimusic">
+            <button id="saveLibraryDir" type="button">保存</button>
+          </div>
+          <!-- 分档结果摊开写在这一行（app.js 的 loadLibrary 往 #libraryState2 写）：
+               用户扫一眼就知道"导入时自动分档"分成了几档，不用自己点页签数。 -->
+          <div class="library-note" id="libraryState2"></div>
+          <!-- ★ 三列表头（# / 曲目 / 模式）—— 必须放在列表 #songs **之前**：
+                原版它就是贴着列表上沿的一行（`#` `曲目` `模式` + 下横线）。
+                右侧 .library-content 是原版 .player-container（纯黑舞台），表頭贴过去会跟画面抢地方。 -->
+          <div class="song-list-head" aria-hidden="true">
+            <span class="song-list-head-index">#</span>
+            <span class="song-list-head-title">曲目</span>
+            <span class="song-list-head-mode">模式</span>
+          </div>
+          <!-- 「已入库」的几个 chip（loadImported 往这里画，最多 4 个，点一下就在右侧放）。
+               ★ 它在曲库页重做时被删过，代码还在往这里写 —— 表面上看不出坏，
+                 其实是「入库之后没有快捷入口」这件事一直缺着。 -->
+          <div class="imported-strip" id="imported"></div>
+          <div class="mail-list" id="songs"></div>
+          <div class="mail-footer">
+            <div class="mail-footer-inner">
+              <div class="mail-footer-label">
+                <span class="mail-footer-title">已导入</span>
+                <span class="mail-footer-sub" id="importedCount"></span>
+              </div>
+              <button class="mail-footer-action-button" id="importRandom" type="button">随机导入</button>
+            </div>
+          </div>
         </div>
-        <p class="hint" id="libraryState" style="margin-top:10px"></p>
-      </div>
-      <div class="card">
-        <h3>曲库里的曲目</h3>
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
-          <button class="pri" id="importRandom">随机导入一首</button>
-          <span class="hint">导入后才会出现在下面，并可以按当前时段播放</span>
+
+        <div class="library-content">
+          <div class="mail-content-header" id="libraryHeader">
+            <div class="mail-content-header-text">
+              <div class="mail-content-title">演奏</div>
+              <div class="mail-content-sub" id="libraryState">还没有播放</div>
+            </div>
+            <div class="mail-content-actions">
+              <button class="library-field button" id="playFullscreen" type="button">全屏看演奏</button>
+            </div>
+          </div>
+          <!-- 右侧这块就是原版 .player-container 的同款：纯黑底 + video contain。
+                ★ 之前这里是一排 h3 卡片（曲库里的曲目 / 已导入 / 播放），跟原版完全是两种东西。 -->
+          <div class="library-stage">
+            <div id="player"><p class="player-hint">还没有播放。左栏点一首的「播放」。</p></div>
+          </div>
         </div>
-        <div id="songs"></div>
-      </div>
-
-      <div class="card">
-        <h3>已导入</h3>
-        <div id="imported"></div>
-      </div>
-
-      <div class="card">
-        <h3>播放</h3>
-        <div id="player"><p class="hint">还没有播放。点上面任意一首的「按当前时段播放」。</p></div>
       </div>
     </section>
 
@@ -223,8 +293,110 @@
       </div>
 
       <div class="card">
+        <h3>背景视频</h3>
+        <p>桌面与窗口后面那层循环壁纸。关掉之后界面回到纯色底，省电、也省显卡。</p>
+        <label class="row" style="align-items:center;gap:8px;cursor:pointer">
+          <input id="stageWallpaper" type="checkbox">
+          <span>显示背景视频</span>
+        </label>
+      </div>
+
+      <!-- 待机：素材在不在、环境音开关。★ 这一块以前没有宿主（#idleState / #idleAmbience 都不存在），
+           refreshIdle() 一进来就 `if (!box && !toggle) return;` —— 整个待机设置从来没显示过。 -->
+      <div class="card">
+        <h3>待机画面</h3>
+        <p id="idleState" class="hint">正在读取……</p>
+        <label class="row" style="align-items:center;gap:8px;cursor:pointer">
+          <input id="idleAmbience" type="checkbox">
+          <span>播放环境音</span>
+        </label>
+      </div>
+
+      <!-- 信件字体：两支各一行（letter = 林离写给你的，compose = 你自己写的）。
+           ★ 字体**不随包**：随包就等于替用户分发别人的字体，而且要背 21 MB。
+             所以这里只给「导入」和「去官网下载」两个动作，网址走白名单（见 openExternal）。 -->
+      <div class="card">
+        <h3>信件字体</h3>
+        <p class="hint">字体不随程序分发。想跟原版字迹一致，自己去下面那两个官网下（个人非商业免费），下好在这导入。</p>
+        <div class="font-slot" data-slot="letter">
+          <div class="font-slot-name">林离写的信</div>
+          <div class="font-slot-state" id="fontState-letter">正在读取……</div>
+          <div class="font-slot-url hint" id="fontUrl-letter"></div>
+          <div class="font-slot-actions">
+            <button id="fontImport-letter" type="button">导入字体文件</button>
+            <button class="lnk" id="fontDownload-letter" type="button">去官网下载</button>
+          </div>
+        </div>
+        <div class="font-slot" data-slot="compose">
+          <div class="font-slot-name">你自己写的信</div>
+          <div class="font-slot-state" id="fontState-compose">正在读取……</div>
+          <div class="font-slot-url hint" id="fontUrl-compose"></div>
+          <div class="font-slot-actions">
+            <button id="fontImport-compose" type="button">导入字体文件</button>
+            <button class="lnk" id="fontDownload-compose" type="button">去官网下载</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+          <button id="fontRecheck" type="button">重新检查</button>
+        </div>
+        <!-- 两支共用的隐藏 file input（pickFontFile 先记 pendingFontSlot 再点它） -->
+        <input id="fontFile" type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" hidden>
+      </div>
+
+      <!-- ================= 数据备份与恢复 =================
+           ★ 照姊妹项目「高级设置 → 诊断 → 数据备份与恢复」那一块做（data-safety.js + diagnostics-panel.js）：
+             备份 → 看内容 → 恢复（重启生效，恢复前自动留档）+ 导出/导入（换电脑）。
+           ★ 它解决的是一个真实存在过的坑：备份只写不读 —— 改时段、导入前一都会留一份，
+             可出事时用户没有任何恢复入口，只能对着文件干瞪眼。 -->
+      <div class="card" id="dataSafetyCard">
+        <h3>数据备份与恢复</h3>
+        <p class="hint" id="dataSafetySummary">正在读取备份列表……</p>
+
+        <div class="ds-actions">
+          <button class="pri" id="dsBackup" type="button">立即备份</button>
+          <button id="dsReveal" type="button">打开备份目录</button>
+          <button id="dsExport" type="button">导出全部数据</button>
+          <button id="dsImport" type="button">一键导入</button>
+          <input id="dsImportFile" type="file" accept=".zip" hidden>
+        </div>
+
+        <p class="hint" id="dataSafetyStatus"></p>
+        <div class="ds-pending" id="dsPending" hidden></div>
+        <div class="ds-list" id="dsList"></div>
+
+        <div class="ds-periodic">
+          <div class="font-slot-name">周期自动备份</div>
+          <p class="hint" id="dsPeriodicStatus">正在读取……</p>
+          <div class="ds-periodic-row">
+            <label class="row" style="align-items:center;gap:8px;cursor:pointer">
+              <input id="dsPeriodicEnabled" type="checkbox">
+              <span>自动备份</span>
+            </label>
+            <label class="ds-inline">每 <input id="dsPeriodicDays" type="number" min="1" max="30"> 天一次</label>
+            <label class="ds-inline">最多留 <input id="dsPeriodicKeep" type="number" min="1" max="60"> 份</label>
+            <button id="dsPeriodicSave" type="button">保存</button>
+            <button id="dsPeriodicCleanup" type="button">清理旧的</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 从旧程序搬信进来（.soul 导入）。★ 这套宿主也缺失过 —— pickSoul 绑定的
+           #soulPick / #soulState / #soulConfirm 全不存在，整块功能等于没做。 -->
+      <div class="card">
+        <h3>从旧程序搬信进来</h3>
+        <p class="hint">选一个 .soul 归档。程序先只读一遍告诉你里面有多少封信，你确认了才写进本机的库；写之前会先备份。</p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button id="soulPick" type="button">选择 .soul 文件</button>
+          <button class="pri" id="soulConfirm" type="button" disabled>确认导入</button>
+        </div>
+        <p class="hint" id="soulState"></p>
+        <input id="soulFile" type="file" accept=".soul" hidden>
+      </div>
+
+      <div class="card">
         <h3>关于</h3>
-        <p>这是一个完全本机的程序：不依赖游戏本体，不上传任何内容，没有账号，也不扣费。信件与记忆都在这台机器上。</p>
+        <p>这是一个完全本机的程序：不依赖游戏本体，不上传任何内容，没有账号。信件与记忆都在这台机器上。</p>
+        <p class="hint">回信需要你自己填 API Key，费用由你用的模型服务方按量计收；本程序不代收任何费用。</p>
         <p class="hint" id="dataDir"></p>
       </div>
 
@@ -286,9 +458,197 @@
   </div>
 </div>
 
+<!-- 字体引导弹窗：两支字体都没导入时问一次（app.js 的 fontModal() 里 __maybeAskFont）。
+     ★ 这个宿主在 2026-10-18 之前是不存在的 —— fontModal() 第一行 `if (!modal) return;` 直接退出，
+       于是「引导用户去装字体」这件事从头到尾没发生过一次，也不报错。
+     ★ 只走「导入本地文件」和「去官网下载」两条路：程序自己不抓字体（那等于替用户分发）。
+     ★ 结构照 #legalModal / #introModal，天然就是同一套液态玻璃，不另写样式。 -->
+<div class="modal" id="fontModal" hidden>
+  <div class="modal-mask" data-close="1"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="fontTitle">
+    <div class="modal-head">
+      <h3 id="fontTitle">想让字迹跟原版一样？</h3>
+      <button class="modal-x" data-close="1" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>原版用的那两支字体（新蒂文徵宋 / 新蒂茶园体）有版权，<b>不能随这个程序一起分发</b>。</p>
+      <p>想看到一模一样的字迹，得你自己去官网下（个人非商业免费），下好之后在设置里导入 ——
+        字体只存在本程序的数据目录，不会装进你的系统字体。</p>
+      <p class="hint">不导入也能用，只是信件会退回系统楷体。</p>
+    </div>
+    <div class="modal-foot">
+      <button id="fontLater">以后再说</button>
+      <button id="fontPage">先去官网看看</button>
+      <button class="pri" id="fontPick">导入字体文件</button>
+    </div>
+  </div>
+</div>
+
+
+     .player-container 纯黑铺满 + 两枚 video 交叉淡入（只有 .active 那枚 opacity:1）
+     + .watermark-overlay 斜向平铺水印。原版是整屏独立窗口，我们是 1180×820 的内嵌窗口，
+     所以它铺满 .win 的那块内容区，靠左上角那条玻璃条「返回」退出来。
+     ★ 两枚 video 必须都在 DOM 里：原版就是 A/B 双缓冲，换曲时新的 active、旧的淡出。 -->
+<div class="player-page" id="playerPage" hidden>
+  <div class="player-container">
+    <div class="video-wrapper">
+      <video id="playVideoA" muted playsinline preload="auto"></video>
+      <video id="playVideoB" muted playsinline preload="auto"></video>
+    </div>
+  </div>
+  <!-- ★ 水印层：原版 webplayer 有 .watermark-overlay（斜向平铺 uid），我们**不做**
+       （用户 2026-10-18 明确要求去掉，且姊妹程序已有去水印方案）。
+       这里保留一条空注释说明"故意不实现"，免得后来人以为漏了又加回来。 -->
+  <!-- ★ 顶栏只留标题与时段。原先这里有个 `#playerBack` 的「返回」按钮，
+       现在它挪进了底部控制条最左边（见下），一个按钮只能有一个 id。 -->
+  <div class="player-topbar">
+    <span class="player-title" id="playerTitle"></span>
+    <span class="player-slot" id="playerSlot"></span>
+  </div>
+  <p class="player-hint" id="playerEmpty">这一档还没有曲目</p>
+  <!-- 播放控制条：照原版 `.lite-playback-control`（main-31595bd3.js:339701）逐个元素复刻。
+       原版骨架 = 左「封面 + 曲名跑马灯」｜中「模式/上一首/播放/下一首/音量 + 进度条 + 时间」｜右「画中画」。
+       尺寸口径（原版 tailwind 类）：条高靠 px-5 pt-3 pb-2、栏宽 200px、封面 w-16 h-16(64) rounded-1(6)、
+       曲名 text-body-m(14/22)、时间 text-body-s(12) w-10、播放圆钮 w-10 h-10(40) rounded-full bg-primary-2、
+       其余图标钮 w-8 h-8(32) hover:bg-grey-1 rounded-1、进度条 max-w-[480px]。
+       ★ 这些 id（pbPrev/pbPlay/pbNext/pbMute/pbLine/pbFill/pbTime）是 app.js 里早就接好的线，
+         重排演奏页时必须给回来 —— 少了它们只是"点了没反应"，界面上看不出缺件。
+       ★ 图标一律内联 SVG（原版全站零 emoji），viewBox 24、currentColor。
+       ★ 我方多一个「返回」：原版播放器是独立窗口，我们内嵌在全屏页里，得有条路退出去。 -->
+  <div class="player-bar" id="playerBar">
+    <button class="player-back" id="playerBack" type="button" title="返回信箱">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M14.5 5.5L8 12l6.5 6.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+
+    <!-- 左：正在播的那首（封面 64 + 曲名，长了跑马灯） -->
+    <div class="player-now">
+      <div class="player-cover" id="pbCover"><span id="pbCoverText">♪</span></div>
+      <div class="player-now-text">
+        <span class="player-now-name" id="pbName">还没有播放</span>
+        <span class="player-now-sub" id="pbSlot"></span>
+      </div>
+    </div>
+
+    <!-- 中：控制 + 进度 -->
+    <div class="player-center">
+      <div class="player-controls">
+        <button class="player-btn" id="pbMode" type="button" title="循环方式">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9m0 0l-3-3m3 3l-3 3M20 15a5 5 0 0 1-5 5H6m0 0l3 3m-3-3l3-3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="player-btn" id="pbPrev" type="button" title="上一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 5v14M20 5.5v13a1 1 0 0 1-1.5.87L9 13.37a1 1 0 0 1 0-1.74l9.5-6A1 1 0 0 1 20 5.5z" fill="currentColor"/></svg></button>
+        <button class="player-btn is-main" id="pbPlay" type="button" title="播放 / 暂停"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg></button>
+        <button class="player-btn" id="pbNext" type="button" title="下一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M18 5v14M4 5.5v13a1 1 0 0 0 1.5.87l9.5-6a1 1 0 0 0 0-1.74l-9.5-6A1 1 0 0 0 4 5.5z" fill="currentColor"/></svg></button>
+        <button class="player-btn" id="pbMute" type="button" title="静音"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9h3l4.5-3.5v13L7 15H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="player-line">
+        <span class="player-time" id="pbNow">0:00</span>
+        <div class="player-progress" id="pbLine"><div class="player-progress-fill" id="pbFill"></div></div>
+        <span class="player-time" id="pbTime">0:00</span>
+      </div>
+    </div>
+
+    <!-- 右：原版这里是画中画（pip）。我方没有小窗，留一块等宽的占位，
+         让中间那组控制在整条里保持居中 —— 删掉它，进度条会整体右移。 -->
+    <div class="player-right"></div>
+  </div>
+</div>
+
+<!-- 信封弹层（照原版 MailBoxEnvelope 复刻）：
+     三个 SVG 图层叠出信封（主体 #f0ede7 / 左翼 #ece9e2 / 右翼 #e3e0d9 / 封口 #f2efea），
+     信纸 485×265 压在信封里；点一下 ⇒ .is-opening ⇒ letter-fly 1.4s 把信纸抽出来放大到 671×378，
+     同时信封壳往下走 120px 并淡出，最后只剩一封信。
+     ★ 三个 <filter> 里的 color-interpolation-filters="sRGB" 不能省：默认 linearRGB 会让
+       阴影色偏，原版每一处都写了这一句。 -->
+<div class="mail-envelope-overlay" id="envelopeOverlay" hidden>
+  <div class="mail-envelope-scene" id="envelopeScene">
+    <div class="mail-envelope" id="envelope">
+      <div class="mail-envelope__shell">
+        <div class="mail-envelope__container">
+          <svg class="mail-envelope__layer" width="533" height="455" viewBox="0 0 533 455" fill="none">
+            <defs>
+              <filter id="env_back" x="0" y="0" width="533" height="475.5" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                <feOffset dy="20"></feOffset>
+                <feGaussianBlur stdDeviation="20"></feGaussianBlur>
+                <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                <feBlend mode="normal" in2="shape" result="effect1"></feBlend>
+              </filter>
+            </defs>
+            <g filter="url(#env_back)">
+              <path d="M533.001 153.812L277.267 2.836C270.945 -0.945 263.055 -0.945 256.733 2.836L0.001 154.41L0 455.5H533L533.001 153.812Z" fill="#f0ede7"></path>
+            </g>
+          </svg>
+          <svg class="mail-envelope__layer" width="533" height="455" viewBox="0 0 533 455" fill="none" style="z-index:2">
+            <defs>
+              <filter id="env_left" x="-20%" y="-20%" width="140%" height="140%" filterUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                <feOffset dy="-8"></feOffset>
+                <feGaussianBlur stdDeviation="10"></feGaussianBlur>
+                <feComposite in2="hardAlpha" operator="out"></feComposite>
+                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                <feBlend mode="normal" in2="BackgroundImageFix" result="effect1"></feBlend>
+                <feBlend mode="normal" in="SourceGraphic" in2="effect1" result="shape"></feBlend>
+              </filter>
+            </defs>
+            <g filter="url(#env_left)">
+              <path d="M0 154L0 455L266.5 304.5Z" fill="#ece9e2"></path>
+            </g>
+          </svg>
+          <svg class="mail-envelope__layer" width="533" height="455" viewBox="0 0 533 455" fill="none" style="z-index:2">
+            <defs>
+              <filter id="env_right" x="-20%" y="-20%" width="140%" height="140%" filterUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                <feOffset dy="-8"></feOffset>
+                <feGaussianBlur stdDeviation="10"></feGaussianBlur>
+                <feComposite in2="hardAlpha" operator="out"></feComposite>
+                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                <feBlend mode="normal" in2="BackgroundImageFix" result="effect1"></feBlend>
+                <feBlend mode="normal" in="SourceGraphic" in2="effect1" result="shape"></feBlend>
+              </filter>
+            </defs>
+            <g filter="url(#env_right)">
+              <path d="M533 154L533 455L266.5 304.5Z" fill="#e3e0d9"></path>
+            </g>
+          </svg>
+          <svg class="mail-envelope__layer" width="533" height="455" viewBox="0 0 533 455" fill="none" style="z-index:3">
+            <defs>
+              <filter id="env_bottom" x="0" y="-20" width="533" height="475" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                <feOffset dy="-20"></feOffset>
+                <feGaussianBlur stdDeviation="20"></feGaussianBlur>
+                <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.15 0"></feColorMatrix>
+                <feBlend mode="normal" in2="shape" result="effect1"></feBlend>
+              </filter>
+            </defs>
+            <g filter="url(#env_bottom)">
+              <path d="M255.306 282.426C262.069 277.858 270.931 277.858 277.694 282.426L533 455H0L255.306 282.426Z" fill="#f2efea"></path>
+            </g>
+          </svg>
+          <div class="mail-envelope__hint" id="envelopeHint">点击打开信封</div>
+        </div>
+      </div>
+      <div class="mail-envelope__letter">
+        <div class="mail-envelope__letter-inner">
+          <div class="mail-envelope__letter-text" id="envelopeText"></div>
+        </div>
+        <button class="mail-letter__close" id="envelopeClose" type="button" aria-label="关闭">✕</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script src="legal.js"></script>
 <script src="app.js"></script>
+<script src="mail-ui.js"></script>
 <script type="module" src="rb-glass.js"></script>
 </body>
 </html>

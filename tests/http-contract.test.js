@@ -41,8 +41,22 @@ const ROUTES = CONTRACT.routes;
  *   if (req.method === "POST" && path.startsWith("/api/letters/") && path.endsWith("/read")) { … }
  * 后一种是带参路由，契约里写成 `:id`。
  */
+/**
+ * 从 server.mjs 里抠出真实存在的 /api 路由与它们的方法。
+ *
+ * 认三种分发形状（本文件唯一的解析假设，改了写法这里会先红）：
+ *   ① if (req.method === "GET"  && path === "/api/xxx") { … }
+ *   ② if (req.method === "POST" && path.startsWith("/api/letters/") && path.endsWith("/read")) { … }
+ *   ③ const P = "/api/folders/"; const id = path.startsWith(P) ? … : null;
+ *      const isSelf = …; if (isSelf && req.method === "PATCH") { … }
+ * ②③ 是带参路由，契约里写成 `:id`。
+ *
+ * ★ 不要绕开这里：写成 `path.match(/^\/api\/x\/([^/]+)$/)` 的分析器看不见，
+ *   那条路由从此没人守。要加新的分发形状，先改这里再改代码。
+ */
 function routesFromSource(src) {
   const found = new Map(); // path -> Set(methods)
+  const METHODS = "(GET|POST|PATCH|DELETE)";
 
   const add = (p, m) => {
     if (!found.has(p)) found.set(p, new Set());
@@ -50,13 +64,59 @@ function routesFromSource(src) {
   };
 
   // ① 精确匹配：path === "/api/..."
-  const exact = /req\.method\s*===\s*"(GET|POST)"\s*&&\s*path\s*===\s*"(\/api\/[^"]*)"/gu;
+  const exact = new RegExp(`req\\.method\\s*===\\s*"${METHODS}"\\s*&&\\s*path\\s*===\\s*"(\\/api\\/[^"]*)"`, "gu");
   for (const m of src.matchAll(exact)) add(m[2], m[1]);
 
   // ② 带参：path.startsWith("/api/letters/") && path.endsWith("/read")
   //    ⇒ 契约里记成 /api/letters/:id/read
-  const param = /req\.method\s*===\s*"(GET|POST)"\s*&&\s*path\.startsWith\("(\/api\/[^"]*)"\)\s*&&\s*path\.endsWith\("([^"]*)"\)/gu;
+  const param = new RegExp(
+    `req\\.method\\s*===\\s*"${METHODS}"\\s*&&\\s*path\\.startsWith\\("(\\/api\\/[^"]*)"\\)\\s*&&\\s*path\\.endsWith\\("([^"]*)"\\)`,
+    "gu"
+  );
   for (const m of src.matchAll(param)) add(`${m[2]}:id${m[3]}`, m[1]);
+
+  // ③ 两段式（歌单那批）：先算一个 "id"，再按 `isXxx && req.method === "PATCH"` 分派
+  //      const FOLDER_PREFIX = "/api/folders/";
+  //      const folderId = path.startsWith(FOLDER_PREFIX) && … ? … : null;
+  //      const isFolderSelf = folderId !== null && !folderId.includes("/");
+  //      const isFolderItems = folderId !== null && folderId.endsWith("/items");
+  //      if (isFolderSelf && req.method === "PATCH") { … }
+  //    ⇒ 契约里记成 /api/folders/:id 与 /api/folders/:id/items。
+  //    ★ 这是一种新形状，加它是因为歌单既要在 /:id 上改删、又要在 /:id/items 上增删重排，
+  //      单靠前两种写不出「同一段 path 上三种方法各走一条」。
+  // ---------------------------------------------------------------- ③ 两段式（歌单那批）
+  // 代码里的形状（server.mjs 的 /api/folders 段）：
+  //   const FOLDER_PREFIX = "/api/folders/";
+  //   const folderId     = path.startsWith(FOLDER_PREFIX) && … ? … : null;
+  //   const isFolderSelf  = folderId !== null && !folderId.includes("/");
+  //   const isFolderItems = folderId !== null && folderId.endsWith("/items");
+  //   if (isFolderSelf && req.method === "PATCH") { … }
+  // ⇒ 契约里记成 /api/folders/:id 与 /api/folders/:id/items。
+  //
+  // 加这种形状是因为歌单要在**同一段 path 上**按方法分派三条（改/删/读），
+  // 前面两种形状（整条 path 相等、或 startsWith+endsWith 在同一行）都写不出来。
+  //
+  // ★ 只在**恰好一个** `/api/…/` 前缀常量时启用：多个前缀时无法确定某个 isXxx
+  //   属于哪个前缀，宁可漏登记（会红）也不要记错（会绿）。
+  const prefixes = [...src.matchAll(/const\s+\w+\s*=\s*"(\/api\/[^"]*\/)"/gu)].map((m) => m[1]);
+  if (prefixes.length === 1) {
+    // isXxx 的后缀取自它自己那一行：`const isFolderItems = … .endsWith("/items")` ⇒ "/items"；
+    // 没有 endsWith 的（`!folderId.includes("/")` 那种）就是 /:id 本身，后缀为空串。
+    // ★ 按行切（不用 [^;]*?）—— 这几个 const 之间可能隔注释与换行，跨行匹配很脆。
+    const suffixOf = new Map();
+    for (const line of src.split("\n")) {
+      const decl = line.match(/const\s+(is\w+)\s*=\s*(.*)$/u);
+      if (!decl) continue;
+      const tail = decl[2].match(/\.endsWith\("([^"]*)"\)/u);
+      suffixOf.set(decl[1], tail ? tail[1] : "");
+    }
+    const guard = new RegExp(`if\\s*\\((is\\w+)\\s*&&\\s*req\\.method\\s*===\\s*"${METHODS}"\\)`, "gu");
+    for (const m of src.matchAll(guard)) {
+      const [, flag, method] = m;
+      if (!suffixOf.has(flag)) continue;
+      add(`${prefixes[0]}:id${suffixOf.get(flag)}`, method);
+    }
+  }
 
   return found;
 }
@@ -92,12 +152,18 @@ test("契约：契约里的每条路由在 server.mjs 里都真有实现（不�
 
 // ---------------------------------------------------------------- ② 方法不许漂
 
-test("契约：methods 只许是 GET/POST 且不重复", () => {
+// ★ PATCH/DELETE 是给资源本身用的（歌单改名 / 删歌单 / 重排条目）。写进白名单前核过：
+//   两条方法在本机回环上、带 X-Linli-Token、只回 JSON，安全面与 POST 一致；
+//   server.mjs 的兜底是 `if (GET || HEAD) return serveStatic(...)`，其余落到 405，
+//   所以 PATCH/DELETE 不会被静态服务误吃。
+test("契约：methods 只许是 GET/POST/PATCH/DELETE 且不重复", () => {
   for (const [path, entry] of Object.entries(ROUTES)) {
     assert.ok(Array.isArray(entry.methods) && entry.methods.length > 0, `${path} 的 methods 必须是非空数组`);
     const set = new Set(entry.methods);
     assert.equal(set.size, entry.methods.length, `${path} 的 methods 有重复`);
-    for (const m of set) assert.ok(["GET", "POST"].includes(m), `${path} 的 method "${m}" 不在允许集合里`);
+    for (const m of set) {
+      assert.ok(["GET", "POST", "PATCH", "DELETE"].includes(m), `${path} 的 method "${m}" 不在允许集合里`);
+    }
   }
 });
 

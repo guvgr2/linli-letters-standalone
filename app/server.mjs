@@ -11,12 +11,13 @@
 
 import { createServer } from "node:http";
 import { readFile, readdir, writeFile, rename } from "node:fs/promises";
-import { copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
+import { cpSync, copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname, extname, resolve } from "node:path";
+import { join, dirname, basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { runSecretPipeline } from "./secret-store.mjs";
 import { ERR, codeMessage, ApiError } from "./error-codes.mjs";
 import { buildImportPlan, PreviewRegistry, PREVIEW_TTL_MS } from "./import-session.mjs";
@@ -56,10 +57,12 @@ import {
   playbackTimeOfDay,
   prettySongName,
   selectVariant,
+  classifyGenre,
   LIBRARY_DIR_PATTERN,
   TIME_SLOT_LABELS,
   TIME_SLOTS,
 } from "./core.mjs";
+import * as safety from "./data-safety.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -72,6 +75,21 @@ const DATA_DIR = process.env.LINLI_DATA_DIR
   ? resolve(process.env.LINLI_DATA_DIR)
   : join(homedir(), "AppData", "Roaming", "LinliLetters");
 const DB_FILE = join(DATA_DIR, "letters.sqlite");
+
+// ★ 应用一次「待恢复」（如果上一次会话安排过恢复/导入）。**必须在 new DatabaseSync 之前**：
+//   主连接一打开，Windows 上这个文件就被占住，再改名/覆盖就失败了。
+//   ★ 启动流程不能因为恢复失败就起不来 —— applyPendingRestore 返回 reason 而不是抛；
+//     这里把它记进日志，标记会保留到下次启动再试。
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+try {
+  const restored = await safety.applyPendingRestore(DB_FILE, {
+    log: (line) => console.error(`[data-safety] ${line}`),
+  });
+  if (restored.applied) console.error(`[data-safety] 已应用待恢复：${restored.label}`);
+} catch (error) {
+  // 走到这里说明连标记文件都读不了 —— 不拦启动，只记一笔。
+  console.error(`[data-safety] 检查待恢复时出错：${error.message}`);
+}
 
 const PORT = Number(process.env.LINLI_PORT ?? 0); // 0 = 让系统给端口
 // /health 要报版本：外壳自检失败时把这一行一起给用户，就知道是哪一版出的问题。
@@ -120,7 +138,7 @@ function writeAllowed(req) {
 // ---------------------------------------------------------------- 库
 
 const db = (() => {
-  // 必须同步建：下面紧接着就要 open，异步 mkdir 会抢在前面导致 "unable to open database file"。
+  // 目录已经在上面「应用待恢复」那一段建好了；这里再判一次是旧代码留下的保险，无害。
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   const conn = new DatabaseSync(DB_FILE);
   conn.exec(`
@@ -146,9 +164,45 @@ const db = (() => {
     CREATE TABLE IF NOT EXISTS songs(
       dir TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      added_at INTEGER NOT NULL
+      added_at INTEGER NOT NULL,
+      last_played_at INTEGER NOT NULL DEFAULT 0
     );
+    -- ★ 2026-10-18 歌单：照姊妹项目（E:\olivia-soul-community-kit）的 song_folders +
+    --   song_folder_items 两层结构。姊妹项目那边 item_id 要区分
+    --   PERFORMANCE / PGC_SONG / UGC_SONG 三种来源，还带一整套 video_by_tod_view
+    --   的降级兜底 —— 那是因为它寄生在原版游戏 feapp 里，得跟着游戏的对象走。
+    --   我们是独立版，曲目唯一标识就是曲库里的目录名 songs.dir，所以：
+    --   · item 直接存 dir，不需要 item_type；
+    --   · 曲名不冗余存一份（姊妹项目存 name 是为了删歌后还能显示旧条目），
+    --     我们这边读的时候 join songs 表取名字，目录不在了就跳过 —— 不留幽灵条目。
+    CREATE TABLE IF NOT EXISTS song_folders(
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS song_folder_items(
+      folder_id TEXT NOT NULL,
+      dir TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      added_at INTEGER NOT NULL,
+      PRIMARY KEY (folder_id, dir)
+    );
+    CREATE INDEX IF NOT EXISTS song_folders_order ON song_folders(sort_order, created_at);
+    CREATE INDEX IF NOT EXISTS song_folder_items_order ON song_folder_items(folder_id, sort_order, added_at);
   `);
+  // ★ 2026-10-18 加列迁移：songs 原本只有 (dir,name,added_at)，
+  //   而 `/api/library/played` 只写 settings 的一个全局曲名 ——
+  //   "哪一首、什么时候播过" 根本没有落库，"最近演出"无从谈起。
+  //   ALTER TABLE ... ADD COLUMN 不能带 IF NOT EXISTS，所以要先查表结构。
+  const songCols = conn.prepare("PRAGMA table_info(songs)").all().map((c) => c.name);
+  if (!songCols.includes("last_played_at")) {
+    conn.exec("ALTER TABLE songs ADD COLUMN last_played_at INTEGER NOT NULL DEFAULT 0");
+  }
+  // 姊妹项目在 server.js:866 有一句孤儿清理：folder_id 没有外键，删歌单时若漏删条目
+  // 就会留下永远读不到的孤儿行。我们在删歌单的事务里已经一并删条目，这里再兜一道底。
+  conn.exec("DELETE FROM song_folder_items WHERE folder_id NOT IN (SELECT id FROM song_folders)");
   return conn;
 })();
 
@@ -270,6 +324,81 @@ async function importedSongs() {
     out.push({ ...row, variantCount: variants.length, slots: [...new Set(variants.map((v) => v.tod))] });
   }
   return out;
+}
+
+// ---------------------------------------------------------------- 歌单
+// 照姊妹项目（E:\olivia-soul-community-kit\repo\source\local-service\server.js:4897-5280）
+// 的 song_folders / song_folder_items 两层结构，但按我们的曲目模型简化（见建表处的注释）。
+// 姊妹项目那边要导出的 .osfolder 文件名会带上歌单名，所以它专门过滤了控制字符 ——
+// 我们没有导出功能，但歌单名照样会进 JSON 和 DOM，过滤一样不能省。
+
+/** 歌单名最长多少个字（按字符数算，不按字节）。 */
+const FOLDER_NAME_MAX = 40;
+
+/**
+ * 洗歌单名：去掉控制字符（含 NUL/BEL/ESC/DEL）+ 折叠空白 + 首尾 trim。
+ * ★ 姊妹项目 server.js:4897 的注释说得很直白：这些字符能原样存进库，
+ *   然后一路跟着进文件名和界面。我们在入口就掐掉，别让它有机会流下去。
+ */
+function cleanFolderName(raw) {
+  if (typeof raw !== "string") return "";
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+function folderNameTooLong(name) {
+  // [...name] 按码点切，避免把 emoji 的代理对算成两个字。
+  return [...name].length > FOLDER_NAME_MAX;
+}
+
+/** 一个歌单连同它的条目（按 sort_order, added_at 排序）。曲目已不在 songs 表里的条目跳过。 */
+function folderDetail(id) {
+  const folder = db.prepare("SELECT id, name, sort_order, created_at, updated_at FROM song_folders WHERE id = ?").get(id);
+  if (!folder) return null;
+  const rows = db.prepare(
+    `SELECT i.dir, i.sort_order, i.added_at, s.name
+       FROM song_folder_items i
+       JOIN songs s ON s.dir = i.dir
+      WHERE i.folder_id = ?
+      ORDER BY i.sort_order, i.added_at, i.dir`
+  ).all(id);
+  return {
+    id: folder.id,
+    name: folder.name,
+    sortOrder: folder.sort_order,
+    createdAt: folder.created_at,
+    updatedAt: folder.updated_at,
+    items: rows.map((r) => ({ dir: r.dir, name: r.name, sortOrder: r.sort_order, addedAt: r.added_at })),
+  };
+}
+
+/** 全部歌单的概要（不带条目），带上各自的曲目数 —— 左栏页签要显示。 */
+function folderList() {
+  const folders = db.prepare(
+    "SELECT id, name, sort_order, created_at, updated_at FROM song_folders ORDER BY sort_order, created_at, id"
+  ).all();
+  // 计数只数真实存在的曲目：join songs，跟 folderDetail 保持同一口径，
+  // 否则页签上写着 5 首、点进去只有 3 行。
+  const counts = new Map(
+    db.prepare(
+      `SELECT i.folder_id AS id, COUNT(*) AS n
+         FROM song_folder_items i
+         JOIN songs s ON s.dir = i.dir
+        GROUP BY i.folder_id`
+    ).all().map((r) => [r.id, r.n])
+  );
+  return folders.map((f) => ({
+    id: f.id,
+    name: f.name,
+    sortOrder: f.sort_order,
+    createdAt: f.created_at,
+    updatedAt: f.updated_at,
+    count: counts.get(f.id) ?? 0,
+  }));
+}
+
+function touchFolder(id, at = nowSeconds()) {
+  db.prepare("UPDATE song_folders SET updated_at = ? WHERE id = ?").run(at, id);
 }
 
 /** 当前时间点该播哪一个文件。 */
@@ -642,6 +771,10 @@ function fail(res, status, code, message) {
 /** 同上，但允许补响应头（例如要主动关连接的 413）。 */
 function failWith(res, status, code, message, extraHeaders) {
   return json(res, status, { error: codeMessage(message, code), code }, extraHeaders);
+}
+/** 主库当前大小（字节）。列表里给用户看「现在这份多大」，与备份比一下就知道有没有长。 */
+function dbFileSize() {
+  try { return statSync(DB_FILE).size; } catch { return 0; }
 }
 /**
  * 读 JSON 请求体。
@@ -1043,7 +1176,19 @@ const server = createServer(async (req, res) => {
     // ---- 曲库：指向本机目录，不随包 ------------------------------------
     // 48.65 GB / 474 个文件不可能打进安装包（包现在 52.6 MB），所以这里是「引用」不是「打包」。
     if (req.method === "GET" && path === "/api/library") {
-      return json(res, 200, await scanLibrary());
+      const scanned = await scanLibrary();
+      // ★ 2026-10-18：曲目必须带上分档与演奏方式 —— 前端左栏的四个页签
+      //   （古典/ACG/轻音乐/我的上传）就是按 genre 过滤的。以前这里只回
+      //   {name, dir}，于是每一首都落在 undefined 档 ⇒ 四个页签全是"这一档还没有曲目"。
+      //   分档判据是 core.mjs 的纯函数 classifyGenre（表内 129 首是真值，表外走关键词兜底）。
+      return json(res, 200, {
+        ...scanned,
+        songs: (scanned.songs ?? []).map((s) => ({
+          ...s,
+          genre: classifyGenre(s.dir, s.name),
+          mode: /^PlaySing_/iu.test(s.dir) ? "弹唱" : "独奏",
+        })),
+      });
     }
     if (req.method === "POST" && path === "/api/library/dir") {
       const body = await readJsonBody(req);
@@ -1102,6 +1247,20 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/api/library/songs") {
       return json(res, 200, { songs: await importedSongs() });
     }
+    // ★ 2026-10-18 补：原版曲库页有「最近演出」（语言包 Q="最近演出"、oo="你演奏了"、
+    //   T="刚刚"/V="{n}分钟前"/W="{n}小时前"/X="{month}月{day}日"）。
+    //   我们这边每播一次就 UPDATE 一次 last_played_at，所以"最近"本来就记着 ——
+    //   这里只是把它读出来给左栏用。**不新增表**：songs 表已有 last_played_at 列。
+    if (req.method === "GET" && path === "/api/library/recent") {
+      const limit = Math.min(50, Math.max(1, Number(new URL(req.url, "http://x").searchParams.get("limit")) || 12));
+      const rows = db.prepare(
+        "SELECT dir, name, added_at, last_played_at FROM songs WHERE last_played_at > 0 ORDER BY last_played_at DESC LIMIT ?"
+      ).all(limit);
+      return json(res, 200, {
+        songs: rows.map((r) => ({ dir: r.dir, name: r.name, addedAt: r.added_at, lastPlayedAt: r.last_played_at })),
+        now: nowSeconds(),
+      });
+    }
     if (req.method === "POST" && path === "/api/library/import") {
       const body = await readJsonBody(req);
       const songDir = String(body.dir ?? "").trim();
@@ -1117,12 +1276,266 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const title = String(body.title ?? "").trim();
       if (!title) return fail(res, 400, ERR.LIBRARY_TITLE_REQUIRED, "没有曲名");
+      const at = nowSeconds();
       setSetting("last_played_title", title);
-      setSetting("last_played_at", nowSeconds());
-      return json(res, 200, { title });
+      setSetting("last_played_at", at);
+      // ★ 2026-10-18：把"哪一首、什么时候"也落到 songs 表，供「最近演出」用。
+      //   只更新已入库的行（WHERE 命中 dir）；没入库的曲子不因为播过一次就冒出
+      //   到「已导入」里 —— 那是另一个动作（/api/library/import）才该干的事。
+      const dir = typeof body.dir === "string" ? body.dir.trim() : "";
+      if (dir) {
+        db.prepare("UPDATE songs SET last_played_at = ? WHERE dir = ?").run(at, dir);
+      }
+      return json(res, 200, { title, at });
     }
+
+    // ---- 歌单（照姊妹项目 song_folders / song_folder_items）----------------
+    // 路径用 /api/folders 而不是姊妹项目的 /toy/folders：我们是独立版，
+    // 没有"给游戏打补丁"这层，不跟着它改名。
+    if (req.method === "GET" && path === "/api/folders") {
+      return json(res, 200, { folders: folderList() });
+    }
+    if (req.method === "POST" && path === "/api/folders") {
+      const body = await readJsonBody(req);
+      const name = cleanFolderName(body.name);
+      if (!name) return fail(res, 400, ERR.LIBRARY_FOLDER_NAME_REQUIRED, "歌单要有个名字");
+      if (folderNameTooLong(name)) {
+        return fail(res, 400, ERR.LIBRARY_FOLDER_NAME_TOO_LONG, `歌单名最多 ${FOLDER_NAME_MAX} 个字`);
+      }
+      const at = nowSeconds();
+      // sort_order 取当前最大值 +1：姊妹项目 server.js:5118 同一套写法
+      // （COALESCE(MAX(sort_order), -1) + 1，空表时第一张是 0）。
+      const next = Number(
+        db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM song_folders").get()?.next ?? 0
+      );
+      const id = randomUUID();
+      db.prepare(
+        "INSERT INTO song_folders(id, name, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?)"
+      ).run(id, name, next, at, at);
+      return json(res, 200, { folder: folderDetail(id), folders: folderList() });
+    }
+    // ★ 歌单的路径解析统一走 startsWith/endsWith 两段式，与 server.mjs 里
+    //   /api/letters/:id/read 那批**同一个形状** —— tests/http-contract.test.js
+    //   就是按这个形状把带参路由认成 `:id` 的（它不认 path.match 正则），
+    //   换成正则写法那条契约护栏当场失效，等于这块地没人守。
+    const FOLDER_PREFIX = "/api/folders/";
+    const folderId = path.startsWith(FOLDER_PREFIX) && path.length > FOLDER_PREFIX.length
+      ? decodeURIComponent(path.slice(FOLDER_PREFIX.length))
+      : null;
+    // 只有「/api/folders/<id>」这一段：没有更多斜杠才算，多了就是 /items 那条路。
+    const isFolderSelf = folderId !== null && !folderId.includes("/");
+    const isFolderItems = folderId !== null && folderId.endsWith("/items");
+    if (isFolderSelf && req.method === "GET") {
+      const detail = folderDetail(folderId);
+      if (!detail) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      return json(res, 200, { folder: detail });
+    }
+    if (isFolderSelf && req.method === "PATCH") {
+      if (!folderDetail(folderId)) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      const body = await readJsonBody(req);
+      const name = cleanFolderName(body.name);
+      if (!name) return fail(res, 400, ERR.LIBRARY_FOLDER_NAME_REQUIRED, "歌单要有个名字");
+      if (folderNameTooLong(name)) {
+        return fail(res, 400, ERR.LIBRARY_FOLDER_NAME_TOO_LONG, `歌单名最多 ${FOLDER_NAME_MAX} 个字`);
+      }
+      db.prepare("UPDATE song_folders SET name = ?, updated_at = ? WHERE id = ?").run(name, nowSeconds(), folderId);
+      return json(res, 200, { folder: folderDetail(folderId), folders: folderList() });
+    }
+    if (isFolderSelf && req.method === "DELETE") {
+      if (!folderDetail(folderId)) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      // 条目没有外键，必须显式删（姊妹项目 server.js:5188 也是这么做的）。
+      db.prepare("DELETE FROM song_folder_items WHERE folder_id = ?").run(folderId);
+      db.prepare("DELETE FROM song_folders WHERE id = ?").run(folderId);
+      return json(res, 200, { removed: folderId, folders: folderList() });
+    }
+    // 歌单里的条目：加一首 / 删一首 / 重排。
+    // ★ 守卫写成 `isFolderItems && req.method === …`（而不是先算一个 id 再判）——
+    //   tests/http-contract.test.js 靠这个形状认路由，多一层间接它就看不见。
+    const folderItemsId = isFolderItems ? folderId.slice(0, -"/items".length) : null;
+    if (isFolderItems && req.method === "POST") {
+      const id = folderItemsId;
+      if (!folderDetail(id)) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      const body = await readJsonBody(req);
+      const dir = typeof body.dir === "string" ? body.dir.trim() : "";
+      if (!dir) return fail(res, 400, ERR.LIBRARY_PLAYLIST_ITEM_INCOMPLETE, "没有指定曲目");
+      // 只收 songs 表里真有的曲目。歌单不该成为绕过"曲库有没有这首"的后门 ——
+      // 而且 folderDetail 是要 join songs 取名字的，不存在的 dir 加进去也显示不出来。
+      const song = db.prepare("SELECT dir, name FROM songs WHERE dir = ?").get(dir);
+      if (!song) return fail(res, 400, ERR.LIBRARY_SONG_NOT_FOUND, "这一首还没入库，先把它加进已导入");
+      const at = nowSeconds();
+      const exists = db.prepare("SELECT 1 AS hit FROM song_folder_items WHERE folder_id = ? AND dir = ?").get(id, dir);
+      if (!exists) {
+        const next = Number(
+          db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM song_folder_items WHERE folder_id = ?")
+            .get(id)?.next ?? 0
+        );
+        db.prepare("INSERT INTO song_folder_items(folder_id, dir, sort_order, added_at) VALUES(?, ?, ?, ?)")
+          .run(id, dir, next, at);
+        touchFolder(id, at);
+      }
+      return json(res, 200, { folder: folderDetail(id), added: !exists });
+    }
+    if (isFolderItems && req.method === "DELETE") {
+      const id = folderItemsId;
+      if (!folderDetail(id)) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      const dir = String(url.searchParams.get("dir") ?? "").trim();
+      if (!dir) return fail(res, 400, ERR.LIBRARY_PLAYLIST_ITEM_INCOMPLETE, "没有指定曲目");
+      // ★ 「歌单里没有这一首」与「歌单不存在」分号：前者多半是界面拿的是旧列表
+      //   （比如另一处已经移除了），后者是歌单刚被删 —— 用户要做的事不一样。
+      const hit = db.prepare("SELECT 1 AS hit FROM song_folder_items WHERE folder_id = ? AND dir = ?").get(id, dir);
+      if (!hit) return fail(res, 404, ERR.LIBRARY_PLAYLIST_ITEM_NOT_FOUND, "这个歌单里没有这一首");
+      db.prepare("DELETE FROM song_folder_items WHERE folder_id = ? AND dir = ?").run(id, dir);
+      touchFolder(id);
+      return json(res, 200, { folder: folderDetail(id) });
+    }
+    // 重排：body 里给一份完整顺序（dir 数组）。只认歌单里已有的曲目，
+    // 缺的保持原相对顺序接在后面 —— 前端拖拽只发被移动的那一段，不要求它发全集。
+    if (isFolderItems && req.method === "PATCH") {
+      const id = folderItemsId;
+      const detail = folderDetail(id);
+      if (!detail) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
+      const body = await readJsonBody(req);
+      if (!Array.isArray(body.order)) {
+        return fail(res, 400, ERR.LIBRARY_PLAYLIST_ITEM_INCOMPLETE, "重排要给定一份顺序");
+      }
+      const current = detail.items.map((it) => it.dir);
+      const wanted = body.order.filter((d) => typeof d === "string" && current.includes(d));
+      const seen = new Set();
+      const ordered = [];
+      for (const d of wanted) {
+        if (seen.has(d)) continue;
+        seen.add(d);
+        ordered.push(d);
+      }
+      for (const d of current) {
+        if (!seen.has(d)) ordered.push(d);
+      }
+      const stmt = db.prepare("UPDATE song_folder_items SET sort_order = ? WHERE folder_id = ? AND dir = ?");
+      ordered.forEach((d, index) => stmt.run(index, id, d));
+      touchFolder(id);
+      return json(res, 200, { folder: folderDetail(id) });
+    }
+
     // ★ 设置页「关于」里要告诉用户数据到底存在本机哪个目录 —— 「不上传」这句承诺
     //   光靠嘴说没有说服力，给得出路径才算数。只回几个本机目录 + 版本号，不碰任何信件内容。
+    // ---- 数据备份与恢复 -------------------------------------------------
+    // 三条约束（照姊妹项目 data-safety.js，都是踩过坑立的）：
+    //   ① 恢复**不热执行**：只写 pending-restore.json，下次启动、开连接之前才应用；
+    //   ② 任何恢复/导入之前先把当前库整体留档（applyPendingRestore 里做）；
+    //   ③ 导出包一律脱敏（exportUserData 里做）。
+    // ★ GET 也要令牌：这个接口会列出用户数据目录里的文件名。外壳同源、带令牌是白拿的，
+    //   但不带就把「本机其它进程能看你的备份列表」当默认值了。
+    if (path === "/api/data/status" || path.startsWith("/api/data/")) {
+      if (!tokenOk(req)) return fail(res, 403, ERR.COMMON_TOKEN_MISSING, "缺少会话令牌");
+      const pending = await safety.readPendingRestore(DB_FILE);
+      if (req.method === "GET" && path === "/api/data/status") {
+        const list = await safety.listBackups(DB_FILE);
+        return json(res, 200, {
+          ...list,
+          dir: DATA_DIR,
+          pending,
+          periodic: safety.readPeriodicBackupConfig(getSetting),
+          live: dbFileSize(),
+        });
+      }
+      if (req.method === "POST" && path === "/api/data/backup") {
+        const made = await safety.manualBackup(DB_FILE);
+        return json(res, 200, { ...(await safety.listBackups(DB_FILE)), made });
+      }
+      if (req.method === "POST" && path === "/api/data/inspect") {
+        const body = await readJsonBody(req);
+        return json(res, 200, await safety.inspectBackup(DB_FILE, body.file));
+      }
+      if (req.method === "POST" && path === "/api/data/delete") {
+        const body = await readJsonBody(req);
+        // ★ 删除不可撤销 ⇒ 必须显式确认。没有这个门，误点一下就少一份退路。
+        if (body.confirm !== true) return fail(res, 400, ERR.COMMON_BACKUP_DELETE_NOT_CONFIRMED, "删除备份要先确认");
+        const done = await safety.deleteBackup(DB_FILE, body.file, { pendingRestore: pending?.source ?? null });
+        return json(res, 200, await safety.listBackups(DB_FILE));
+      }
+      if (req.method === "POST" && path === "/api/data/restore") {
+        const body = await readJsonBody(req);
+        if (body.confirm !== true) return fail(res, 400, ERR.COMMON_RESTORE_NOT_CONFIRMED, "恢复要先确认");
+        const target = safety.backupPath(DB_FILE, body.file);
+        const record = await safety.arrangeRestore(DB_FILE, target, { label: basename(target), origin: "backup" });
+        return json(res, 200, { pending: record, note: "关掉程序再打开才生效" });
+      }
+      if (req.method === "POST" && path === "/api/data/cancel-restore") {
+        await safety.cancelRestore(DB_FILE);
+        return json(res, 200, { pending: null });
+      }
+      if (req.method === "POST" && path === "/api/data/export") {
+        const { zip, manifest } = await safety.exportUserData(DB_FILE, { version: APP_VERSION });
+        const name = `linli-userdata-${APP_VERSION}-${safety.stamp()}.zip`;
+        res.writeHead(200, {
+          "Content-Type": "application/zip",
+          "Content-Length": zip.length,
+          "Content-Disposition": `attachment; filename="${name}"`,
+          "X-Export-Name": encodeURIComponent(name),
+          "Cache-Control": "no-store",
+        });
+        return res.end(zip);
+      }
+      if (req.method === "POST" && path === "/api/data/import") {
+        const raw = await readRawBody(req, safety.MAX_IMPORT_BYTES, ERR.IMPORT_TOO_LARGE, "导入包太大了（超过 1 GB）");
+        const named = url.searchParams.get("name") ?? "";
+        const done = await safety.importUserData(DB_FILE, raw, { name: named });
+        return json(res, 200, { ...done, pending: done.pending, note: "关掉程序再打开才生效" });
+      }
+      // 周期备份的三项设置：读回状态里的 periodic，写从这里。
+      if (req.method === "POST" && path === "/api/data/periodic") {
+        const body = await readJsonBody(req);
+        const current = safety.readPeriodicBackupConfig(getSetting);
+        // ★ 不用 `Number(x) || 缺省` 写夹取：0 是合法输入（0 天会被夹成 1），
+        //   而 `||` 把 0 当空值 ⇒ 用户填 0 会被静默换成原值，界面上看着"保存成功"却没生效。
+        //   本仓已经因为这种「把合法值当空」踩过一次（num() 把空串当 0、主动信被永久关停）。
+        const clampInt = (raw, fallback, min, max) => {
+          const n = Number(raw);
+          if (raw === undefined || raw === null || raw === "" || !Number.isFinite(n)) return fallback;
+          return Math.min(max, Math.max(min, Math.trunc(n)));
+        };
+        const next = {
+          enabled: "enabled" in body ? Boolean(body.enabled) : current.enabled,
+          days: clampInt(body.days, current.days, 1, safety.MAX_PERIODIC_DAYS),
+          keep: clampInt(body.keep, current.keep, safety.MIN_PERIODIC_KEEP, safety.MAX_PERIODIC_KEEP),
+        };
+        setSetting(safety.PERIODIC_ENABLED_SETTING, next.enabled ? "1" : "0");
+        setSetting(safety.PERIODIC_DAYS_SETTING, String(next.days));
+        setSetting(safety.PERIODIC_KEEP_SETTING, String(next.keep));
+        return json(res, 200, { periodic: safety.readPeriodicBackupConfig(getSetting) });
+      }
+      // 「打开备份目录」：用系统资源管理器打开，不经过网页跳转 ——
+      // 所以不走外壳的 openExternal 白名单（那条白名单是给 https 外链用的）。
+      // 目录固定是 DATA_DIR，不接受前端传路径：传什么都会被忽略，没有穿越面。
+      if (req.method === "POST" && path === "/api/data/reveal") {
+        try {
+          spawn("explorer.exe", [DATA_DIR], { detached: true, stdio: "ignore" }).unref();
+        } catch (error) {
+          return fail(res, 500, ERR.COMMON_INTERNAL, `打不开备份目录：${error.message}`);
+        }
+        return json(res, 200, { dir: DATA_DIR });
+      }
+      // 确认清理：把超出「保留份数」的周期备份删掉。
+      // 只动周期备份（backup-periodic-*），手动备份与升级前备份永远不删。
+      if (req.method === "POST" && path === "/api/data/periodic-cleanup") {
+        const body = await readJsonBody(req);
+        if (body.confirm !== true) {
+          return fail(res, 400, ERR.COMMON_BACKUP_DELETE_NOT_CONFIRMED, "清理要明确确认（confirm: true）");
+        }
+        const { keep } = safety.readPeriodicBackupConfig(getSetting);
+        const all = (await safety.listBackups(DB_FILE, { limit: 10000 })).items
+          .filter((item) => item.file.startsWith(safety.PERIODIC_PREFIX))
+          .sort((a, b) => b.at - a.at);
+        const doomed = all.slice(keep);
+        const removed = [];
+        for (const item of doomed) {
+          await safety.deleteBackup(DB_FILE, item.file);
+          removed.push(item.file);
+        }
+        return json(res, 200, { removed, kept: all.length - removed.length });
+      }
+      return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这个接口");
+    }
     if (req.method === "GET" && path === "/api/about") {
       return json(res, 200, {
         version: APP_VERSION,
@@ -1292,6 +1705,13 @@ const server = createServer(async (req, res) => {
     return fail(res, 405, ERR.COMMON_ROUTE_NOT_FOUND, "这个地址不支持这种请求方式");
   } catch (error) {
     console.error(`[api] ${req.method} ${path} → ${error.message}`);
+    // ★ 数据安全模块（data-safety.mjs）抛的是**带 status + code 的普通 Error**：
+    //   它不依赖 server.mjs 的 ApiError 类，好处是那个模块能被单独测试、能单独发布。
+    //   这里把它接成同样的响应形状（中文 + 号），别掉进下面的 COMMON_INTERNAL 兜底。
+    if (Number.isInteger(error?.status) && typeof error?.code === "string") {
+      console.error(`[api] ${error.code} → ${error.message}`);
+      return json(res, error.status, { error: codeMessage(error.message, error.code), code: error.code });
+    }
     // ★ ApiError 自带状态码与错误号，别一律压成 500 COMMON_INTERNAL。
     //   它是**唯一一条转发型出口**：号来自抛出点（那里已经核过），这里不再套一层 "（号）"，
     //   否则同一条报错会带着两个号上屏。

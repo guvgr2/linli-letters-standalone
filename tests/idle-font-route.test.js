@@ -229,6 +229,16 @@ describe("待机素材与字体：素材齐全时的真链路", () => {
     assert.equal(a.video, b.video, "前端每 30 秒轮询一次 —— 每次重掷种子会让桌面画面半小时跳一次");
     assert.equal(a.scene, b.scene);
     assert.equal(a.state, b.state);
+
+    // ★ 只比两次是不够的：种子退化后组合只有 9 种，两次恰好撞上的概率约 1/9，
+    //   实测 30 次里漏抓 2 次。抽 12 次，撞上的概率降到 (1/9)^11 ——
+    //   既抓得住"每次重掷"，也顺便证明 30 秒轮询一整天都是同一张片。
+    const picks = new Set();
+    for (let i = 0; i < 12; i += 1) {
+      const one = await (await fetch(`${base}/api/idle/next`, { signal: AbortSignal.timeout(10000) })).json();
+      picks.add(`${one.scene}_${one.state}_${one.slot}`);
+    }
+    assert.equal(picks.size, 1, `连抽 12 次给出了 ${picks.size} 种不同的待机片（${[...picks].join("、")}）—— 种子没钉住`);
   });
 
   test("⑥ /api/idle/video 走 Range ⇒ 206，长度对得上", { timeout: 60000 }, async () => {

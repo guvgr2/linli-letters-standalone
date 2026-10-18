@@ -228,7 +228,11 @@ body.native .win { margin-top: 38px; height: calc(100% - 60px); }
 .rb.on { background: var(--p2); color: #121214; border-color: var(--p2); }
 
 /* ---- .rb 真折射玻璃覆盖层 ---- */
-.rb-glass { position: fixed; pointer-events: none; z-index: 50; border-radius: 50%; }
+/* ★ 尺寸必须显式写成和 .rb 一样的 46px。
+   canvas 的 width/height 属性是**内部分辨率**（46×3=138，超采样用），不是显示尺寸；
+   只给属性不给 CSS 时，浏览器按 138×138 的固有尺寸排版 ⇒ 圆钮上压出一个 3 倍大的
+   玻璃圆盘，还会盖住左边的列表。rb-glass.js 里也设了一次（双保险，防止 CSS 被覆盖）。 */
+.rb-glass { position: fixed; width: 46px; height: 46px; pointer-events: none; z-index: 50; border-radius: 50%; }
 .rail.glass-on .rb { background: transparent !important; border-color: transparent !important; color: transparent !important; box-shadow: none !important; }
 
 /* ---- 内容区 ---- */

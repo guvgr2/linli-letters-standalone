@@ -15,7 +15,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -176,11 +176,21 @@ test("⑨ 每个号都得真的发得出去：源码里至少要引用它一次"
   const PENDING = new Map([]);
 
   const FRONT = read("app/public/app.js");
+  // ★ 2026-10-18：号已经不只从 server.mjs 抛出了。数据备份/恢复/导入那一支整个在
+  //   app/data-safety.mjs 里（纯函数模块，能被单独测试、单独发布），它抛的号是
+  //   `ERR.COMMON_BACKUP_NAME_INVALID` 这种正经写法 —— 但只看 server.mjs 就会把它们
+  //   全判成"死号"。按文件扫是一颗定时炸弹：每拆一个模块就冒出一批假死号，
+  //   最后必然有人往 PENDING 或白名单里塞，护栏就废了。
+  //   ⇒ 改成扫**所有** app/*.mjs（含 server.mjs 自己）。
+  const SERVER_SIDE = readdirSync(join(ROOT, "app"))
+    .filter((f) => f.endsWith(".mjs"))
+    .map((f) => read(`app/${f}`))
+    .join("\n");
   // ★ 号从辅助函数的变量名里来（`?overCode:`）也算带号：readRawBody 那种
   //   "超限抛什么号由调用方点名"的写法，第三参必然是 overCode，不是裸字符串。
   const dead = codes.filter((c) => {
     if (PENDING.has(c)) return false;
-    return !new RegExp(`ERR\\.${c}\\b`).test(SERVER) && !FRONT.includes(`"${c}"`);
+    return !new RegExp(`ERR\\.${c}\\b`).test(SERVER_SIDE) && !FRONT.includes(`"${c}"`);
   });
   assert.deepEqual(dead, [],
     `这些号定义了却从来发不出去（用户永远见不到它）：${dead.join("、")}。`
@@ -190,7 +200,7 @@ test("⑨ 每个号都得真的发得出去：源码里至少要引用它一次"
   // 反向：PENDING 里的号一旦接上了出口，就该从名单里删掉，别让它变成永久豁免。
   const stillPending = [...PENDING.keys()].filter((c) => {
     if (!codes.includes(c)) return true;                                  // 号被删了
-    return new RegExp(`ERR\\.${c}\\b`).test(SERVER) || FRONT.includes(`"${c}"`); // 已经接上了
+    return new RegExp(`ERR\\.${c}\\b`).test(SERVER_SIDE) || FRONT.includes(`"${c}"`); // 已经接上了
   });
   assert.deepEqual(stillPending, [],
     `这些号已经不算"暂未接线"了，请从 PENDING 里删掉：${stillPending.join("、")}`);

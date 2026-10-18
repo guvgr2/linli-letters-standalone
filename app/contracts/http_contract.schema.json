@@ -62,7 +62,8 @@
         "methods": {
           "type": "array",
           "minItems": 1,
-          "items": { "enum": ["GET", "POST"] }
+          "items": { "enum": ["GET", "POST", "PATCH", "DELETE"] },
+          "description": "允许的方法。PATCH/DELETE 是给**资源本身**用的（歌单改名、删歌单、重排条目）—— 写成 POST /api/folders/:id/delete 只是为了绕开枚举限制，却让契约不再如实描述接口。这两条都是本机回环、带 X-Linli-Token 的 JSON 接口，风险面与 POST 相同。"
         },
         "capability": {
           "type": "string",
