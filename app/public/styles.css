@@ -246,12 +246,20 @@ body.native .winchrome { display: flex; }
 }
 
 /* ---- 左栏：四个圆形导航按钮 ---- */
+/* ★ 2026-10-18 用户截图圈红：「最左边三个按钮是悬空的，底下没有背景」。
+   rail 列以前只有一根 1px 右边框，native 透明玻璃下背后直接是桌面，
+   圆钮像浮在空气里。补一块与右侧玻璃面板同材质的底（同 --glass-a/--glass-sheen/
+   --glass-edge），让圆钮"坐"在一块玻璃上，而不是悬空。 */
 .rail {
   position: relative;
   border-right: 1px solid rgba(255, 255, 255, .08);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--glass-sheen, none), var(--glass-a, rgba(255,255,255,.05));
+  box-shadow: var(--glass-edge, none);
+  backdrop-filter: var(--glass-blur, none);
+  -webkit-backdrop-filter: var(--glass-blur, none);
 }
 /* ★★ 这里原来是 `right: 100%` —— 那会把整组按钮放到左栏的**左侧外面**
    （栏左沿 x=23，按钮右沿正好落在 23，于是整组落在 x=-29..23）。

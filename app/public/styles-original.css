@@ -1819,11 +1819,14 @@
      齿轮从窗口条下方开始，两者各归各位。 */
 .page:has(> .page-head) { padding-top: 44px; }
 /* native 玻璃下页头不能是实底横带（会把透明玻璃打穿一块）：
-   半透明 + 轻模糊，滚过的内容从它底下穿过时是"隔着玻璃看"的效果。 */
+   半透明 + 轻模糊，滚过的内容从它底下穿过时是"隔着玻璃看"的效果。
+   ★ 2026-10-18 用户实证（截图圈红）：0.55 的底在玻璃上读成"一条横杠"——
+     齿轮下面那条线就是它的下缘。压到 0.28 并把 blur 降到 10px：
+     滚动内容穿过时仍看得清（不撞字），但不再是能画出边界的一条带。 */
 body.native .page-head {
-  background: rgba(23, 24, 28, 0.55);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(23, 24, 28, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 /* ★ 曲库页是「页顶栏 + 撑满剩余高度的两栏」，必须整列 flex，
      否则 .library 的 height:100% 参照不到东西，右栏会塌成 0 高。 */

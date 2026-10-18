@@ -267,9 +267,12 @@ internal sealed class MainWindow : Form
             {
                 AccentState = 4,   // ACCENT_ENABLE_ACRYLICBLURBEHIND
                 AccentFlags = 2,
-                // AABBGGRR。0x66 = 40% 的暗 tint —— 桌面透 60% 进来，
-                // 玻璃后面的颜色是活的（跟着窗口盖住的桌面区域走）。
-                GradientColor = 0x66000000,
+                // AABBGGRR。0x33 = 20% 的暗 tint —— 桌面透 80% 进来。
+                // ★ 2026-10-18 用户截图后从 0x66(40%) 压下来：40% tint 叠上页面
+                //   内容色后整窗读成均匀深灰（实测截屏全窗 rgb(23,23,26)），
+                //   用户看还是"不像玻璃"。tint 只留防炫目的最低限度，
+                //   玻璃的层次改由页面自己的半透明面板负责。
+                GradientColor = 0x33000000,
             };
             IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(AccentPolicy)));
             try
