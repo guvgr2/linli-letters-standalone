@@ -51,7 +51,14 @@ internal sealed class MainWindow : Form
         // ★ 无边框。边框一留，玻璃界面外面就多一圈 Windows 的灰边，"程序感"没了。
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(14, 13, 17);   // 跟页面底色一致，免得加载时闪一块白
+        // ★ 2026-10-18（用户：「把桌面或者在这个程序后面的界面当背景就好了」）：
+        //   窗口开启 DWM 亚克力（DwmSetWindowAttribute 33 / DWMWA_SYSTEMBACKDROP_TYPE
+        //   = DWMSBT_TRANSIENTWINDOW），系统把窗口正后方的桌面实时模糊后垫在窗口底下
+        //   —— 这就是 Windows 11 原生「液态玻璃」的材质。页面那边再把 body 底色
+        //   去掉、WebView2 设透明，backdrop-filter 模糊的就是这层真实桌面。
+        //   兜底链：Acrylic 失败 → Mica(2) → 失败 → 纯色底（现在的样子）。
+        //   ★ Win11 22H2+ 才有系统级 backdrop；再老就自己兜住，不崩。
+        BackColor = Color.FromArgb(14, 13, 17);   // 兜底底色（亚克力失败时也不闪白）
 
         // 按屏幕大小收敛：别在小屏上开出一个放不下的窗口。
         // ★ 2026-10-18 改到第 5 轮，前四轮全错，错因各不相同，全记在这里：
@@ -113,6 +120,9 @@ internal sealed class MainWindow : Form
 
         Load += async (_, _) =>
         {
+            // ★ 液态玻璃三件套之三：窗口一建好就开 backdrop（不等 WebView2）。
+            //   开早了页面还没铺底色，正好让用户第一眼就看到玻璃后面是真的桌面。
+            EnableBackdrop();
             try
             {
                 // ★ 用户数据目录必须显式给一个本机的固定位置。
@@ -122,6 +132,11 @@ internal sealed class MainWindow : Form
                 Directory.CreateDirectory(dataDir);
                 var env = await CoreWebView2Environment.CreateAsync(userDataFolder: dataDir);
                 await _web.EnsureCoreWebView2Async(env);
+
+                // ★ 液态玻璃三件套之二：WebView2 页面底色透明。
+                //   DWM 亚克力负责把桌面模糊后垫在窗口底下；这里不透明的话，
+                //   网页自己的近黑底色会把那层桌面整个盖住，亚克力就白开了。
+                _web.DefaultBackgroundColor = Color.Transparent;
 
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;  // 别弹出浏览器的右键菜单
                 _web.CoreWebView2.Settings.AreDevToolsEnabled = false;
@@ -228,6 +243,75 @@ internal sealed class MainWindow : Form
         }
         catch { /* 起不来就算了 —— 页面上把网址明文写着，用户能自己复制 */ }
     }
+
+    /// <summary>
+    /// 开启系统级「窗后模糊」：Win11 22H2+ 走 DWMWA_SYSTEMBACKDROP_TYPE(33)=Acrylic(3)，
+    /// 失败退 Mica(2)，再失败退 undocumented SetWindowCompositionAttribute AccentState
+    /// ACCENT_ENABLE_ACRYLICBLURBEHIND(4)（Win10 也能吃）。三段全失败就保持纯色 ——
+    /// 界面降级成现在的样子，不会更差。
+    /// ★ backdrop 生效的前提：窗口延伸进客户区（WS_EX_NOREDIRECTIONBITMAP 不用；
+    ///   DWM 对普通窗口也吃 SYSTEMBACKDROP），且页面背景透明（Load 里已设）。
+    /// </summary>
+    private void EnableBackdrop()
+    {
+        // ---- 第 1 段：DWMWA_SYSTEMBACKDROP_TYPE（Win11 22H2+）----
+        // 逐个试：Acrylic(3) 是真正的"窗后模糊玻璃"，Mica(2) 只是取壁纸主色。
+        foreach (uint backdrop in new uint[] { 3, 2 })
+        {
+            uint v = backdrop;
+            int hr = DwmSetWindowAttribute(Handle, 33, ref v, sizeof(uint));
+            if (hr == 0) return;   // 挂上了
+        }
+
+        // ---- 第 2 段： undocumented composition attribute（Win10 / 早期 Win11）----
+        try
+        {
+            var accent = new AccentPolicy
+            {
+                AccentState = 4,   // ACCENT_ENABLE_ACRYLICBLURBEHIND
+                // GradientColor AABBGGRR：alpha 0xCC ≈ 80% —— 留 20% 透桌面。
+                AccentFlags = 2,
+                GradientColor = 0xCC000000,
+            };
+            IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(AccentPolicy)));
+            try
+            {
+                Marshal.StructureToPtr(accent, ptr, false);
+                var data = new WindowCompositionAttribData
+                {
+                    Attribute = 19,   // WCA_ACCENT_POLICY
+                    SizeOfData = Marshal.SizeOf(typeof(AccentPolicy)),
+                    Data = ptr,
+                };
+                SetWindowCompositionAttribute(Handle, ref data);
+            }
+            finally { Marshal.FreeHGlobal(ptr); }
+        }
+        catch { /* 全失败就纯色，不崩 */ }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AccentPolicy
+    {
+        public uint AccentState;
+        public uint AccentFlags;
+        public uint GradientColor;
+        public uint AnimationId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowCompositionAttribData
+    {
+        public uint Attribute;
+        public IntPtr Data;
+        public int SizeOfData;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttribData data);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, uint attr, ref uint value, int size);
 
     /// <summary>无边框窗口要自己实现拖动：骗 Windows 一下，说"按在了标题栏上"。</summary>
     private void StartDrag()

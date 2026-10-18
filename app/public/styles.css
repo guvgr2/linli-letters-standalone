@@ -61,6 +61,36 @@ html, body {
   overflow: hidden;
 }
 
+/* ★★ 液态玻璃 2026-10-18（用户拍板「把桌面或者在这个程序后面的界面当背景」）：
+   原生窗口里外壳开了 DWM 亚克力（把窗口正后方的桌面实时模糊垫底）+ WebView2
+   页面透明。要让那层真桌面透进来，页面上所有"不透明的底"都得让开：
+   - body/html/.win 的近黑底色在 body.native 下改透明；
+   - #glassBg 四个假光斑同层隐藏 —— 真桌面比假光斑"真"得多；
+   - 浏览器打开（没有 .native）保持原样，什么都不变。
+   backdrop-filter 会自动去模糊"身后的一切"= 现在是真实桌面。 */
+body.native { background: transparent; }
+body.native #glassBg { display: none; }
+/* ★ 桌面模糊已经由 DWM 亚克力做掉了（系统垫在窗口底下）。
+   页面这边如果再 backdrop-filter blur 一次 = 双层模糊 = 均匀灰雾，
+   桌面本来的色彩层次全被抹平（实测：桌面深蓝→亮灰的变化，
+   透过两层 blur 后只剩 RGB 24,24,27 的均匀灰）。
+   所以 native 下 .win 自己不再 blur —— 只保留轻提饱和，
+   让透过来的桌面色更艳。 */
+body.native .win {
+  background: none;
+  backdrop-filter: saturate(1.35);
+  -webkit-backdrop-filter: saturate(1.35);
+}
+/* 各玻璃面板同理：blur 已经由亚克力管，面板只做提饱和提亮。
+   --glass-blur 里的 blur(22px)/contrast 在 native 下换掉。 */
+body.native .mail-sidebar,
+body.native .mail-content,
+body.native .library-sidebar,
+body.native .library-content {
+  backdrop-filter: saturate(1.5) brightness(1.03);
+  -webkit-backdrop-filter: saturate(1.5) brightness(1.03);
+}
+
 /* ---- 氛围层：四个中性白柔光斑，无彩色 ---- */
 #glassBg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
 #glassBg i {
@@ -148,7 +178,9 @@ body.stage-on #stage { opacity: 1; }
 body.native .winchrome { display: flex; }
 /* ★ 原生窗口下 .win 要给这条让出位置，否则内容会被压在条底下（静态读 CSS 看不出来，
    只有 getBoundingClientRect 或真渲染才发现）。 */
-body.native .win { margin-top: 38px; height: calc(100% - 60px); }
+/* ★ 2026-10-18：.win 已铺满视口（margin 0 / height 100%），这条**不再挤占高度** ——
+  窗口条浮在玻璃上（.winchrome z-index 60 > .win z-index 1），不是把内容顶下去的那种
+  标题栏。留着它窗口会上下各短一截。 */
 /* ★ 数值是渲染出来看过才定的：第一版用 .07/.14/.72，在近黑的页面上两个按钮
    几乎看不见（真渲染的条带图里就是两块更黑的方块）。静读 CSS 完全看不出来 ——
    浅色底上的"淡"和深色底上的"淡"不是一回事。 */
@@ -172,16 +204,28 @@ body.native .win { margin-top: 38px; height: calc(100% - 60px); }
 .wc:hover { background: rgba(255, 255, 255, .24); color: #fff; }
 .wc-x:hover { background: rgba(214, 96, 77, .88); color: #fff; border-color: rgba(255, 255, 255, .24); }
 
-/* ---- 玻璃窗 ---- */
+/* ---- 玻璃窗 ----
+   ★★ 2026-10-18：`margin: 22px` 是「界面周围一圈黑边」的根源。
+      .win 是浮在 body 上的玻璃面板，body 底色 #121214 于是一圈都露出来 ——
+      在原生窗口（FormBorderStyle.None、BackColor 就是 #121214）里，这圈黑边
+      看起来像窗口自带灰框，"程序感"全没了（用户 2026-10-18 原话：
+      「这个界面周围怎么有一圈黑边」）。
+      ★ 玻璃要"透"就得背后有东西，但**不该透出桌面/窗口底** —— 背后该透的是
+        #glassBg 那层彩色光斑。所以铺满视口、只留圆角自己收边。
+      ★ body.native 下原来还要再让 38px 给窗口条，那条现在是浮在玻璃上面的
+        （.winchrome z-index 60 > .win z-index 1），不再需要挤占高度。
+        否则多算一次，窗口会上下都短一截。 */
 .win {
   position: relative;
   z-index: 1;
-  margin: 22px;
-  height: calc(100% - 44px);
+  margin: 0;
+  height: 100%;
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
-  border-radius: var(--radius-lg);
+  border-radius: 0;
   border: 1px solid rgba(255, 255, 255, .16);
+  border-top-color: transparent;
+  border-bottom-color: transparent;
   background:
     /* ★ 2026-10-18 重做（用户：玻璃「灰不拉几的」）：三层白光原来是 .22/.10/.135，
        等量 RGB 叠加本身就在去饱和 —— 暗底降到 .42/.34 之后这些白光没跟着降，

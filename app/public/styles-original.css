@@ -1805,8 +1805,11 @@
   transition: background 0.16s ease;
 }
 .page-head-back:hover { background: rgba(255, 255, 255, 0.16); }
-/* 带页顶栏的页面要自己接管上下留白，否则内容和标题会被缩进两遍 */
-.page:has(> .page-head) { padding-top: 18px; }
+/* 带页顶栏的页面要自己接管上下留白，否则内容和标题会被缩进两遍。
+   ★ 2026-10-18 加大：18px 时齿轮（页头右上角）和窗口控制条（fixed top 0 高 34px）
+     在同一块区域里叠着 —— 用户截图里齿轮几乎贴到「放大」键。让到 44px，
+     齿轮从窗口条下方开始，两者各归各位。 */
+.page:has(> .page-head) { padding-top: 44px; }
 /* ★ 曲库页是「页顶栏 + 撑满剩余高度的两栏」，必须整列 flex，
      否则 .library 的 height:100% 参照不到东西，右栏会塌成 0 高。 */
 .page.is-library {
