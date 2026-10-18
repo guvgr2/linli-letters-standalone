@@ -31,6 +31,7 @@ const IDLE_FONT_TESTS = ["tests/idle-font-route.test.js"];
 const COLUMN_TESTS = ["tests/import-columns.test.js"];
 const TIER_TESTS = ["tests/tier-count.test.js"];
 const VARS_TESTS = ["tests/harness-vars.test.js"];
+const PLAYER_TESTS = ["tests/player-queue.test.js"];
 
 // ---------------------------------------------------------------- 变异清单
 //
@@ -224,6 +225,38 @@ const MUTATIONS = [
     name: "原游戏时段-傍晚推到17:30",
     from: 'return m >= 360 && m < 960 ? "TOD12" : m >= 960 && m < 1200 ? "TOD1730" : "TOD20";',
     to: 'return m >= 360 && m < 1050 ? "TOD12" : m >= 1050 && m < 1200 ? "TOD1730" : "TOD20";',
+  },
+
+  // ---- 播放队列（用户 2026-10-18：「一项一项做」—— 第一项是播放条与后续队列） ----
+  // 这三条以前全是错的，而且界面看不出来：随机有图标没随机、播完不接下一首、
+  // 四种循环模式表现完全一样。所以每条都从"真实代码"里打掉一块。
+  {
+    name: "播放-随机播放名不副实(有图标、点了也变，但走的还是顺序)",
+    file: "app/public/app.js",
+    tests: PLAYER_TESTS,
+    from: 'if (PLAY_MODES[playMode].key === "shuffle" && delta > 0 && list.length > 1) {',
+    to: "if (false) {",
+  },
+  {
+    name: "播放-顺序播放最后首页也绕回去(和列表循环没区别了)",
+    file: "app/public/app.js",
+    tests: PLAYER_TESTS,
+    from: "if (at < 0 || at >= list.length - 1) return;",
+    to: "if (false) return;",
+  },
+  {
+    name: "播放-正片播完不接下一首(停在那儿像卡死)",
+    file: "app/public/app.js",
+    tests: PLAYER_TESTS,
+    from: 'v.addEventListener("ended", v.__onEndedSong);',
+    to: "",
+  },
+  {
+    name: "播放-ended 挂上不摘(播一首挂一个，播完连跳好几首)",
+    file: "app/public/app.js",
+    tests: PLAYER_TESTS,
+    from: 'if (v.__onEndedSong) { v.removeEventListener("ended", v.__onEndedSong); v.__onEndedSong = null; }',
+    to: "",
   },
 
   // ---- 协议那一链（用户 2026-10-13：「设置页的协议还是别删了」） ----

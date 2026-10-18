@@ -938,6 +938,14 @@ async function play(dir, name) {
     //   过场片那套（stageCrossFade 的 loop:false + onEnded）是另一条线，与此无关。
     v.loop = PLAY_MODES[playMode].key === "single";
     v.play().catch(() => { /* 需要用户先点一下才出声也没关系 */ });
+    // ★ 2026-10-18：正片也要接 ended —— 以前只有过场片接了 ended，
+    //   正片播完就停在那儿，要手动点下一首。「播放条」不是这个行为。
+    //   顺序 / 列表循环 / 随机都往下走；单曲循环由 loop 属性接管（ended 不会触发）。
+    //   ★ 必须先移除上一首挂的监听：v 是常驻元素，重复播放会越挂越多，
+    //     播完一次会连跳好几首。
+    if (v.__onEndedSong) { v.removeEventListener("ended", v.__onEndedSong); v.__onEndedSong = null; }
+    v.__onEndedSong = () => { void advance(); };
+    v.addEventListener("ended", v.__onEndedSong);
     writePlayerMeta(info, name);
     paintNowPlaying();
     paintProgress();
@@ -1028,8 +1036,33 @@ async function step(delta) {
   const at = list.findIndex((s) => s.dir === player.dir);
   // 当前这首不在列表里（比如刚从别处点开）时：从列表头开始，而不是原地打转。
   const base = at < 0 ? (delta > 0 ? -1 : 0) : at;
-  const next = list[(base + delta + list.length) % list.length] ?? list[0];
+  let next;
+  if (PLAY_MODES[playMode].key === "shuffle" && delta > 0 && list.length > 1) {
+    // 随机：从"除了当前这首以外"里挑，避免连点下一首时原地打转。
+    const pool = list.filter((s) => s.dir !== player.dir);
+    next = pool[Math.floor(Math.random() * pool.length)];
+  } else {
+    next = list[(base + delta + list.length) % list.length] ?? list[0];
+  }
+  if (!next) return;
   await play(next.dir, next.name);
+}
+
+/** 一首播完自动往下走。
+ *  ★ 顺序播放（order）是**唯一**会停住的模式：播到列表最后一首就不再继。
+ *    其余三种都该接着来 —— 列表循环回到第一首；单曲循环由 loop 属性接管、根本不会走到这；
+ *    随机挑一首不重复的。以前 ended 没人接，所以"顺序播放"看起来和别的模式一样，
+ *    只是因为大家都停住了。
+ */
+async function advance() {
+  const mode = PLAY_MODES[playMode].key;
+  const list = playlist();
+  if (!list.length) return;
+  if (mode === "order") {
+    const at = list.findIndex((s) => s.dir === player.dir);
+    if (at < 0 || at >= list.length - 1) return;   // 最后一首：停住，不放回去
+  }
+  await step(1);
 }
 
 $("pbPlay")?.addEventListener("click", () => {
