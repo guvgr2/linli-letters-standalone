@@ -49,6 +49,17 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // ★ 2026-10-18：DPI 感知必须自己声明，而且必须在**任何窗口创建之前**。
+        //   抓证据的过程：本机物理屏 2560×1600 @150%（缩放），可窗口怎么算都不对 ——
+        //   曾以为 Screen.WorkingArea 报的是逻辑像素、于是乘除 DPI 系数，连错三轮（历史见
+        //   MainWindow.cs 里那段）。真正的根因在这里：csproj 写了
+        //   <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>，可那个 MSBuild
+        //   属性只对 ApplicationConfiguration.Initialize() 生成器生效，而这个程序用的是
+        //   手写 Main + Application.EnableVisualStyles()，生成器根本没参与 ⇒ 进程是
+        //   DPI-unaware ⇒ 系统把整块画面按 150% 拉大，Windows 看到的和窗口用到的不是同一套
+        //   坐标，怎么算都对不上。
+        //   PerMonitorV2：跨屏拖动时按各屏自己的缩放重算，Windows 原生应用的标准选择。
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 

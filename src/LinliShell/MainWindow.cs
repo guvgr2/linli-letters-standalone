@@ -27,6 +27,13 @@ internal sealed class MainWindow : Form
 {
     private WebView2 _web;
 
+    /// <summary>现在是不是我们自己设的「放大」状态。
+    /// ★ 为什么不用 WindowState：ToggleMaximize 走的是自己设 Bounds（见那段踩坑记录），
+    ///   WindowState 一直是 Normal，靠它判断会以为永远没放大过。</summary>
+    private bool _maximized;
+    /// <summary>放大之前那一刻的位置与大小，用来还原。默认值只在启动时未取到 Bounds 才会用到。</summary>
+    private Rectangle _restoreBounds;
+
     /// <summary>用户点了右上角那个「—」：收进托盘，程序不退出。</summary>
     public event EventHandler RequestHide;
     /// <summary>用户点了右上角那个「×」：默认也只收进托盘（陪伴类程序的习惯）。</summary>
@@ -47,17 +54,21 @@ internal sealed class MainWindow : Form
         BackColor = Color.FromArgb(14, 13, 17);   // 跟页面底色一致，免得加载时闪一块白
 
         // 按屏幕大小收敛：别在小屏上开出一个放不下的窗口。
-        // ★ 2026-10-18 改到第 4 轮，前三轮全错，错因各不相同，全记在这里：
+        // ★ 2026-10-18 改到第 5 轮，前四轮全错，错因各不相同，全记在这里：
         //   ① 原始代码写死 `Math.Min(1180,…)`/`Math.Min(820,…)` ⇒ 屏幕再大也只有 1180×820。
         //   ② 改按 `WorkingArea - 120` ⇒ 实测 1138×679。
         //   ③ 改按 `WorkingArea × 0.88` 并乘 DPI 系数 ⇒ 实测 1001×584。
-        //   ★★ 三轮都基于一个**错误前提**：以为坐标是逻辑像素。实测（2026-10-18）：
-        //      本进程没声明 per-monitor DPI 感知，但 `Screen.PrimaryScreen.Bounds`
-        //      和 `WorkingArea` 报的**都是物理像素** 2560×1528（GetSystemMetrics 同为 2560×1600）。
-        //      也就是说 WinForms 在这儿不做逻辑/物理换算 —— 我前两轮乘/除 k 纯属自找。
-        //   ④ 现在：直接拿物理像素算，**不乘任何系数**。
+        //   ④ 去掉系数、直接拿 0.88×0.86 算 ⇒ 实测 1502×876。
+        //   ★★ ①②③ 的共同错误前提是"坐标可能是逻辑像素，得乘除 DPI 系数"。
+        //      真相：本机物理屏 2560×1600 @150%，而 `Screen.WorkingArea` 与窗口 `Bounds`
+        //      报的都是**物理像素**（日志 `bounds={X=153,Y=107,Width=2253,Height=1314}`
+        //      与 GetWindowRect 量到的 1502×876 之间正好差 1.5 倍 —— 差的是**页面 CSS px**
+        //      与**窗口物理 px**，不是两套 Win32 坐标）。所以任何 k 都是自找。
+        //   ⑤ 现在：物理像素直接算，不乘任何系数。
         //      比例 0.88×0.86 ⇒ 2560×0.88=2253、1528×0.86=1314，四周留一圈看得到桌面。
         //      上下限夹在 900×640 到 2300×1400：小屏不挤，大屏也不至于和最大化没区别。
+        //      ★ 上限 2300 是**物理像素**：150% 缩放下它折合 1533 CSS px，正好高过原版的
+        //        窄屏断点 1150，所以信箱仍是两栏、曲库仍是原版那一套列表。
         Rectangle area = Screen.FromPoint(Cursor.Position)?.WorkingArea
                         ?? Screen.PrimaryScreen?.WorkingArea
                         ?? new Rectangle(0, 0, 1280, 800);
@@ -239,29 +250,52 @@ internal sealed class MainWindow : Form
         bool dbg = Environment.GetEnvironmentVariable("LINLI_DEBUG_MSG") == "1";
         if (dbg) LogMsg("ToggleMaximize 进入: state=" + WindowState + " bounds=" + Bounds);
 
-        if (WindowState == FormWindowState.Maximized)
+        if (_maximized)
         {
-            WindowState = FormWindowState.Normal;
+            Bounds = _restoreBounds;
+            _maximized = false;
         }
         else
         {
-            // ★★ 2026-10-18 修（用户实测报的"最大化后窗口被左移到最左上角、右下留一大片空"）：
-            //   原来这里写 `MaximizedBounds = Screen.FromControl(this).WorkingArea;`。
-            //   本机物理屏 2560×1600 @150%，`WorkingArea` 报的是**逻辑像素 1707×1019**，
-            //   而这个无边框窗口的坐标系是**物理像素** —— 拿逻辑尺寸去限制物理窗口，
-            //   窗口就只占了左上角 1707×1019 物理像素，右边和下边全是空桌面。
-            //   （静读代码看不出来：WorkingArea 和 Bounds 都不报单位，只有真最大化量
-            //    GetWindowRect 才发现宽高正好是 1707×1019 而不是 2560×1600。）
-            //
-            //   现在**不设 MaximizedBounds**：让 WinForms 按窗口自身（物理）坐标系去算
-            //   最大化矩形，DPI 由框架统一处理。代价是无边框窗口会盖住任务栏 ——
-            //   所以下面在进入最大化后，用 WM_GETMINMAXINFO 把底边收回到工作区
-            //   （见 WndProc 里的处理），这样既铺满又不挡任务栏。
-            MaximizedBounds = Rectangle.Empty;      // 清掉任何历史值
-            WindowState = FormWindowState.Maximized;
+            // ★★ 2026-10-18 定稿（前两版都错，记在这里免得再走回头路）：
+            //   第 1 版 `MaximizedBounds = Screen.FromControl(this).WorkingArea;` ——
+            //     用户实测"最大化后窗口被左移到最左上角、右下留一大片空桌面"。
+            //     本机物理屏 2560×1600 @150%，那条路径下窗口落在 1707×1019，
+            //     正好是 2560/1.5 与 1528/1.5 —— 也就是说 WorkingArea 与窗口坐标系
+            //     在那一版里不是一个单位，拿逻辑尺寸去限制物理窗口，必然只占左上角。
+            //   第 2 版 `MaximizedBounds = Rectangle.Empty; WindowState = Maximized;`
+            //     又在 WndProc 里用 WM_GETMINMAXINFO 把底边收回工作区 —— 加了调试输出
+            //     证明消息收到了（日志 `工作区 2560x1528 偏移 0,0`），但量 GetWindowRect
+            //     结果**仍然是 1707×1019**：交给系统算的话，它按自己那套（受 .NET 单文件
+            //     宿主与 DPI 感知时机影响）又推回去了，我们设的值被覆盖。
+            //   现在这版不再问系统：自己量当前显示器的工作区、自己设 Bounds，
+            //   WindowState 恒为 Normal。少一层"谁在替我算"，就少一处对不上的地方。
+            //   ★ 用 MonitorFromWindow 而不是 Screen.FromControl：窗口拖到第二块屏上
+            //     再点放大，要铺满**它所在那块**屏，而不是主屏。
+            _restoreBounds = Bounds;
+            Rectangle work = WorkingAreaOf(Handle);
+            if (dbg) LogMsg("ToggleMaximize 目标工作区: " + work);
+            Bounds = work;
+            _maximized = true;
         }
 
-        if (dbg) LogMsg("ToggleMaximize 退出: state=" + WindowState + " bounds=" + Bounds);
+        if (dbg) LogMsg("ToggleMaximize 退出: maximized=" + _maximized + " bounds=" + Bounds);
+    }
+
+    /// <summary>当前窗口所在显示器的工作区（物理像素，与窗口坐标系一致；已扣掉任务栏）。</summary>
+    private static Rectangle WorkingAreaOf(IntPtr hwnd)
+    {
+        const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+        IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        var info = new MONITORINFO();
+        info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+        if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref info))
+        {
+            RECT w = info.rcWork;
+            return Rectangle.FromLTRB(w.Left, w.Top, w.Right, w.Bottom);
+        }
+        // 拿不到显示器信息时退回 WinForms 的说法 —— 宁可尺寸不对，也不要不动。
+        return Screen.FromHandle(hwnd).WorkingArea;
     }
 
     /// <summary>诊断日志：只在 LINLI_DEBUG_MSG=1 时写 %TEMP%\linli-msg.log。</summary>
@@ -296,6 +330,99 @@ internal sealed class MainWindow : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    private const int WM_GETMINMAXINFO = 0x0024;
+    private const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
+    }
+
+    /// <summary>最大化时把窗口收回工作区（不盖任务栏）。
+    /// ★ 为什么要自己接这一条（2026-10-18）：
+    ///   无边框窗口（FormBorderStyle.None）没有系统标题栏，最大化时 Windows 给的默认
+    ///   最大化矩形是**整个屏幕**，任务栏会被压在底下 —— 用户找不回来。
+    ///   常规做法是设 MaximizedBounds，但那是逻辑像素、而这个窗口在物理像素坐标系里
+    ///   （见 ToggleMaximize 里那段踩坑记录），所以改成在 WM_GETMINMAXINFO 里
+    ///   直接告诉系统「最大就到这块工作区为止」，单位跟系统一致，不用换算。
+    /// ★ 每次最大化都会问一次，所以这里**按当前所在显示器**现算 —— 换屏、改分辨率、
+    ///   任务栏换边都不用重启程序。
+    /// ★ 2026-10-18：这条**留着有用**，但已经不再是 ToggleMaximize 的主要手段 ——
+    ///   ToggleMaximize 现在自己设 Bounds（日志证明这里设的值会被系统那趟算法推回去，
+    ///   实测仍是 1707×1019）。留着是因为用户还可能用别的路子把窗口最大化
+    ///   （自动化脚本发 SC_MAXIMIZE、将来接回系统标题栏），届时仍要挡住任务栏。
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_GETMINMAXINFO)
+        {
+            Rectangle work = WorkingAreaOf(Handle);
+            Rectangle mon = MonitorBoundsOf(Handle);
+            MINMAXINFO mmi = (MINMAXINFO)Marshal.PtrToStructure(m.LParam, typeof(MINMAXINFO));
+            // 坐标是相对所在显示器的：左/上取工作区偏移，宽高取工作区尺寸。
+            mmi.ptMaxPosition.X = work.Left - mon.Left;
+            mmi.ptMaxPosition.Y = work.Top - mon.Top;
+            mmi.ptMaxSize.X = work.Width;
+            mmi.ptMaxSize.Y = work.Height;
+            Marshal.StructureToPtr(mmi, m.LParam, false);
+            if (Environment.GetEnvironmentVariable("LINLI_DEBUG_MSG") == "1")
+            {
+                LogMsg("WM_GETMINMAXINFO: 工作区 " + work.Width + "x" + work.Height
+                    + " 偏移 " + mmi.ptMaxPosition.X + "," + mmi.ptMaxPosition.Y);
+            }
+        }
+        base.WndProc(ref m);
+    }
+
+    /// <summary>当前窗口所在显示器的整块矩形（物理像素）。拿不到时退回工作区。</summary>
+    private static Rectangle MonitorBoundsOf(IntPtr hwnd)
+    {
+        IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        var info = new MONITORINFO();
+        info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+        if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref info))
+        {
+            RECT r = info.rcMonitor;
+            return Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+        }
+        return WorkingAreaOf(hwnd);
+    }
 
     protected override void Dispose(bool disposing)
     {
