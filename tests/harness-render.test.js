@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { renderStep, readHarnessFile, composeReplySystem } from "../app/harness-render.mjs";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 const HARNESS = join(import.meta.dirname, "..", "app", "harness");
 
@@ -27,7 +28,7 @@ async function withTemp(files, fn) {
     for (const [name, body] of Object.entries(files)) await writeFile(join(dir, name), body, "utf8");
     return await fn(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanupDir(dir);
   }
 }
 

@@ -1,19 +1,19 @@
 // `.soul` 归档容器解析（UserData 导入第二步：读得懂，才谈得上搬）
 //
-// 为什么这一段仍然是**纯函数**：DSH 2026-10-16《UserData 一键导入机制说明》§5 的建议是
+// 为什么这一段仍然是**纯函数**：原版 2026-10-16《UserData 一键导入机制说明》§5 的建议是
 // 「把写库留到契约确认之后」。解析一个文件不写库、不发网络、不改磁盘 —— 它只回答
 // 「这份东西是不是一份合法的 .soul、里面有几封信几段视频」。
 // 契约谈不拢，这一段删掉即可，留不下任何痕迹。
 //
-// 容器格式（照 DSH 侧 `parseSoulArchive`，`repo/source/local-service/server.js:2683-2738`）：
+// 容器格式（照 原版 `parseSoulArchive`，`server.js:2683-2738`）：
 //   头 16 字节 = 8 字节 SOUL_MAGIC + readBigUInt64LE(8) 的清单长度
 //   → 清单 JSON（schema / version / memory / videos）
 //   → 视频裸数据紧跟其后，按清单里的 size 依次累加 offset
 //
-// ★ 九道校验逐条照搬，**失败信息一字不改**（用户看到的提示两端要一致）。
+// ★ 九道校验逐条照搬，**失败信息一字不改**（用户看到的提示两边要一致）。
 //
-// ★★ 三个常量：**2026-10-16 20:39 DSH 已给字面值**（回执 `6F5381D4B7882C01` §1，
-//   出处 `repo/source/local-service/soul-bundle.js:4-6`，`server.js:46-51` 从它 import）。
+// ★★ 三个常量：**2026-10-16 20:39 原版程序已给字面值**（回执 §1，
+//   出处 `soul-bundle.js:4-6`，`server.js:46-51` 从它 import）。
 //   之前不给是因为读不到 —— 现在读到了，就照抄，不再猜。
 //
 //   ⇒ 但仍然**不做默认值**：调用方必须显式传 `limits`，没传就抛。
@@ -29,14 +29,14 @@ export const MEMORY_SCHEMA = "olivia-soul.memory";
 export const SUPPORTED_VERSIONS = new Set([1, 2]);
 
 /**
- * DSH 侧当前的三个真值（`soul-bundle.js:4-6`，2026-10-16 给的）。
+ * 原版当前的三个真值（`soul-bundle.js:4-6`，2026-10-16 给的）。
  * 调用方可以原样传进来，也可以覆盖 —— 这里**不给** `parseSoulArchive` 当默认值，理由见文件头。
  */
 export const SOUL_LIMITS = Object.freeze({
   magic: Buffer.from("SOUL0001", "ascii"),
   maxBytes: 10 * 1024 * 1024 * 1024,      // 10 GiB
   maxManifestBytes: 16 * 1024 * 1024,     // 16 MiB
-  maxVideoBytes: 512 * 1024 * 1024,       // 512 MiB —— DSH 侧 server.js:132
+  maxVideoBytes: 512 * 1024 * 1024,       // 512 MiB —— 原版 server.js:132
 });
 
 /** 头 16 字节：8 字节魔法头 + 8 字节（LE）清单长度。 */
@@ -52,8 +52,8 @@ function fail(msg) {
 }
 
 /**
- * 往来指纹 —— **DSH 侧 `exchangeContentMd5()` 的同一把尺子**（`server.js:653-657`）。
- * 来信与回信一起算，中间夹 `\n---\n`。两侧对账要逐位相等，所以这里不多一个字少一个字。
+ * 往来指纹 —— **原版 `exchangeContentMd5()` 的同一把尺子**（`server.js:653-657`）。
+ * 来信与回信一起算，中间夹 `\n---\n`。两边对账要逐位相等，所以这里不多一个字少一个字。
  */
 export function exchangeMd5(incoming, reply) {
   return createHash("md5")
@@ -75,7 +75,7 @@ class NeedBytes extends Error {
  * 稀疏视图：`size` 是文件总长，`slice()` 只对**已经读过**的区间有效。
  * 内存版把整个 Buffer 当成一个全覆盖的视图；文件版按需往里填。
  *
- * ★ 为什么要这层抽象：一份 `.soul` 上限 10 GB，**不能整个读进内存**（DSH 侧也是
+ * ★ 为什么要这层抽象：一份 `.soul` 上限 10 GB，**不能整个读进内存**（原版也是
  *   文件句柄 + 偏移读，`server.js:2870-2874`）。但校验判据又不能写两份 ——
  *   两份判据迟早分叉，而分叉的表现是「同一个文件在一端能导、另一端不能导」。
  *   ⇒ 所以判据只有 `inspectSoul()` 一份，它向视图要字节；视图给不出来就抛
@@ -139,7 +139,7 @@ export async function parseSoulArchiveFile(filePath, limits = {}) {
     let bytesRead = 0;
     const need = async (offset, length) => {
       // 越界的读请求只可能是「文件真的短了」，不是「还缺数据」——
-      // 与 DSH 侧读不满就报 `.soul 文件不完整` 同一处理（`server.js:2873-2874`）。
+      // 与 原版读不满就报 `.soul 文件不完整` 同一处理（`server.js:2873-2874`）。
       if (offset + length > size) fail(".soul 文件不完整");
       const buf = Buffer.alloc(length);
       const { bytesRead: got } = await handle.read(buf, 0, length, offset);
@@ -175,12 +175,12 @@ function inspectSoul(view, limits = {}) {
 
   // ① 三个上限/魔法头必须由调用方给 —— 见文件头注释，缺省即抛，绝不自己补。
   if (!Buffer.isBuffer(magic) || magic.length === 0) {
-    fail("SOUL_MAGIC 未给定：DSH 侧 server.js:47-49 的字面值还没拿到，拒绝跳过魔法头校验");
+    fail("SOUL_MAGIC 未给定：魔法头的字面值还没拿到，拒绝跳过魔法头校验");
   }
   if (!Number.isFinite(maxBytes)) fail("MAX_SOUL_BYTES 未给定：拒绝用猜测值做体积上限");
   if (!Number.isFinite(maxManifestBytes)) fail("MAX_SOUL_MANIFEST_BYTES 未给定：拒绝用猜测值做清单上限");
-  // ★ 2026-10-17 补：DSH 侧对单段视频还有 512 MB 上限（`server.js:2909`），
-  //   我侧原先没有 ⇒ 一份声明了 4 GB「视频」的清单会被原样接受，落库时才发现装不下。
+  // ★ 2026-10-17 补：原版对单段视频还有 512 MB 上限（`server.js:2909`），
+  //   本程序原先没有 ⇒ 一份声明了 4 GB「视频」的清单会被原样接受，落库时才发现装不下。
   if (!Number.isFinite(maxVideoBytes)) fail("MAX_VIDEO_BYTES 未给定：拒绝用猜测值做单段视频上限");
 
   // ② 体积上限
@@ -220,7 +220,7 @@ function inspectSoul(view, limits = {}) {
     if (!x || typeof x !== "object") fail(".soul 信件信息校验失败");
     if (typeof x.letterId !== "string" || !x.letterId) fail(".soul 信件信息校验失败");
     // 给了 contentMd5 就必须是 32 位十六进制；给了正文就现算一遍比对。
-    // ★ 2026-10-17 修正：**字段名与算式都照 DSH 侧**（原先按 `content` 判、算 `md5(content)`，
+    // ★ 2026-10-17 修正：**字段名与算式都照 原版**（原先按 `content` 判、算 `md5(content)`，
     //   与真实的 `incoming` + `md5(incoming.trim() + "\n---\n" + reply.trim())` 对不上 ⇒
     //   拿真 .soul 跑会整批假红）。出处 `server.js:653-657` 与 `:2891-2892`。
     if (x.contentMd5 !== undefined && x.contentMd5 !== null) {
@@ -242,7 +242,7 @@ function inspectSoul(view, limits = {}) {
   const videos = [];
   const list = payload.videos ?? [];
   if (!Array.isArray(list)) fail(".soul 视频清单格式不正确");
-  // ★ 2026-10-17 补两道（DSH 侧 `server.js:2893-2894`）：视频数不能超过信件数 ——
+  // ★ 2026-10-17 补两道（原版 `server.js:2893-2894`）：视频数不能超过信件数 ——
   //   每段视频都挂在某封信上，比信还多说明这份清单是拼出来的。
   if (list.length > exchanges.length) fail(".soul 视频清单格式不正确");
 
@@ -270,7 +270,7 @@ function inspectSoul(view, limits = {}) {
       fail(".soul 视频信件 ID 不正确");
     }
     if (!Number.isSafeInteger(v.size) || v.size < 0) fail(".soul 视频清单格式不正确");
-    // ★ 单段上限（DSH `server.js:2909` 用 `Number.isSafeInteger` + 512 MB）
+    // ★ 单段上限（原版 `server.js:2909` 用 `Number.isSafeInteger` + 512 MB）
     if (v.size < VIDEO_MIN_BYTES || v.size > maxVideoBytes) fail(".soul 视频大小不正确");
     videos.push({ offset, size: v.size, letterId: letterId || null, contentMd5: contentMd5 || null });
     if (contentMd5 !== "") seenHashes.add(contentMd5);

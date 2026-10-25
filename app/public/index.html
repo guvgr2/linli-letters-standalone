@@ -53,14 +53,13 @@
 </div>
 
 <div class="win">
-  <div class="rail">
-    <div class="stack">
-      <button class="rb on" data-page="mail">✉</button>
-      <button class="rb" data-page="library">♪</button>
-      <button class="rb" data-page="memory">记</button>
-    </div>
-  </div>
-
+  <!-- ★★ 2026-10-20：这里的 `.rail`（左侧三个圆钮）**整块删掉了**。
+       用户口径：「这个按钮不在程序界面里，在程序外面」「独立浮层必须做，你照抄原版游戏的浮层逻辑」。
+       原版那枚胶囊根本不是网页画的（拆 feapp.dat 确认过：75 个 Vue 组件里没有 nav/rail/side），
+       它是外壳画的一层独立浮层，所以才会"挂在窗口左沿外面、压在桌面上"。
+       ⇒ 现在由 `src/LinliShell/NavRail.cs` 画在主窗口外面，页面里不许再留一份
+         （留一份就是两个导航，且页面那份永远在窗口里面，做不到"悬空"）。
+       点导航 → 外壳调 `Go(page)` → 页面 `show()` 照旧切页 → `page:` 消息点亮浮层。 -->
   <div class="main">
     <!-- 信箱（2026-10-18 照原版重排）：左 mail-sidebar 列表 + 右 mail-content 阅读区。
          ★ 原版口径：.mail-sidebar 是 flex-1 min-w-200 max-w-360 p-3 rounded-2，
@@ -99,6 +98,17 @@
             <span class="mail-header-title">我的信箱</span>
             <span class="mail-header-count" id="mailCount">0</span>
           </div>
+          <!-- ★ 2026-10-21：往年今日——去年的今天有信件/日记时，在这里给一行淡字（默认隐藏） -->
+          <div class="onthisday" id="onThisDay" hidden></div>
+          <!-- ★ 2026-10-21：连续写信——你连着写了几天时给一行淡字（她不会"奖励"你，只是提一句） -->
+          <div class="writing-streak" id="writingStreak" hidden></div>
+          <!-- ★ 2026-10-21：回顾的三种看法。列表=原来的信箱；时间轴=按日倒序一路往下捋；
+               日历=月历格子，点某天跳过去。三者共用同一份 letters 缓存 + /api/timeline。 -->
+          <div class="mail-viewswitch" id="mailViewSwitch" role="tablist" aria-label="信箱视图">
+            <button class="mail-viewswitch-btn is-active" type="button" role="tab" data-view="list" aria-selected="true">列表</button>
+            <button class="mail-viewswitch-btn" type="button" role="tab" data-view="timeline" aria-selected="false">时间轴</button>
+            <button class="mail-viewswitch-btn" type="button" role="tab" data-view="calendar" aria-selected="false">日历</button>
+          </div>
           <div class="mail-list" id="letters"></div>
           <div class="mail-footer">
             <div class="mail-footer-inner">
@@ -135,34 +145,18 @@
            ★ 用户口径（2026-10-18）：「设置键移到原版游戏的位置，不要单开一个左侧圆按钮」——
              所以设置入口就是每页右上这枚齿轮，左栏那个 ⚙ 圆钮已去掉。 -->
       <div class="page-head">
-        <h1 class="page-head-title">曲库</h1>
+        <h1 class="page-head-title">曲库<span class="page-head-count" id="songCount">0</span></h1>
         <button class="page-head-gear" data-gear type="button" title="设置" aria-label="设置">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><use href="#gearIcon"/></svg>
         </button>
       </div>
       <div class="library">
         <div class="library-sidebar">
-          <div class="mail-header">
-            <span class="mail-header-title">曲库</span>
-            <span class="mail-header-count" id="songCount">0</span>
-          </div>
           <!-- ★ 原版曲库页的四个页签（古典 / ACG / 轻音乐 / 我的上传），
                当前页签底下有一道 2px 的下划线；文案来自原版语言包
                zh-cn-bd81633d.js：A="古典"、M="抒情"、D="摇滚"、E="爵士"、
                U="全部"，页签框用的是 tour-song-list。 -->
           <div class="library-tabs" id="libraryTabs"></div>
-          <!-- 曲库目录的说明按钮（那个 (i)）。★ 2026-10-18 之前没有宿主 ——
-               app.js 里 `$("libHelp")?.addEventListener(...)` 的 ?. 把它静默吞了，
-               点下去什么都不发生，也不报错。 -->
-          <button class="library-help" id="libHelp" type="button"
-                  title="曲子目录怎么用" aria-label="说明">i</button>
-          <div class="library-field">
-            <input id="libraryDir" placeholder="E:\linlimusic">
-            <button id="saveLibraryDir" type="button">保存</button>
-          </div>
-          <!-- 分档结果摊开写在这一行（app.js 的 loadLibrary 往 #libraryState2 写）：
-               用户扫一眼就知道"导入时自动分档"分成了几档，不用自己点页签数。 -->
-          <div class="library-note" id="libraryState2"></div>
           <!-- ★ 三列表头（# / 曲目 / 模式）—— 必须放在列表 #songs **之前**：
                 原版它就是贴着列表上沿的一行（`#` `曲目` `模式` + 下横线）。
                 右侧 .library-content 是原版 .player-container（纯黑舞台），表頭贴过去会跟画面抢地方。 -->
@@ -171,19 +165,15 @@
             <span class="song-list-head-title">曲目</span>
             <span class="song-list-head-mode">模式</span>
           </div>
-          <!-- 「已入库」的几个 chip（loadImported 往这里画，最多 4 个，点一下就在右侧放）。
-               ★ 它在曲库页重做时被删过，代码还在往这里写 —— 表面上看不出坏，
-                 其实是「入库之后没有快捷入口」这件事一直缺着。 -->
-          <div class="imported-strip" id="imported"></div>
           <div class="mail-list" id="songs"></div>
-          <div class="mail-footer">
-            <div class="mail-footer-inner">
-              <div class="mail-footer-label">
-                <span class="mail-footer-title">已导入</span>
-                <span class="mail-footer-sub" id="importedCount"></span>
-              </div>
-              <button class="mail-footer-action-button" id="importRandom" type="button">随机导入</button>
-            </div>
+          <!-- ★ 首装引导（2026-10-19 第十六轮审查 P1）：曲库目录的默认值不能再是
+                 开发机路径，所以 `needPick` 时这里要给人一条明确的路 —— 「还没选目录」
+                 不是错误，直接报「目录不存在」会把新用户挡在门外。 -->
+          <div class="lib-empty" id="libEmpty" hidden>
+            <b>还没有指到曲库</b>
+            <span>曲目视频不随程序打包。先把「设置 → 曲目存储路径」指到你自己放曲子的文件夹，
+              这里就会把曲子列出来。</span>
+            <button class="pri" id="libEmptyPick" type="button">去设置里选</button>
           </div>
         </div>
 
@@ -196,6 +186,13 @@
             <div class="desk-head">
               <span class="desk-title">音乐桌面</span>
               <span class="desk-count" id="deskCount">0</span>
+              <!-- ★ 2026-10-20 删掉了这里的「播放顺序」按钮（#deskMode）。
+                   用户口径：「在音乐桌面的单曲循环按钮就删了吧，底下的播放条有一个了，要不就重复了」。
+                   播放条上那颗 #pbMode 是同一个四态轮转的**唯一入口**（顺序/列表循环/单曲循环/随机），
+                   两处并排只会让人以为它们是两个不同的东西。 -->
+              <!-- 「随机导入」原来在左栏页脚（原版没有那条页脚），搬到这里：
+                   它做的事就是往「音乐桌面」里放曲子，放在这张卡片的标题行才是对的。 -->
+              <button class="desk-btn desk-btn-quiet" id="importRandom" type="button">随机导入</button>
               <button class="desk-btn" id="deskListBtn" type="button">歌单</button>
             </div>
             <!-- 唱机插画：纯 CSS 画（黑胶圆盘 + 标签 + 唱臂），不引图片。
@@ -216,6 +213,32 @@
           </div>
         </div>
       </div>
+
+      <!-- 曲库底部播放条（2026-10-20，用户圈原版截图指定 + 催办）：照原版
+           .lite-playback-control 复刻 —— 中排「循环/上一首/播放/下一首/静音」，
+           下面「已播 — 进度条 — 总长」。★ 声音与画面都在桌面壁纸层 ⇒ 这条是遥控器：
+           播放/暂停、上下首、循环、静音走原有链路；点进度条跳转是**自研**
+           （原版没有，用户明确要做），进度由壁纸层每秒上报、外壳转发进来。
+           ★ id（pbMode/pbPrev/pbPlay/pbNext/pbMute/pbNow/pbLine/pbFill/pbTime）
+             是 app.js 的接线，一个都不能改名。 -->
+      <div class="player-bar is-lib-bar" id="playerBar">
+        <div class="player-center">
+          <div class="player-controls">
+            <button class="player-btn" id="pbMode" type="button" title="循环方式">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9m0 0l-3-3m3 3l-3 3M20 15a5 5 0 0 1-5 5H6m0 0l3 3m-3-3l3-3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="player-btn" id="pbPrev" type="button" title="上一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 5v14M20 5.5v13a1 1 0 0 1-1.5.87L9 13.37a1 1 0 0 1 0-1.74l9.5-6A1 1 0 0 1 20 5.5z" fill="currentColor"/></svg></button>
+            <button class="player-btn is-main" id="pbPlay" type="button" title="播放 / 暂停"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg></button>
+            <button class="player-btn" id="pbNext" type="button" title="下一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M18 5v14M4 5.5v13a1 1 0 0 0 1.5.87l9.5-6a1 1 0 0 0 0-1.74l-9.5-6A1 1 0 0 0 4 5.5z" fill="currentColor"/></svg></button>
+            <button class="player-btn" id="pbMute" type="button" title="静音"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9h3l4.5-3.5v13L7 15H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="player-line">
+            <span class="player-time" id="pbNow">0:00</span>
+            <div class="player-progress" id="pbLine"><div class="player-progress-fill" id="pbFill"></div></div>
+            <span class="player-time" id="pbTime">0:00</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 记忆 -->
@@ -228,9 +251,30 @@
       </div>
       <p class="sub">跨封账本只认林离已经发出的回信。来信人的设想、疑问和否定单独放在「未决」，不会当成已发生的事。</p>
       <div class="card">
-        <h3>跨封账本</h3>
+        <h3>她记住的你 <span class="hint" id="memCount"></span></h3>
+        <!-- A1：图上能改的，就要能改。每条显示"哪一条 / 值 / 谁写的"，
+             模型推断的给「改成…」与「这条不对」；你改过的给「撤回」。
+             ★ 不用弹窗编辑：一行内展开输入框，改完按回车 —— 少一层遮挡。 -->
+        <div class="mem-tools">
+          <input id="memSearch" type="search" placeholder="搜字段或内容…" autocomplete="off">
+          <select id="memField" aria-label="按字段筛选"><option value="">全部字段</option></select>
+          <button class="lnk" id="memMore" type="button" style="display:none">显示更多</button>
+        </div>
+        <div class="mem-list" id="memList"></div>
+        <p class="hint" id="memEmpty" style="display:none">还没有记住的东西 —— 寄出第一封信之后才会建立。</p>
+        <p class="hint" id="memConflict" style="display:none"></p>
+      </div>
+      <div class="card">
+        <h3>跨封账本（模型最近一次写的原文）</h3>
         <dl class="kv" id="ledger"></dl>
         <p class="hint" id="ledgerEmpty" style="display:none">还没有账本 —— 寄出第一封信之后才会建立。</p>
+      </div>
+      <div class="card">
+        <h3>她写的日记 <span class="hint" id="diaryCount"></span></h3>
+        <!-- A2：按天倒序，每篇下面能展开「这天发生过什么」—— 事实要能对上，
+             她才不是凭空编一篇给你看。没有往来的日子默认不写（不是漏写）。 -->
+        <div class="diary-list" id="diaryList"></div>
+        <p class="hint" id="diaryEmpty" style="display:none">还没有日记 —— 你们聊过一天之后，她会在第二天写一篇。</p>
       </div>
       <div class="card">
         <h3>给模型看的记忆上下文</h3>
@@ -241,120 +285,259 @@
     <!-- 设置 -->
     <section class="page" id="page-settings">
       <div class="page-head">
+        <!-- ★★ 2026-10-20（用户口径）：「设置页面删掉返回信箱的按钮，因为假如我是从曲库页面来的话，
+             你给我返回到信箱会觉得很怪，改成第三张图我圈出来的那个返回键，返回的逻辑抄原版游戏的就行」
+             ⇒ 原版设置页左上角是一个 ← 箭头，逻辑是"从哪页进来的回哪页"（浏览器式上一页），
+             不是固定回信箱。按钮不再带 data-page，去向由 app.js 的导航历史算。 -->
+        <button class="page-head-back" id="settingsBack" type="button" title="返回上一页" aria-label="返回上一页">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <h1 class="page-head-title">设置</h1>
-        <button class="page-head-back" data-page="mail" type="button">返回信箱</button>
-      </div>
-      <p class="sub">全部数据在本机。API Key 用 Windows DPAPI 按当前用户加密，不写日志、不进任何导出包。</p>
-
-      <div class="card">
-        <h3>模型</h3>
-        <div class="row">
-          <div class="field">
-            <label>服务商</label>
-            <select id="provider">
-              <option value="deepseek">DeepSeek</option>
-              <option value="zhipu">智谱 GLM</option>
-              <option value="moonshot">Moonshot</option>
-              <option value="custom">自定义 / 本地中转</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>模型名</label>
-            <input id="modelName" list="modelList" placeholder="选一个，或自己填">
-            <datalist id="modelList"></datalist>
-          </div>
-        </div>
-        <div class="field">
-          <label>接口地址（Base URL）</label>
-          <input id="baseUrl" placeholder="https://api.deepseek.com">
-        </div>
-        <div class="field">
-          <label>API Key</label>
-          <input id="apiKey" type="password" placeholder="留空表示不修改">
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="pri" id="saveModel">保存</button>
-          <button id="testModel">测试连通性</button>
-          <span class="hint" id="modelState"></span>
-        </div>
       </div>
 
-      <div class="card">
-        <h3>林离主动来信</h3>
-        <p>关着的时候她从不主动写信。打开之后：24 小时最多 <b>1</b> 封，7 天最多 <b>4</b> 封，距上一封往来至少 <b>20</b> 小时，且只在可打扰时段内。</p>
-        <div class="row">
-          <div class="field">
-            <label>开关</label>
-            <select id="pEnabled">
-              <option value="0">关闭</option>
-              <option value="1">开启</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>可打扰时段</label>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input id="pStart" placeholder="09:00" style="flex:1">
-              <span style="color:var(--tx4)">–</span>
-              <input id="pEnd" placeholder="21:30" style="flex:1">
+      <!-- ★ 2026-10-19：照原版重排（用户口径 m01034「请你对照一下它的布局，保留功能，但要精简一下」）：
+           原版设置是「一段一个标题 + 每条一行、控件靠右」，不画卡片。这里照同样的排法，
+           但每一行都必须是真能用的功能 —— 原版有的「弹唱视角 / 桌面状态 / 选哪块屏幕」我们没有对应实现，
+           就不摆一排点了没反应的图。
+           ★ 高级项（模型 Key / 主动来信 / 备份 / 搬信）收进折叠里：它们是一次性配好就不动的东西，
+           天天摆在最上面会把常用的那几行压下去。 -->
+      <!-- ★★ 2026-10-20（用户口径，对照原版设置页三张截图）：「原版游戏的设置界面是可以让用户
+           选择弹唱视角，状态，显示屏幕，应用行为的……而咱们不行，你弄一下。」
+           ⇒ 照原版的顺序把四块放在设置页最上面：应用行为 → 弹唱视角 → 状态 → 显示屏幕。
+           文案取自原版语言包（resources/feapp.dat 的 zh-cn，一手证据），每一块都接**真功能**：
+             应用行为：开机自启 = 外壳写 HKCU Run 项（ShellBridge）；关闭时 = 落库 close_behavior，
+                       前端点 × 时按它发 close / quit（见 app.js 的 closeWindowWithBehavior）。
+             弹唱视角：NI / WI 落库 play_view —— 这两个值就是曲库视频文件名里的视角段
+                       （parseVariant 解析 TOD1200_NI_L.mp4），不是我们起的缩写；
+                       桌面放曲子时按它挑变体（stageNext），选不到就按 selectVariant 兜底顺序退回。
+             状态：R1 / R2 / R3 落库 idle_state —— 对应原版的 日常 / 创作 / 思考
+                    （原版资产文件名 idle_normal / idle_creative / idle_thinking 是同一套，
+                     按卡片从左到右的次序对应 R1 / R2 / R3）。
+             显示屏幕：外壳枚举 Screen.AllScreens，把壁纸层 / 圆钮 / 主窗口搬到选中的屏
+                       （ShellBridge.ListScreens / SetScreen，落盘 DataDir/screen.txt）。 -->
+      <!-- ★★ 2026-10-20（用户口径：「模型页面要移到设置向上一点的位置要不太不明显了，模型选择
+           可以学习原版程序，他的模型选择就挺好的，不像咱们还要自己手动输入模型名，模型界面
+           全部都要学习原版程序」）
+           ① 位置：原来它在设置页**最底下那个折叠**里，用户要一路滚到底才看得见 ——
+              而没有 Key 什么都干不了，它本来就是这条链的第一环。现在搬到**第一段**。
+           ② 选法：照原版程序的「选择模型」下拉 —— 每条预设自带它那一家的地址与模型名，
+              选中即填好；只有选「自定义」才展开地址与模型名两个输入框。
+           ③ 补「查询模型列表」：拿你填的 Key 直接问那家的 /models，把编号列成下拉，
+              不用去控制台抄（服务端 `/api/model/models`，与原版程序同一套做法）。
+           ★ 预设表只有一份：app/public/app.js 的 PROVIDER_PRESETS。型号会变，
+             别在 HTML 里再抄一份（抄了就会两边不一样）。 -->
+      <div class="set-sec" id="modelSec">
+        <h2 class="set-h">模型接口</h2>
+        <p class="set-sub">回信、整理记忆都要用你自己填的模型：费用由模型服务方按量计收，本程序不代收任何费用。Key 只存在这台机器上，只在你点「保存并测试」「查询模型列表」或者真的写回信时，才发给你填的那一家。</p>
+        <div class="card">
+          <div class="row">
+            <div class="field" style="flex:1 1 320px;margin-bottom:0">
+              <label for="modelPreset">选择模型</label>
+              <select id="modelPreset"></select>
+            </div>
+            <div class="field" style="flex:0 1 200px;margin-bottom:0">
+              <label>当前在用</label>
+              <div class="model-current" id="modelCurrent">—</div>
             </div>
           </div>
-        </div>
-        <div class="row">
-          <div class="field">
-            <label>距上一封至少（小时）</label>
-            <input id="pGap" type="number" min="0" max="720">
+          <p class="hint" id="modelPresetNote" style="margin:8px 0 0"></p>
+          <div class="field" style="margin-top:14px">
+            <label for="apiKey">API Key</label>
+            <input id="apiKey" type="password" autocomplete="off" placeholder="还没有填写">
           </div>
-          <div class="field">
-            <label>24 小时上限（封）</label>
-            <input id="pDay" type="number" min="0" max="10">
+          <div id="modelCustom" hidden>
+            <div class="row">
+              <div class="field" style="flex:1 1 260px">
+                <label for="modelName">模型名</label>
+                <input id="modelName" list="modelList" placeholder="填写接口提供的模型 ID">
+                <datalist id="modelList"></datalist>
+              </div>
+              <div class="field" style="flex:1 1 260px">
+                <label for="baseUrl">接口地址（Base URL）</label>
+                <input id="baseUrl" placeholder="https://api.deepseek.com">
+              </div>
+            </div>
+            <div class="field" id="modelQueryField" hidden>
+              <label for="modelNameOptions">从查询结果选择</label>
+              <select id="modelNameOptions"></select>
+            </div>
           </div>
-          <div class="field">
-            <label>7 天上限（封）</label>
-            <input id="pWeek" type="number" min="0" max="30">
+          <div class="row" style="align-items:center;gap:10px">
+            <button class="pri" id="saveModel" type="button">保存</button>
+            <button id="testModel" type="button">保存并测试</button>
+            <button id="queryModels" type="button">查询模型列表</button>
+            <span class="hint" id="modelState"></span>
           </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="pri" id="saveProactive">保存</button>
-          <button id="checkProactive">现在判断一次</button>
-          <span class="hint" id="proactiveVerdict"></span>
-        </div>
-        <!-- ★ 近况层开关（T9）：键名由 app/harness/行为参数.json 的
-             nearTerm.userToggle.key 定，不是这里自己起的。文字用 label 但显示的是
-             JSON 里的 label（fillProactive 会覆盖 textContent），这里写的是兜底。
-             ★ 这个宿主之前不存在 —— fillProactive() 一进设置页就在 null 上设 .checked，
-               整段设置页的填充当场抛错，下面的「关于」「协议」也就都没填上。 -->
-        <label class="row" style="align-items:center;gap:8px;margin-top:14px;cursor:pointer">
-          <input id="proactiveKeepShape" type="checkbox">
-          <span id="proactiveKeepShapeLabel">保持她现在的样子</span>
-        </label>
       </div>
 
-      <div class="card">
-        <h3>背景视频</h3>
-        <p>桌面与窗口后面那层循环壁纸。关掉之后界面回到纯色底，省电、也省显卡。</p>
-        <label class="row" style="align-items:center;gap:8px;cursor:pointer">
-          <input id="stageWallpaper" type="checkbox">
-          <span>显示背景视频</span>
-        </label>
+      <div class="set-sec">
+        <h2 class="set-h">应用行为</h2>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>开机时自动启动</b>
+            <span>系统启动时把她拉起来待命：只进托盘、不弹窗口，桌面上已经有她在。</span>
+          </div>
+          <div class="set-item-c">
+            <label class="switch"><input id="appAutostart" type="checkbox"><i></i></label>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>关闭时</b>
+            <span>点窗口右上角的 × 时：可以直接退出应用，也可以最小化到托盘后台运行。</span>
+          </div>
+          <div class="set-item-c">
+            <select id="closeBehavior">
+              <option value="ask">不设置（每次关闭提示）</option>
+              <option value="tray">最小化到托盘后台运行</option>
+              <option value="quit">直接退出应用</option>
+            </select>
+          </div>
+        </div>
       </div>
 
-      <!-- 待机：素材在不在、环境音开关。★ 这一块以前没有宿主（#idleState / #idleAmbience 都不存在），
-           refreshIdle() 一进来就 `if (!box && !toggle) return;` —— 整个待机设置从来没显示过。 -->
-      <div class="card">
-        <h3>待机画面</h3>
-        <p id="idleState" class="hint">正在读取……</p>
-        <label class="row" style="align-items:center;gap:8px;cursor:pointer">
-          <input id="idleAmbience" type="checkbox">
-          <span>播放环境音</span>
-        </label>
+      <div class="set-sec">
+        <h2 class="set-h">弹唱视角</h2>
+        <p class="set-sub">选择林离弹唱时的默认视角。仅在通过音乐曲库点播弹唱类型曲目时生效；那首曲子没有对应视角的片子时，会退回默认画面。</p>
+        <div class="view-cards" id="viewCards" role="radiogroup" aria-label="弹唱视角">
+          <button class="view-card" data-view="NI" type="button" role="radio" aria-checked="false">
+            <img class="view-card-media" src="assets/mode-focus-389eb413.webp" alt="专注演奏：她与琴的特写">
+            <span class="view-card-name">专注演奏</span>
+            <span class="view-card-sub">她与琴的特写</span>
+            <span class="view-card-tick" aria-hidden="true">✓</span>
+          </button>
+          <button class="view-card" data-view="WI" type="button" role="radio" aria-checked="false">
+            <img class="view-card-media" src="assets/mode-interactive-d934cb4a.webp" alt="视线交互：她抬眼看向你的广角">
+            <span class="view-card-name">视线交互</span>
+            <span class="view-card-sub">她抬眼看向你的广角</span>
+            <span class="view-card-tick" aria-hidden="true">✓</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <h2 class="set-h">状态</h2>
+        <p class="set-sub">林离在桌面时的状态。她有 3 种不同的生活状态。</p>
+        <div class="view-cards" id="stateCards" role="radiogroup" aria-label="状态">
+          <button class="view-card" data-state="R1" type="button" role="radio" aria-checked="false">
+            <video class="view-card-media" src="assets/idle_normal-c800bce5.mp4#t=0.1" muted playsinline preload="metadata" aria-hidden="true"></video>
+            <span class="view-card-name">日常模式</span>
+            <span class="view-card-tick" aria-hidden="true">✓</span>
+          </button>
+          <button class="view-card" data-state="R2" type="button" role="radio" aria-checked="false">
+            <video class="view-card-media" src="assets/idle_creative-0c55f284.mp4#t=0.1" muted playsinline preload="metadata" aria-hidden="true"></video>
+            <span class="view-card-name">创作模式</span>
+            <span class="view-card-tick" aria-hidden="true">✓</span>
+          </button>
+          <button class="view-card" data-state="R3" type="button" role="radio" aria-checked="false">
+            <video class="view-card-media" src="assets/idle_thinking-fe70ce7a.mp4#t=0.1" muted playsinline preload="metadata" aria-hidden="true"></video>
+            <span class="view-card-name">思考模式</span>
+            <span class="view-card-tick" aria-hidden="true">✓</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <h2 class="set-h">显示屏幕</h2>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>选择林离显示在哪个屏幕上</b>
+            <span>桌面壁纸层与右下角两个圆钮会搬到选中的那块屏幕，主窗口也会跟过去；「默认」是铺满整个桌面。</span>
+          </div>
+          <div class="set-item-c">
+            <select id="stageScreen" aria-label="选择林离显示在哪个屏幕上"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <h2 class="set-h">显示与桌面</h2>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>桌面壁纸</b>
+            <span>林离在桌面上弹琴。关掉之后桌面还给你自己的壁纸。</span>
+          </div>
+          <div class="set-item-c">
+            <label class="switch"><input id="stageWallpaper" type="checkbox"><i></i></label>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>她在练琴时放出来</b>
+            <span>你不放歌的时候，她可能会在桌面上练一会儿琴；你一动，她就让开。</span>
+          </div>
+          <div class="set-item-c">
+            <label class="switch"><input id="worldStage" type="checkbox"><i></i></label>
+          </div>
+        </div>
+        <div class="set-item" id="worldNowRow" hidden>
+          <div class="set-item-t">
+            <b>她此刻</b>
+            <span id="worldNowText">—</span>
+          </div>
+          <div class="set-item-c">
+            <button class="lnk" id="worldWhy" type="button">为什么</button>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>环境音</b>
+            <span>她在桌面上待机时的环境音（雨声、房间底噪那类）。</span>
+          </div>
+          <div class="set-item-c">
+            <label class="switch"><input id="idleAmbience" type="checkbox"><i></i></label>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>环境音音量</b>
+            <span>背景音压低一点才不会盖住曲子；拉到最左就是静音。</span>
+          </div>
+          <div class="set-item-c">
+            <input id="ambienceVolume" class="set-range" type="range" min="0" max="100" step="1" value="35" aria-label="环境音音量">
+            <output class="set-range-n" id="ambienceVolumeN">35</output>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>演奏音量</b>
+            <span>桌面上弹琴那一层的音量（曲子视频自带的音轨）。</span>
+          </div>
+          <div class="set-item-c">
+            <input id="songVolume" class="set-range" type="range" min="0" max="100" step="1" value="55" aria-label="演奏音量">
+            <output class="set-range-n" id="songVolumeN">55</output>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>待机画面</b>
+            <span id="idleState">正在读取……</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <h2 class="set-h">曲目存储路径</h2>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>曲子放在本机哪个目录</b>
+            <span id="libraryState2">导入时按目录自动分档：古典 / ACG / 轻音乐 / 我的上传。</span>
+          </div>
+          <div class="set-item-c">
+            <input id="libraryDir" placeholder="D:\音乐" title="曲库目录（路径长时可悬停看全）">
+            <button class="pri" id="saveLibraryDir" type="button">更改</button>
+            <button class="lnk" id="libHelp" type="button" title="曲子目录怎么用">说明</button>
+          </div>
+        </div>
       </div>
 
       <!-- 信件字体：两支各一行（letter = 林离写给你的，compose = 你自己写的）。
            ★ 字体**不随包**：随包就等于替用户分发别人的字体，而且要背 21 MB。
              所以这里只给「导入」和「去官网下载」两个动作，网址走白名单（见 openExternal）。 -->
-      <div class="card">
-        <h3>信件字体</h3>
-        <p class="hint">字体不随程序分发。想跟原版字迹一致，自己去下面那两个官网下（个人非商业免费），下好在这导入。</p>
+      <div class="set-sec">
+        <h2 class="set-h">信件字体</h2>
+        <p class="set-sub">字体不随程序分发。想跟原版字迹一致，自己去下面那两个官网下（个人非商业免费），下好在这导入。</p>
         <div class="font-slot" data-slot="letter">
           <div class="font-slot-name">林离写的信</div>
           <div class="font-slot-state" id="fontState-letter">正在读取……</div>
@@ -373,77 +556,336 @@
             <button class="lnk" id="fontDownload-compose" type="button">去官网下载</button>
           </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+        <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
           <button id="fontRecheck" type="button">重新检查</button>
         </div>
         <!-- 两支共用的隐藏 file input（pickFontFile 先记 pendingFontSlot 再点它） -->
         <input id="fontFile" type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" hidden>
       </div>
 
-      <!-- ================= 数据备份与恢复 =================
-           ★ 照姊妹项目「高级设置 → 诊断 → 数据备份与恢复」那一块做（data-safety.js + diagnostics-panel.js）：
-             备份 → 看内容 → 恢复（重启生效，恢复前自动留档）+ 导出/导入（换电脑）。
-           ★ 它解决的是一个真实存在过的坑：备份只写不读 —— 改时段、导入前一都会留一份，
-             可出事时用户没有任何恢复入口，只能对着文件干瞪眼。 -->
-      <div class="card" id="dataSafetyCard">
-        <h3>数据备份与恢复</h3>
-        <p class="hint" id="dataSafetySummary">正在读取备份列表……</p>
+      <!-- ================= 数据与备份 =================
+           ★ 用户口径（m02347 + m02584「这些新功能全要在设置里，你别忘了分类」）：
+             备份 / 搬家 / 诊断包 / 反馈 这些"不出事不会碰"的东西，也得在设置里各就各位，
+             不能散在别处，更不能没有分类地堆成一团。
+           ★ 这一段的顺序是「先救命、再搬家、最后兼容旧格式」：
+             ① 立即备份（改坏了能退回来）→ ② 备份目录与列表（看得见、能恢复）
+             → ③ 周期自动备份（不需要记得点）→ ④ 数据搬家（把旧版本的数据搬进来）
+             → ⑤ .soul 搬信（更老的格式）。
+           每次覆盖前都会先留一份档，按钮文案里也直说，避免用户以为不可撤销。 -->
+      <div class="set-sec" id="dataSafetyCard">
+        <h2 class="set-h">数据与备份</h2>
+        <p class="set-sub" id="dataSafetySummary">正在读取备份列表……</p>
 
-        <div class="ds-actions">
-          <button class="pri" id="dsBackup" type="button">立即备份</button>
-          <button id="dsReveal" type="button">打开备份目录</button>
-          <button id="dsExport" type="button">导出全部数据</button>
-          <button id="dsImport" type="button">一键导入</button>
-          <input id="dsImportFile" type="file" accept=".zip" hidden>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>立即备份 / 换电脑带走</b>
+            <span id="dataSafetyStatus">把所有信、记忆、设置整份存一份；导入会先留一份当前的再覆盖。</span>
+          </div>
+          <div class="set-item-c">
+            <button class="pri" id="dsBackup" type="button">立即备份</button>
+            <button id="dsExport" type="button">导出全部数据</button>
+            <button id="dsImport" type="button">一键导入</button>
+            <input id="dsImportFile" type="file" accept=".zip" hidden>
+          </div>
         </div>
 
-        <p class="hint" id="dataSafetyStatus"></p>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>备份目录</b>
+            <span>备份文件都躺在这里，看一下就知道占了多少地方。</span>
+          </div>
+          <div class="set-item-c">
+            <button id="dsReveal" type="button">打开备份目录</button>
+          </div>
+        </div>
+
         <div class="ds-pending" id="dsPending" hidden></div>
         <div class="ds-list" id="dsList"></div>
 
-        <div class="ds-periodic">
-          <div class="font-slot-name">周期自动备份</div>
-          <p class="hint" id="dsPeriodicStatus">正在读取……</p>
-          <div class="ds-periodic-row">
-            <label class="row" style="align-items:center;gap:8px;cursor:pointer">
-              <input id="dsPeriodicEnabled" type="checkbox">
-              <span>自动备份</span>
-            </label>
-            <label class="ds-inline">每 <input id="dsPeriodicDays" type="number" min="1" max="30"> 天一次</label>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>周期自动备份</b>
+            <span id="dsPeriodicStatus">正在读取……</span>
+          </div>
+          <div class="set-item-c">
+            <label class="switch"><input id="dsPeriodicEnabled" type="checkbox"><i></i></label>
+            <label class="ds-inline">每 <input id="dsPeriodicDays" type="number" min="1" max="30"> 天</label>
             <label class="ds-inline">最多留 <input id="dsPeriodicKeep" type="number" min="1" max="60"> 份</label>
             <button id="dsPeriodicSave" type="button">保存</button>
             <button id="dsPeriodicCleanup" type="button">清理旧的</button>
           </div>
         </div>
-      </div>
 
-      <!-- 从旧程序搬信进来（.soul 导入）。 -->
-      <div class="card">
-        <h3>从旧程序搬信进来</h3>
-        <p class="hint">选一个 .soul 归档。程序先只读一遍告诉你里面有多少封信，你确认了才写进本机的库；写之前会先备份。</p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button id="soulPick" type="button">选择 .soul 文件</button>
-          <button class="pri" id="soulConfirm" type="button" disabled>确认导入</button>
+        <!-- 数据搬家：照原版程序 §数据搬家（只读探测盘根下一层 → 用户点复制 → 复制前先备份当前库）。
+             搬完必须重开程序：主库被替换了，本进程还握着旧库的 -wal/-shm。 -->
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>数据搬家</b>
+            <span>把<strong>以前旧版本</strong>的数据搬进现在这个程序：本机如果还装着别的 OliviaSoul / 旧版林离，把它那份库复制进来。只读探测，复制前先备份当前库，搬完要重开程序。只搬进来——不会把现在的数据搬到别处。</span>
+          </div>
+          <div class="set-item-c">
+            <button id="migrateScan" type="button">扫描本机的旧版本数据</button>
+          </div>
         </div>
-        <p class="hint" id="soulState"></p>
-        <input id="soulFile" type="file" accept=".soul" hidden>
+        <p class="hint" id="migrateState"></p>
+        <div class="ds-list" id="migrateList"></div>
+
+        <!-- 从旧程序搬信进来（.soul 归档）。 -->
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>从旧程序搬信</b>
+            <span id="soulState">选一个 .soul 归档：先只读一遍告诉你里面有多少封信，确认了才写进本机，写之前会先备份。</span>
+          </div>
+          <div class="set-item-c">
+            <button id="soulPick" type="button">选择 .soul 文件</button>
+            <button class="pri" id="soulConfirm" type="button" disabled>确认导入</button>
+            <input id="soulFile" type="file" accept=".soul" hidden>
+          </div>
+        </div>
       </div>
 
-      <div class="card">
-        <h3>关于</h3>
-        <p>这是一个完全本机的程序：不依赖游戏本体，不上传任何内容，没有账号。信件与记忆都在这台机器上。</p>
-        <p class="hint">回信需要你自己填 API Key，费用由你用的模型服务方按量计收；本程序不代收任何费用。</p>
-        <p class="hint" id="dataDir"></p>
+      <!-- ================= 诊断与反馈 =================
+           ★ 三条出口各管一件事：① 自己看（目录、日志）；② 给作者看（诊断包，已脱敏）；
+             ③ 找作者说（GitHub issue，正文预填）。
+           ★ 诊断包与信件/记忆/曲库无关：只带日志、版本、系统与依赖状态 —— 用户敢点，才谈得上排查。 -->
+      <div class="set-sec" id="diagnosticsCard">
+        <h2 class="set-h">诊断与反馈</h2>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>数据目录</b>
+            <span id="dataDir"></span>
+          </div>
+          <div class="set-item-c">
+            <button id="openDataDir" type="button">打开目录</button>
+          </div>
+        </div>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>一键诊断包</b>
+            <span>导出一个 zip（已脱敏）：日志与运行信息，不含信件、记忆、曲库、音视频。把它发给作者就能直接排查。</span>
+          </div>
+          <div class="set-item-c">
+            <button class="pri" id="diagExport" type="button">导出诊断包</button>
+            <button id="diagList" type="button">先看打包内容</button>
+            <button id="diagReveal" type="button">打开所在目录</button>
+          </div>
+        </div>
+        <p class="hint" id="diagState"></p>
+        <div class="ds-list" id="diagListBox" hidden></div>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>问题反馈 / 建议新功能</b>
+            <span>点开会打开 GitHub 新建 issue 页面，正文已经帮你填好（含脱敏的诊断信息），用你自己的账号提交即可。</span>
+          </div>
+          <div class="set-item-c">
+            <button id="fbBug" type="button">反馈问题</button>
+            <button id="fbIdea" type="button">建议新功能</button>
+          </div>
+        </div>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>隐私政策 / 服务协议</b>
+            <span>安装向导里读的是同一份文本。</span>
+          </div>
+          <div class="set-item-c">
+            <button class="lnk" id="lnkPrivacy">隐私政策</button>
+            <button class="lnk" id="lnkTerms">服务协议</button>
+          </div>
+        </div>
       </div>
 
-      <!-- 协议放在**页面底部的一行小链接**里，不占版面 —— 常见桌面软件的排法。
-           正文来自 legal.js（由 协议.txt 生成），点开在弹层里读；
-           安装时向导里读的是同一份 协议.txt，两处不会是两套说法。 -->
-      <div class="legalbar">
-        <button class="lnk" id="lnkPrivacy">隐私政策</button>
-        <span class="lnk-sep">|</span>
-        <button class="lnk" id="lnkTerms">服务协议</button>
+      <!-- ================= 更新 =================
+           ★ 2026-10-20 用户口径：「咱们程序里有检查更新界面吗，接收 github 仓库 release，
+             不会的话原版程序逻辑就挺好的，版本号管理，更新检查，beta 版……好像还有更新断点续传」。
+             逻辑照原版程序：稳定版查 `/releases/latest`，测试版查 `/releases` 列表逐条挑
+             「有安装包的下一版」；下载支持暂停 / 续传 / 取消；安装包先校验 SHA-256 再装。
+           ★ 与原版程序**故意不同的一处**：那边一进更新面板就自动查一次，这边**只在点按钮时才查**。
+             本仓第一条红线是「唯一外联＝用户自己填的模型 Key」——多一条外联，就得让用户自己按下，
+             所以第一屏只有「当前版本」，联网这件事在提示文字里明说。
+           ★ 降级不是错误：查不到时既不说「已是最新」，也不弹报错框，而是说原因 + 给发布页链接。 -->
+      <div class="set-sec" id="updateCard">
+        <h2 class="set-h">更新</h2>
+        <p class="set-sub">「检查更新」只读 GitHub 上本仓库的发布列表（api.github.com），不带任何本机信息、不上传任何东西。安装包下载完会先核对 SHA-256，通过了才允许安装。</p>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>当前版本</b>
+            <span id="updateVersion">正在读取……</span>
+          </div>
+          <div class="set-item-c">
+            <button class="pri" id="checkUpdate" type="button">检查更新</button>
+          </div>
+        </div>
+
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>更新通道</b>
+            <span id="updateChannelHint">稳定版：只收正式版。测试版：正式版和预发布都收，可能不稳定。</span>
+          </div>
+          <div class="set-item-c">
+            <select id="updateChannel" title="稳定版 / 测试版">
+              <option value="stable">稳定版</option>
+              <option value="beta">测试版（beta）</option>
+            </select>
+          </div>
+        </div>
+
+        <p class="hint" id="updateResult"></p>
+
+        <!-- 降级出路：连不上更新服务时（没网、被拦、限流）不是卡死，也不是假装成功。 -->
+        <div class="hint" id="updateFallback" hidden>
+          <p id="updateFallbackMessage"></p>
+          <div class="update-fallback-row">
+            <code id="updateFallbackUrl"></code>
+            <button class="lnk" id="openReleasePage" type="button">打开发布页</button>
+          </div>
+        </div>
+
+        <!-- 更新日志：Release 正文。★ 只用 textContent 渲染，绝不 innerHTML —— 那是用户可控文本。 -->
+        <div class="set-item" id="updateNotesRow" hidden>
+          <div class="set-item-t">
+            <b id="updateNotesTitle">更新说明</b>
+            <div class="set-notes" id="updateNotes"></div>
+          </div>
+        </div>
+
+        <div class="set-item" id="updateDownloadRow" hidden>
+          <div class="set-item-t">
+            <b>安装包</b>
+            <span id="updateDownloadDetails">还没开始下载。</span>
+          </div>
+          <div class="set-item-c">
+            <button class="pri" id="downloadUpdate" type="button">下载并安装更新</button>
+            <button id="pauseUpdate" type="button" hidden>暂停下载</button>
+            <button id="cancelUpdate" type="button" hidden>取消下载</button>
+          </div>
+        </div>
+        <div class="update-meter" id="updateMeter" hidden>
+          <progress id="updateProgress" max="100" value="0"></progress>
+          <p class="hint" id="updateTransferResult"></p>
+        </div>
       </div>
+
+      <div class="set-sec">
+        <h2 class="set-h">关于</h2>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>OliviaSoul-community独立版</b>
+            <span>完全本机的程序：不依赖游戏本体，不向作者上传任何内容，没有账号。写信的内容会直连你自己选的模型厂商（见协议第二条）。信件与记忆都在这台机器上。</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <div class="set-item-t">
+            <b>回信费用</b>
+            <span>需要你自己填 API Key，费用由你用的模型服务方按量计收；本程序不代收任何费用。</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 高级（折叠） ================= -->
+      <!-- ★★ 2026-10-20（用户口径：「主动来信界面设计的还是不够全，依旧学习原版程序，
+           你别等我一个一个查了，你自己看一遍原版程序，看看有什么可以借鉴的」）
+           照原版程序那一页（public/proactive-settings.js）补齐五件事 —— 那一边是独立页签，
+           我们收在设置页最后一段的折叠里，所以每一行都要自己把话说清：
+             ① 「现在为什么不写」**进页面就显示**判定结果。以前只在点了「现在判断一次」之后
+                才有一行字，平时那一格是空的；原版程序是常驻的。
+             ② 额度给成「已经用掉 / 上限」，用户不用自己数（stats 来自 /api/proactive）。
+             ③ 「她自己的作息」：她自己睡觉、练琴的时候不会写信。这一行**读的是世界状态**
+                （world_state 最新一行），不再只是文档里的一句话。
+             ④ 时段改成 <input type="time">：以前是自由文本，写错一个字符会被判定层
+                直接停掉主动来信（BAD_WINDOW），换成时间控件就不给人填错的机会。
+             ⑤ 补「恢复默认」：默认值从 core.mjs 的 PROACTIVE_DEFAULTS 来，不在前端再抄一份。
+           ★ 「保持她现在的样子」以前是个**空开关**（勾了没有任何消费方，POST 也不落库）；
+             现在落库成 proactive_keep_shape，由 server.mjs 的 keepCurrentShape() 在拼提示词时
+             决定「她此刻」那一行进不进 —— 勾上就是近况层完全不参与。 -->
+      <details class="set-more" id="proactiveSec">
+        <summary>林离主动来信</summary>
+        <div class="card">
+          <p>她也可以先写信给你。不是定时投递：先看她有没有话想说，再看额度，最后看她这会儿方不方便。关着的时候她只会回信。</p>
+
+          <div class="set-item">
+            <div class="set-item-t">
+              <b>允许她主动写信</b>
+              <span>关掉后她只会回信，永远不会先开口。</span>
+            </div>
+            <div class="set-item-c">
+              <label class="switch"><input id="pEnabled" type="checkbox"><i></i></label>
+            </div>
+          </div>
+
+          <div class="set-item">
+            <div class="set-item-t">
+              <b>现在为什么不写</b>
+              <span id="proactiveVerdict">正在读取…</span>
+            </div>
+            <div class="set-item-c">
+              <span class="hint" id="proactiveStats"></span>
+            </div>
+          </div>
+
+          <div class="set-item">
+            <div class="set-item-t">
+              <b>她自己的作息</b>
+              <span id="proactiveHer">正在读取…</span>
+            </div>
+          </div>
+
+          <div class="set-item">
+            <div class="set-item-t">
+              <b>可打扰时段</b>
+              <span>这段时间之外她不会主动写信。你给她写信、她回信不受这个限制。</span>
+            </div>
+            <div class="set-item-c">
+              <input class="set-time" id="pStart" type="time" aria-label="可打扰时段的开始时间">
+              <span style="color:var(--tx4)">–</span>
+              <input class="set-time" id="pEnd" type="time" aria-label="可打扰时段的结束时间">
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:16px">
+            <div class="field">
+              <label for="pDay">24 小时最多（封）</label>
+              <input id="pDay" type="number" min="0" max="10">
+              <p class="hint">一天之内的上限。</p>
+            </div>
+            <div class="field">
+              <label for="pWeek">7 天最多（封）</label>
+              <input id="pWeek" type="number" min="0" max="30">
+              <p class="hint">一周之内的上限。</p>
+            </div>
+            <div class="field">
+              <label for="pGap">距上一封至少（小时）</label>
+              <input id="pGap" type="number" min="0" max="720">
+              <p class="hint">离上一封不够这么久，她不会再来一封。</p>
+            </div>
+          </div>
+
+          <!-- ★ 近况层开关（T9）：键名由 app/harness/行为参数.json 的 nearTerm.userToggle.key 定，
+               不是这里自己起的。文案优先用 JSON 里的 label（loadSettings 会覆盖），这里是兜底。
+               ★ 用 .switch 不用裸勾选框：设置页里所有布尔项都是这个药丸开关，
+                 只有这一处是原生方框会显得像没做完（实测截图里那个小方块确实很突兀）。 -->
+          <div class="set-item">
+            <div class="set-item-t">
+              <b id="proactiveKeepShapeLabel">保持她现在的样子</b>
+              <span>勾上之后，写信时不再把「她此刻在做什么」告诉模型：通信变多也不会改变她写信的方式。</span>
+            </div>
+            <div class="set-item-c">
+              <label class="switch"><input id="proactiveKeepShape" type="checkbox"><i></i></label>
+            </div>
+          </div>
+
+          <div class="row" style="align-items:center;gap:10px;margin-top:16px">
+            <button class="pri" id="saveProactive" type="button">保存</button>
+            <button id="resetProactive" type="button">恢复默认</button>
+            <button id="checkProactive" type="button">现在判断一次</button>
+            <span class="hint" id="proactiveState"></span>
+          </div>
+        </div>
+      </details>
     </section>
   </div>
 </div>
@@ -464,32 +906,112 @@
   </div>
 </div>
 
-<!-- 第一次打开时问一句：要不要让她主动来信。
-     ★ 无论点哪个、或者按 Esc / 点遮罩关掉，都记为"已经答过" ⇒ 只问这一次。
-     ★ 默认仍然是**关闭**：只有明确点了"愿意"，开关才会被打开。 -->
+<!-- ★★ 2026-10-20：歌单「新建 / 改名 / 删除」用的自绘弹层。
+     原来这条路走的是 `window.prompt()` —— 在 WebView2 里它不弹任何东西、直接返回 null，
+     于是「＋」点了没反应 ⇒ 歌单永远是 0 个 ⇒ 曲目也就永远加不进歌单
+     （用户原话：「咱们的歌单功能是摆设，不能新建歌单和添加歌曲」）。
+     ⇒ 原生弹框这条路整个不要了，改成页面自己画（跟协议弹层同一套 .modal 样式）。
+     ★ 一个组件管三种用法：输入名字（新建/改名）、纯确认（删除）。
+       判据见 tests/playlist-ui.test.js 与 analysis/_audit24/playlist-cdp.js。 -->
+<div class="modal" id="askModal" hidden>
+  <div class="modal-mask" data-ask-close="1"></div>
+  <div class="modal-box ask-box" role="dialog" aria-modal="true" aria-labelledby="askTitle">
+    <div class="modal-head">
+      <h3 id="askTitle">新建歌单</h3>
+      <button class="modal-x" data-ask-close="1" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint" id="askHint"></p>
+      <input class="ask-input" id="askInput" type="text" maxlength="40" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-foot">
+      <span class="hint" id="askNote"></span>
+      <button class="ask-cancel" id="askCancel" data-ask-close="1" type="button">取消</button>
+      <button class="pri" id="askOk" type="button">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 第一次打开时问一句：她可以怎么陪着你。
+     ★ 规格（analysis\UI规格-她的世界桌面播放与首次询问-2026-10-19.md 4.1）：
+       两个开关一屏说清，**主动来信默认开、她练琴默认关**，一屏到底。
+     ★ 无论点哪个、或者按 Esc / 点遮罩关掉，都记为"已经答过"（world_stage_asked）⇒ 只问这一次；
+       关掉的那一刻两个开关都落成"关"，不会留下半开的状态。 -->
 <div class="modal" id="introModal" hidden>
   <div class="modal-mask" data-close="1"></div>
-  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="introTitle">
+  <div class="modal-box intro-box" role="dialog" aria-modal="true" aria-labelledby="introTitle">
     <div class="modal-head">
-      <h3 id="introTitle">她会偶尔主动给你写信</h3>
+      <h3 id="introTitle">她可以怎么陪着你</h3>
       <button class="modal-x" data-close="1" aria-label="关闭">✕</button>
     </div>
     <div class="modal-body">
-      <p>这件事现在是<b>开着的</b>：她不只回你的信，也会自己找上门。</p>
-      <p>她会在这几种时候写一封：</p>
-      <ul>
-        <li>你刚听完一首歌，她有话想说的时候；</li>
-        <li>她上一封问过你、还没等到回音的时候；</li>
-        <li>你好几天没打开，她想告诉你这几天她这边的样子。</li>
-      </ul>
-      <p class="hint">
-        不过很克制：<b>24 小时最多 1 封、7 天最多 4 封</b>，只在可打扰时段里，
-        而且<b>找不到一件值得写的事就不写</b>。随时可以在设置里关掉。
-      </p>
+      <p class="hint">下面两件事都只在这台电脑上生效，随时可以在设置里改。</p>
+
+      <label class="intro-item">
+        <span class="intro-text">
+          <b>她会偶尔主动给你写信</b>
+          <span class="hint">你听完一首歌、或者好几天没打开，她会自己找上门写一封。24 小时最多 1 封、7 天最多 4 封。</span>
+        </span>
+        <span class="switch"><input id="introProactive" type="checkbox" checked><i></i></span>
+      </label>
+
+      <label class="intro-item">
+        <span class="intro-text">
+          <b>你在放歌的时候，她让开</b>
+          <span class="hint">你不放的时候，她可能会在桌面上练一会儿琴 —— 一小时最多两次，同一首半小时内不重复；你一动，她就让开。</span>
+        </span>
+        <span class="switch"><input id="introWorld" type="checkbox"><i></i></span>
+      </label>
+
+      <p class="hint">这两件事都不联网、不上传任何内容。</p>
     </div>
     <div class="modal-foot">
-      <button id="introNo">先不用，关掉吧</button>
-      <button class="pri" id="introYes">好，就让她这样</button>
+      <button id="introNo">都先别开</button>
+      <button class="pri" id="introYes">就这样</button>
+    </div>
+  </div>
+</div>
+
+<!-- 「为什么」：她此刻那行字背后的依据。★ 规格 4.2 要求"点开有依据"，
+     这是把 `world_state.evidence` + 当时的来源直白地摊开给用户看，不解释、不拟人化。 -->
+<div class="modal" id="worldWhyModal" hidden>
+  <div class="modal-mask" data-close="1"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="worldWhyTitle">
+    <div class="modal-head">
+      <h3 id="worldWhyTitle">她在做什么，依据是什么</h3>
+      <button class="modal-x" data-close="1" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="worldWhyLine" class="world-why-line">—</p>
+      <ul id="worldWhyList" class="world-why-list"></ul>
+      <p class="hint">这些都是本机数据算出来的：你的来信、你放过的曲子、当前时间。没有联网。</p>
+    </div>
+    <div class="modal-foot">
+      <button class="pri" data-close="1">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 关闭询问（2026-10-20「应用行为 → 关闭时 = 不设置」档：每次问一句）。
+     ★ 文案照原版语言包（feapp.dat 的 zh-cn：e_/i_/c_/a_/z_ 五条）。
+     ★ 「记住该设定」勾上再选，就等于把这次的选择写进设置页那个下拉 —— 原版同款。 -->
+<div class="modal" id="closeAskModal" hidden>
+  <div class="modal-mask" data-close="1"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="closeAskTitle">
+    <div class="modal-head">
+      <h3 id="closeAskTitle">关闭时</h3>
+      <button class="modal-x" data-close="1" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>你可以选择在点击窗口关闭按钮时：是直接退出应用，还是最小化到托盘后台运行。</p>
+      <label class="row" style="align-items:center;gap:8px;cursor:pointer">
+        <input id="closeAskRemember" type="checkbox">
+        <span>记住该设定，下次关闭不再弹窗</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button id="closeAskTray" type="button">最小化到托盘</button>
+      <button class="pri" id="closeAskQuit" type="button">直接退出</button>
     </div>
   </div>
 </div>
@@ -519,8 +1041,14 @@
     </div>
   </div>
 </div>
-
-
+<!-- 桌面播放页：原版 webplayer 的复刻。
+     ★ 2026-10-19 修（七轮审查 F1）：这一行原来只剩一个空的 645 行 —— 注释开头那一对尖括号
+       加感叹号丢了，于是下面四行注释正文变成 body 的**直接文本节点**（230 字符），
+       四个页面都能看到那段字，连注释的结尾符号都印在页面上，而且已经打进 08:36 的安装包。
+       教训：HTML 注释的头尾要成对写；`tests/page-markup.test.js` 现在有一条常驻用例，
+       先剥掉所有合法注释、再找残留的注释结尾符号，专门盯这种"少了开头"的事故。
+       ★ 写本条注释时也踩了一次：正文里原样引用那两个符号，会把这条注释**提前截断**
+         （第一个结尾符号就收尾了，后半段又漏成正文）。所以这里只说"符号"，不抄原样。
      .player-container 纯黑铺满 + 两枚 video 交叉淡入（只有 .active 那枚 opacity:1）
      + .watermark-overlay 斜向平铺水印。原版是整屏独立窗口，我们是 1180×820 的内嵌窗口，
      所以它铺满 .win 的那块内容区，靠左上角那条玻璃条「返回」退出来。
@@ -542,51 +1070,9 @@
     <span class="player-slot" id="playerSlot"></span>
   </div>
   <p class="player-hint" id="playerEmpty">这一档还没有曲目</p>
-  <!-- 播放控制条：照原版 `.lite-playback-control`（main-31595bd3.js:339701）逐个元素复刻。
-       原版骨架 = 左「封面 + 曲名跑马灯」｜中「模式/上一首/播放/下一首/音量 + 进度条 + 时间」｜右「画中画」。
-       尺寸口径（原版 tailwind 类）：条高靠 px-5 pt-3 pb-2、栏宽 200px、封面 w-16 h-16(64) rounded-1(6)、
-       曲名 text-body-m(14/22)、时间 text-body-s(12) w-10、播放圆钮 w-10 h-10(40) rounded-full bg-primary-2、
-       其余图标钮 w-8 h-8(32) hover:bg-grey-1 rounded-1、进度条 max-w-[480px]。
-       ★ 这些 id（pbPrev/pbPlay/pbNext/pbMute/pbLine/pbFill/pbTime）是 app.js 里早就接好的线，
-         重排演奏页时必须给回来 —— 少了它们只是"点了没反应"，界面上看不出缺件。
-       ★ 图标一律内联 SVG（原版全站零 emoji），viewBox 24、currentColor。
-       ★ 我方多一个「返回」：原版播放器是独立窗口，我们内嵌在全屏页里，得有条路退出去。 -->
-  <div class="player-bar" id="playerBar">
-    <button class="player-back" id="playerBack" type="button" title="返回信箱">
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M14.5 5.5L8 12l6.5 6.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-
-    <!-- 左：正在播的那首（封面 64 + 曲名，长了跑马灯） -->
-    <div class="player-now">
-      <div class="player-cover" id="pbCover"><span id="pbCoverText">♪</span></div>
-      <div class="player-now-text">
-        <span class="player-now-name" id="pbName">还没有播放</span>
-        <span class="player-now-sub" id="pbSlot"></span>
-      </div>
-    </div>
-
-    <!-- 中：控制 + 进度 -->
-    <div class="player-center">
-      <div class="player-controls">
-        <button class="player-btn" id="pbMode" type="button" title="循环方式">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9a5 5 0 0 1 5-5h9m0 0l-3-3m3 3l-3 3M20 15a5 5 0 0 1-5 5H6m0 0l3 3m-3-3l3-3" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button class="player-btn" id="pbPrev" type="button" title="上一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 5v14M20 5.5v13a1 1 0 0 1-1.5.87L9 13.37a1 1 0 0 1 0-1.74l9.5-6A1 1 0 0 1 20 5.5z" fill="currentColor"/></svg></button>
-        <button class="player-btn is-main" id="pbPlay" type="button" title="播放 / 暂停"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg></button>
-        <button class="player-btn" id="pbNext" type="button" title="下一首"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M18 5v14M4 5.5v13a1 1 0 0 0 1.5.87l9.5-6a1 1 0 0 0 0-1.74l-9.5-6A1 1 0 0 0 4 5.5z" fill="currentColor"/></svg></button>
-        <button class="player-btn" id="pbMute" type="button" title="静音"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9h3l4.5-3.5v13L7 15H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg></button>
-      </div>
-      <div class="player-line">
-        <span class="player-time" id="pbNow">0:00</span>
-        <div class="player-progress" id="pbLine"><div class="player-progress-fill" id="pbFill"></div></div>
-        <span class="player-time" id="pbTime">0:00</span>
-      </div>
-    </div>
-
-    <!-- 右：原版这里是画中画（pip）。我方没有小窗，留一块等宽的占位，
-         让中间那组控制在整条里保持居中 —— 删掉它，进度条会整体右移。 -->
-    <div class="player-right"></div>
-  </div>
+  <!-- ★ 2026-10-20：原来这里还有一条 .player-bar（返回钮 + 封面 + 控制 + 进度）。
+       它已经**整条搬进曲库页底部**（.is-lib-bar），这里的旧拷贝删掉了——
+       同一批 id 只能存在一份，不然 app.js 的接线会打到隐藏副本上。 -->
 </div>
 
 <!-- 信封弹层（照原版 MailBoxEnvelope 复刻）：
@@ -685,6 +1171,11 @@
 <script src="legal.js"></script>
 <script src="app.js"></script>
 <script src="mail-ui.js"></script>
-<script type="module" src="rb-glass.js"></script>
+<!-- ★ 2026-10-20：这里原来引 rb-glass.js（把桌面壁纸视频的帧按 `.rb` 的屏幕位置取样、
+     施加位移图折射，画进按钮上方的 canvas）。
+     左侧导航已经整块搬出页面、改成外壳画的独立浮层（NavRail.cs，纯 GDI+），
+     页面里再没有 `.rb` 可折射 ⇒ rb-glass.js / glass-lens.mjs 连同它的测试一起删掉，
+     别留一个"永远 return 在第三行"的模块占着位置。
+     ★ 同一批下掉的还有更早的 vendor/liquid-glass（窗口改成不透明之后它拿不到纹理）。 -->
 </body>
 </html>

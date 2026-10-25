@@ -60,7 +60,10 @@ test("① 错误号表自洽：键=值、无重复值、命名规范、域前缀
     seen.set(code, true);
   }
 
-  const DOMAINS = ["COMMON", "LETTER", "LIBRARY", "IDLE", "FONT", "IMPORT", "PROACTIVE", "MODEL", "REPLY"];
+  // ★ 2026-10-20 增设 APP 域：应用行为（开机自启 / 关闭时怎么办）是**程序自己**的
+  //   设置，不属信件（LETTER）也不属曲库（LIBRARY）—— 硬塞进 COMMON 会让
+  //   「这一域管什么」再也说不清。新域必须两头同步（下面 KNOWN_DOMAINS 同款）。
+  const DOMAINS = ["COMMON", "LETTER", "LIBRARY", "IDLE", "FONT", "IMPORT", "PROACTIVE", "MODEL", "UPDATE", "REPLY", "APP"];
   for (const code of codes) {
     const domain = code.split("_")[0];
     assert.ok(DOMAINS.includes(domain), `号必须以已知域开头（${DOMAINS.join("/")}）：${code}`);
@@ -130,7 +133,7 @@ test("⑦ 源码里不许出现写死的号字面量（只能引用 ERR 表）",
   //   这正是姊妹项目号名漂移的病根，必须一起抓。
   // ★ 与第①条的 DOMAINS 同步：两份白名单一旦漂移，本测试自己就成了它要防的那种病
   //   （某域被第①条放行、却被这里漏掉 ⇒ 该域的字面量悄悄绕过 ERR 表）。
-  const KNOWN_DOMAINS = ["COMMON", "LETTER", "LIBRARY", "IDLE", "FONT", "IMPORT", "PROACTIVE", "MODEL", "REPLY"];
+  const KNOWN_DOMAINS = ["COMMON", "LETTER", "LIBRARY", "IDLE", "FONT", "IMPORT", "PROACTIVE", "MODEL", "UPDATE", "REPLY"];
   // 这些是**别的**体系的大写常量，不是错误号（状态、来源、时段、模式、主动信原因）。
   const ALLOW = new Set([
     "PENDING", "LLM_PROCESSING", "REPLIED", "FAILED",

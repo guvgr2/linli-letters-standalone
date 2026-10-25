@@ -1,26 +1,31 @@
-// 播放队列的推进规则：上一首 / 下一首 / 播完自动往下。
+// 曲目推进规则 + 「播放到底在哪播」的护栏。
 //
-// 为什么值得单独守：这三条以前全是错的，而且**界面看不出来**。
-//   ① 随机播放有图标、有切换、有 toast，唯独没有随机 —— 点了图标变，行为还是顺序的；
-//   ② 正片播完没人接 ended，停在那儿，看起来像"这首歌播完了"而不是"卡住了"；
-//   ③ 顺序播放本该在最后一首停住，但因为 ② 根本走不到判断那一步，四种模式表现完全一样。
-// 所以这里测的是**规则本身**，不是浏览器行为。
+// ★ 2026-10-19 语义大改（用户口径 m01034）：
+//   「程序内点播放按钮是要把视频播放到桌面，不是在程序内播放」——
+//   窗口里那套播放器（playVideoA/B 双缓冲、ended 续播、advance、跨时段预热）整套删掉了，
+//   播放改由 `POST /api/stage/play` 钉到桌面那层。
+//   所以这里只剩两件事值得守：
+//     ① 上一首 / 下一首 / 随机的**队列推进规则**（step 还在，规则没变）；
+//     ② 播放确实被送到了桌面那层（而不是又悄悄在窗口里起了视频）。
+//   以前那几条「正片接 ended / advance 在最后一首停住」测的是窗口内播放器，
+//   那个实现已经不存在了，留着只会守着一个不存在的对象。
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const APP = new URL("../app/public/app.js", import.meta.url);
 const src = readFileSync(APP, "utf8");
+const WALLPAPER = new URL("../app/public/wallpaper.html", import.meta.url);
+const wallpaper = readFileSync(WALLPAPER, "utf8");
 
-/** 把 app.js 里那段 step/advance 原样抠出来跑 —— 不复制一份规则，避免测试慢慢和实现分家。 */
+/** 把 app.js 里 step() 原样抠出来跑 —— 不复制一份规则，避免测试慢慢和实现分家。 */
 function loadLogic() {
   const start = src.indexOf("async function step(delta)");
   const end = src.indexOf('$("pbPlay")?.addEventListener', start);
-  assert.ok(start > 0 && end > start, "找不到 step/advance 那段源码（改名或挪位置了？）");
+  assert.ok(start > 0 && end > start, "找不到 step 那段源码（改名或挪位置了？）");
   const body = src.slice(start, end);
 
-  // step/advance 依赖的四个外部量，用可注入的假货替掉：
-  //   playlist() 给列表、player.dir 记当前、playMode 是模式下标、play() 记下播了什么。
   const harness = `
     let player = { dir: null };
     let playMode = 0;
@@ -36,7 +41,7 @@ function loadLogic() {
       setMode: (i) => { playMode = i; },
       getPlayed: () => played,
       reset: () => { played = []; },
-      step, advance,
+      step,
     };
   `;
   return new Function(harness)();
@@ -68,7 +73,6 @@ test("当前这首不在队列里时，下一首从列表头开始（不是原�
 test("随机模式挑的不是当前这首", async () => {
   const L = loadLogic();
   L.setList(SONGS); L.setCurrent("a"); L.setMode(3);   // 3 = shuffle
-  // 多跑几轮：至少不能一直是"顺序的下一首" b
   const picked = new Set();
   for (let i = 0; i < 40; i++) {
     L.reset(); L.setCurrent("a");
@@ -87,52 +91,45 @@ test("随机模式在只有一首时不会卡死（退回顺序）", async () =>
   assert.deepEqual(L.getPlayed().map((p) => p.dir), ["a"], "只有一首时也应该继续播这一首，而不是什么都不做");
 });
 
-test("顺序播放：播完中途的某一首会往下走", async () => {
-  const L = loadLogic();
-  L.setList(SONGS); L.setCurrent("a"); L.setMode(0);   // 0 = order
-  await L.advance();
-  assert.deepEqual(L.getPlayed().map((p) => p.dir), ["b"]);
-});
-
-test("顺序播放：最后一首播完就停住，不绕回第一首", async () => {
-  const L = loadLogic();
-  L.setList(SONGS); L.setCurrent("c"); L.setMode(0);
-  await L.advance();
-  assert.deepEqual(L.getPlayed(), [], "顺序播放到最后一首应该停住，不能绕回去");
-});
-
-test("列表循环：最后一首播完绕回第一首", async () => {
-  const L = loadLogic();
-  L.setList(SONGS); L.setCurrent("c"); L.setMode(1);   // 1 = repeat
-  await L.advance();
-  assert.deepEqual(L.getPlayed().map((p) => p.dir), ["a"]);
-});
-
-test("随机播放：播完挑一首不是自己的", async () => {
-  const L = loadLogic();
-  L.setList(SONGS); L.setCurrent("b"); L.setMode(3);
-  await L.advance();
-  const d = L.getPlayed()[0]?.dir;
-  assert.ok(d === "a" || d === "c", `随机播完应该挑 a 或 c，实际挑了 ${d}`);
-});
-
 test("空队列时所有动作都不炸、也不播任何东西", async () => {
   const L = loadLogic();
   L.setList([]);
   await L.step(1);
-  await L.advance();
   assert.deepEqual(L.getPlayed(), []);
 });
 
-test("正片真的接了 ended（以前只有过场片接）", () => {
-  // ① 加监听
-  assert.match(src, /v\.addEventListener\("ended", v\.__onEndedSong\)/u,
-    "正片没有接 ended —— 一首放完会停在那儿");
-  // ② 加之前先摘掉上一首的，否则 v 是常驻元素、监听越挂越多，播完一次连跳好几首
-  const addAt = src.indexOf('v.addEventListener("ended", v.__onEndedSong)');
-  const removeAt = src.indexOf("v.removeEventListener(\"ended\", v.__onEndedSong)");
-  assert.ok(removeAt > 0 && removeAt < addAt, "接 ended 之前必须先摘掉上一首挂的那个监听");
-  // ③ ended 里走的是 advance，不是 step(1) —— 顺序播放"停住"靠的是 advance 里的判断
-  assert.match(src, /v\.__onEndedSong = \(\) => \{ void advance\(\); \}/u,
-    "ended 里应该走 advance()（它知道顺序播放要在最后一首停住）");
+// ---------------------------------------------------------------- 播放到底在哪播
+
+test("点播放是把这一首钉到桌面那层（不是窗口内起视频）", () => {
+  const start = src.indexOf("async function play(dir, name)");
+  // ★ 2026-10-20：playIdle() 删了（pbPlay 改走 playback:toggle 遥控链路），
+  //   切片终点改用 play() 后面紧跟的 writePlayerMeta。
+  const end = src.indexOf("function writePlayerMeta(", start);
+  assert.ok(start > 0 && end > start, "找不到 play() 源码");
+  const body = src.slice(start, end);
+
+  assert.match(body, /\/api\/stage\/play/u, "play() 必须把曲子交给桌面那层（POST /api/stage/play）");
+  assert.match(body, /tellShell\("stage:changed"\)/u, "换片之后要叫外壳通知桌面立刻换，不能等 30 秒轮询");
+  // 窗口内那套视频 / 全屏演奏页都不该再被 play() 碰
+  assert.doesNotMatch(body, /playVideoA|playVideoB/u, "play() 里不该再操作窗口内的 video");
+  assert.doesNotMatch(body, /openPlayer/u, "play() 不该再打开窗口内的全屏演奏页");
+});
+
+test("窗口内播放器已经删干净（不留半截实现）", () => {
+  for (const dead of ["crossFadeTo", "warmNextSlot", "minutesToBoundary", "function advance("]) {
+    assert.equal(src.includes(dead), false, `${dead} 已经删了，不该又冒出来`);
+  }
+});
+
+// ★ 2026-10-19 审查 S37：这条的标题与注释原来写"并且循环播放 / 曲子要循环播（原版就是一场接一场）"，
+//   而 §13 之后曲子已经改成 loop:false（放完问服务端要下一首，顺序/循环/单曲/随机四种走法由
+//   /api/stage/advance 决定）。断言本身仍然成立（守的是 crossFade 的默认语义：只有显式
+//   loop:false 才不循环），但旧文案会把后来人引到"把自动续播拆了"那条错路上去。
+test("桌面那层：收到换片通知会立刻重算，换片默认循环（过场片才显式 loop:false）", () => {
+  assert.match(wallpaper, /d\.stage === "changed"/u, "wallpaper.html 要处理外壳发来的换片消息");
+  assert.match(
+    wallpaper,
+    /incoming\.loop = opts\.loop !== false/u,
+    "crossFade 默认 loop=true；曲子之所以不循环，是调用点显式传 loop:false（见 stage-mode-guards ⑧）",
+  );
 });

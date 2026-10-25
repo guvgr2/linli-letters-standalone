@@ -4,7 +4,7 @@
 //   ① 号一律取自本表，调用方不许写字面量（tests/error-codes.test.js 盯着）；
 //   ② 改号名必须同步改文档与测试。
 //
-// 为什么②要写死：姊妹项目 2026-10-17 的真实教训 ——
+// 为什么②要写死：原版程序 2026-10-17 的真实教训 ——
 //   `LOCAL_AI_PROCESS_REMOVED` 收进错误号表时按前缀重命名成 `MODEL_LOCAL_PROCESS_REMOVED`，
 //   代码和测试都改了，唯独 `docs/本地服务API清单.md` 没跟；那份文档又**没有任何机器校验会读**，
 //   于是名字悄悄漂了，只有人眼对得出来。
@@ -22,6 +22,7 @@
 //   IMPORT    UserData 导入（.soul 归档）
 //   PROACTIVE 主动来信设置
 //   MODEL     模型接口
+//   UPDATE    更新（检查 Release / 下载安装包 / 安装）
 //   REPLY     生成队列（不回 HTTP，写进 letters.error 给界面看）
 
 export const ERR = {
@@ -42,7 +43,7 @@ export const ERR = {
   //     —— 下一步不用做任何事（程序自己拦的，不是他填错了什么）。
   COMMON_EXTERNAL_URL_NOT_ALLOWED: "COMMON_EXTERNAL_URL_NOT_ALLOWED",
 
-  // ── 数据备份与恢复（照姊妹项目 data-safety.js 的号，只改域前缀）
+  // ── 数据备份与恢复（照原版程序 data-safety.js 的号，只改域前缀）
   //   ★ 归 COMMON 域：它管的是整个数据目录，不属于信件/曲库/字体任何一个业务域。
   //   ★ 「名字无效」「正在用的库」「这份不存在」「打不开」必须分成四个号：
   //     用户下一步动作完全不同 —— 名字无效是程序内部问题（贴日志）、正在用的是点错了
@@ -65,6 +66,9 @@ export const ERR = {
   LETTER_EMPTY: "LETTER_EMPTY",
   LETTER_TOO_LONG: "LETTER_TOO_LONG",
   LETTER_NOT_FOUND: "LETTER_NOT_FOUND",
+  // ★ 2026-10-20：给「重试」用的号。状态不对（不是失败过的那一类）必须是 409 而不是 200 ——
+  //   回 200 前端会以为已经重新排队，而队列其实没动，用户等到的是"永远还在写"。
+  LETTER_NOT_RETRYABLE: "LETTER_NOT_RETRYABLE",
 
   // ── 曲库
   LIBRARY_DIR_NOT_FOUND: "LIBRARY_DIR_NOT_FOUND",
@@ -76,7 +80,7 @@ export const ERR = {
   LIBRARY_AUDITION_FAILED: "LIBRARY_AUDITION_FAILED",
   LIBRARY_TITLE_REQUIRED: "LIBRARY_TITLE_REQUIRED",
 
-  // ── 歌单（照姊妹项目的 PLAYLIST_ITEM_INCOMPLETE 一系）
+  // ── 歌单（照原版程序的 PLAYLIST_ITEM_INCOMPLETE 一系）
   // ★ 前缀用 LIBRARY_ 不是 PLAYLIST_：错误号的域是**枚举**（COMMON/LETTER/LIBRARY/
   //   IDLE/FONT/IMPORT/PROACTIVE/MODEL/REPLY，见 tests/error-codes.test.js 第①条），
   //   开一个新域要连带改测试与文档。歌单本来就是曲库的一部分 —— 它装的都是曲库曲目，
@@ -88,9 +92,36 @@ export const ERR = {
   LIBRARY_FOLDER_NOT_FOUND: "LIBRARY_FOLDER_NOT_FOUND",
   LIBRARY_PLAYLIST_ITEM_INCOMPLETE: "LIBRARY_PLAYLIST_ITEM_INCOMPLETE",
   LIBRARY_PLAYLIST_ITEM_NOT_FOUND: "LIBRARY_PLAYLIST_ITEM_NOT_FOUND",
+  // 播放顺序只认四种写法；前端传了别的东西要能一眼看出是"参数不对"，
+  // 而不是被当成"曲目不存在"（两者下一步动作完全不同：改参数 / 换曲子）。
+  LIBRARY_PLAY_MODE_INVALID: "LIBRARY_PLAY_MODE_INVALID",
+  // ★ 2026-10-20 弹唱视角（原版设置项）：只认 NI（专注演奏）/ WI（视听交互）——
+  //    这两个值来自曲库视频文件名的视角段，不是随便起的缩写。
+  LIBRARY_PLAY_VIEW_INVALID: "LIBRARY_PLAY_VIEW_INVALID",
+
+  // ── 维护（数据搬家 / 诊断包 / 反馈）
+  // ★ 搬家的五个号各指一种下一步动作，压在一起用户就不知道该干什么：
+  //   没给来源 / 来源不在扫描结果（多半手改了路径）/ 来源就是当前目录 /
+  //   对方文件被占用（要退出那边的程序）/ 对方目录里根本没有库。
+  COMMON_MIGRATE_SOURCE_REQUIRED: "COMMON_MIGRATE_SOURCE_REQUIRED",
+  COMMON_MIGRATE_SOURCE_NOT_DETECTED: "COMMON_MIGRATE_SOURCE_NOT_DETECTED",
+  COMMON_MIGRATE_SOURCE_IS_CURRENT: "COMMON_MIGRATE_SOURCE_IS_CURRENT",
+  COMMON_MIGRATE_SOURCE_LOCKED: "COMMON_MIGRATE_SOURCE_LOCKED",
+  COMMON_MIGRATE_NOTHING_TO_COPY: "COMMON_MIGRATE_NOTHING_TO_COPY",
+  COMMON_DIAGNOSTIC_FAILED: "COMMON_DIAGNOSTIC_FAILED",
+  // ★ 「作者还没公布反馈仓库」不是用户能修的事，得如实说，别假装打开了页面。
+  COMMON_FEEDBACK_NOT_CONFIGURED: "COMMON_FEEDBACK_NOT_CONFIGURED",
 
   // ── 待机素材
   IDLE_AMBIENCE_NOT_BOOL: "IDLE_AMBIENCE_NOT_BOOL",
+  // ★ 音量不能静默夹：滑块能把 101 传来本身就是界面 bug，夹成 100 会让用户以为"改了没反应"。
+  IDLE_VOLUME_INVALID: "IDLE_VOLUME_INVALID",
+  // ★ 2026-10-20 状态（原版设置项三选一：日常 / 创作 / 思考 → R1 / R2 / R3）。
+  IDLE_STATE_INVALID: "IDLE_STATE_INVALID",
+
+  // ── 应用行为
+  // ★ 2026-10-20 关闭时的行为：ask（每次提示）/ tray（最小化到托盘）/ quit（直接退出）。
+  APP_CLOSE_BEHAVIOR_INVALID: "APP_CLOSE_BEHAVIOR_INVALID",
 
   // ── 信件字体
   FONT_FILE_TOO_LARGE: "FONT_FILE_TOO_LARGE",
@@ -103,9 +134,9 @@ export const ERR = {
   FONT_SAVE_FAILED: "FONT_SAVE_FAILED",
 
   // ── UserData 导入（.soul 归档）
-  //    ★ 失败**文案**与 DSH 侧 `server.js` 的 SOUL_* 一族逐字对齐 —— 用户在两端
-  //      看到同一句话，出问题时两边说的才是同一件事。号本身按我侧分组规则
-  //      （域_具体事）命名，与 DSH 号的对照关系写在 `错误号一览.md`。
+  //    ★ 失败**文案**与 原版 `server.js` 的 SOUL_* 一族逐字对齐 —— 用户在两边
+  //      看到同一句话，出问题时两边说的才是同一件事。号本身按本程序分组规则
+  //      （域_具体事）命名。
   //    ★ 五类五种用户动作：收不下要换办法搬 / 读不懂是文件坏了 /
   //      备份没成这次就没动过库（先停手）/ 找不到预览就重新选一次文件。
   IMPORT_FILE_REQUIRED: "IMPORT_FILE_REQUIRED",
@@ -136,6 +167,19 @@ export const ERR = {
   //   前者查自己的网络与代理，后者查接口地址、模型名与额度。以前都并进
   //   MODEL_HTTP_FAILED，用户按号查时会被指去改 baseUrl —— 而问题在网络。
   MODEL_UNREACHABLE: "MODEL_UNREACHABLE",
+
+  // ── 更新（检查 GitHub Release / 下载安装包 / 安装）
+  // ★ 2026-10-20 新开 UPDATE 域：更新是**程序自己**的事，不属于信件/曲库/字体任何业务域，
+  //   塞进 COMMON 会让「COMMON 域管什么」再次说不清（与 APP 域同一理由）。
+  //   新域必须两头同步：tests/error-codes.test.js 的 DOMAINS 与 KNOWN_DOMAINS。
+  // ★ 五个号各指一种下一步动作，压在一起用户就不知道该怎么办：
+  //   通道写错是人改了配置 / 下载还没准备好（没查过更新或已是最新）/ 请求没带任务号 /
+  //   任务被换掉了（多半在另一个窗口点了取消）/ 安装包没通过重新校验（要重下或重新校验）。
+  UPDATE_CHANNEL_INVALID: "UPDATE_CHANNEL_INVALID",
+  UPDATE_DOWNLOAD_NOT_READY: "UPDATE_DOWNLOAD_NOT_READY",
+  UPDATE_JOB_MISSING: "UPDATE_JOB_MISSING",
+  UPDATE_JOB_STALE: "UPDATE_JOB_STALE",
+  UPDATE_INSTALL_NOT_READY: "UPDATE_INSTALL_NOT_READY",
 
   // ── 生成队列
   REPLY_PRECHECK_BLOCKED: "REPLY_PRECHECK_BLOCKED",

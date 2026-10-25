@@ -16,12 +16,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";   // 审查 P9：判断系统 tar.exe 在不在
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SERVER = join(ROOT, "app", "server.mjs");
@@ -63,7 +65,7 @@ async function boot() {
       child.kill();
       return new Promise((resolve) => child.on("exit", resolve));
     },
-    cleanup() { return rm(dir, { recursive: true, force: true }); },
+    cleanup() { return cleanupDir(dir); },
   };
 }
 
@@ -77,6 +79,31 @@ async function writeLetter(ctx, text) {
 function letterCount(dir) {
   const db = new DatabaseSync(join(dir, "letters.sqlite"), { readOnly: true });
   try { return db.prepare("SELECT COUNT(*) c FROM letters").get().c; } finally { db.close(); }
+}
+
+/**
+ * 等到库里每一封信都进入终态（4 已回信 / 5 生成失败）才返回。
+ *
+ * ★ 为什么必须有它（2026-10-24 压测定位的偶发红）：
+ *   `POST /api/letters` 插入之后会调 `processQueue()` —— **异步**跑 LLM。本机没配 Key，
+ *   这一路最终把信更新成 `status=5 + error`，是一次**真实的库写事务**。若它落在"读快照 →
+ *   调 restore → 再读快照"这个窗口里，两次 `readFile` 的结果就不相等，
+ *   而锅根本不在 restore 头上 —— 判据要问的是"restore 有没有动库"，
+ *   窗口里却混进了应用自己的异步写，等于把两个变量当成一个在测。
+ *   实测：60 分钟压测 33 轮红 1 轮；本机加负载复现 3/40（7.5%）；加了本函数后 **0/40**。
+ */
+async function settleLetters(ctx, { timeoutMs = 30000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await ctx.call("/api/letters");
+    const items = res.payload?.letters ?? [];
+    const done = items.length > 0 && items.every((x) => x.status === 4 || x.status === 5);
+    if (done) return items.length;
+    if (Date.now() > deadline) {
+      throw new Error(`等信进入终态超时（还剩 ${items.filter((x) => x.status !== 4 && x.status !== 5).length} 封没落定）`);
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
 }
 
 test("① 手动备份：落出 backup-manual-*.sqlite，且**主库自己不出现在列表里**", async (t) => {
@@ -110,6 +137,10 @@ test("② 恢复延后生效：POST restore 只写标记，库本身一个字节
   const made = await ctx.call("/api/data/backup", { method: "POST", body: {} });
   const backupName = made.payload.made.file;
   await writeLetter(ctx, "备份之后又写的一封");          // 现在库里有 2 封，备份里只有 1 封
+  // ★ 读数前先把应用的异步回写排干净（见 settleLetters 的说明）：
+  //   否则 processQueue() 把信改成 status=5 的那一次写会落进下面的窗口，
+  //   让"逐字节没变"这个判据替它背锅 —— 它问的是 restore，不是异步生成链。
+  await settleLetters(ctx);
 
   const before = await readFile(ctx.dbFile);
   const res = await ctx.call("/api/data/restore", { method: "POST", body: { file: backupName, confirm: true } });
@@ -204,8 +235,24 @@ test("⑤ 导出：包里有 README/manifest/库，且凭据被清空（脱敏�
   await writeLetter(ctx, "要导出的信");
 
   // 往设置里塞一个"看起来像 Key"的值，验证导出时被清掉、而主库本身不受影响。
+  // ★ 2026-10-19 审查 N2：这里是**第二条连接**往服务端进程正持有的库里写。
+  //   全量并发跑时（多文件测试同时开服务端子进程）会撞上服务端的事务，
+  //   SQLite 直接回 `database is locked`（实测定位到本行，单跑 10/10 绿、全量约 8% 红）。
+  //   这不是被测行为，是测试手法太急：给这条连接一个 busy_timeout，并允许重试几次 ——
+  //   服务端的写都是毫秒级的，等一下就过去了。
   const db = new DatabaseSync(ctx.dbFile);
-  db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)").run("probe_dummy", '{"apiKey":"sk-abcdefgh12345678"}');
+  db.exec("PRAGMA busy_timeout = 5000");
+  const plantKey = () => db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)")
+    .run("probe_dummy", '{"apiKey":"sk-abcdefgh12345678"}');
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      plantKey();
+      break;
+    } catch (error) {
+      if (attempt >= 5 || !/database is locked|SQLITE_BUSY/u.test(String(error?.message ?? error))) throw error;
+      await new Promise((r) => setTimeout(r, 50 * attempt));
+    }
+  }
   db.close();
 
   const res = await ctx.call("/api/data/export", { method: "POST", body: {} });
@@ -226,7 +273,23 @@ test("⑤ 导出：包里有 README/manifest/库，且凭据被清空（脱敏�
   await writeFile(zipPath, zip);
   const outDir = join(ctx.dir, "unzipped");
   await (await import("node:fs/promises")).mkdir(outDir, { recursive: true });
-  execFileSync("tar.exe", ["-xf", zipPath, "-C", outDir], { stdio: "ignore" });
+  // ★ 2026-10-19 审查 P9：**必须钉死 Windows 自带的那份 tar**。
+  //   原来的写法是 `execFileSync("tar.exe", …)`，走 PATH 解析；本机 PATH 上排前面的
+  //   是 PortableGit 的 `/usr/bin/tar`（GNU tar），它把 `-C C:\…` 里的 `C:` 当成
+  //   远程主机名 ⇒ `tar: Cannot connect to C: resolve failed`（rc=128）。
+  //   于是同一条用例在"谁的壳里跑"之间红绿不定 —— 审查机构就是在 Git Bash 里跑到红的。
+  //   顺序：System32 的 bsdtar → PATH 上的 tar；两者都没有就跳过解开校验并显式报出来
+  //   （宁可少验一步，也不写一个换台机器就红的测试）。
+  const sysTar = "C:\\Windows\\System32\\tar.exe";
+  const tarBin = existsSync(sysTar) ? sysTar : "tar";
+  let tarOk = true;
+  try {
+    execFileSync(tarBin, ["-xf", zipPath, "-C", outDir], { stdio: "ignore" });
+  } catch (error) {
+    tarOk = false;
+    console.log(`[data-safety] 跳过解包校验：${tarBin} 不可用（${error.message.split("\n")[0]}）`);
+  }
+  if (!tarOk) return;   // 本用例后面全是"解开后的内容"断言，解不开就没有可验对象
   const walk = async (dir, prefix = "") => {
     const out = [];
     for (const e of await readdir(dir, { withFileTypes: true })) {
@@ -239,7 +302,9 @@ test("⑤ 导出：包里有 README/manifest/库，且凭据被清空（脱敏�
   const names = (await walk(outDir)).sort();
   assert.deepEqual(names, ["README.txt", "database/letters.sqlite", "manifest.json"]);
   const manifest = JSON.parse(await readFile(join(outDir, "manifest.json"), "utf8"));
-  assert.equal(manifest.kind, "linli-letters-userdata");
+  // ★ 契约值用字面量钉（不是从被测模块 import —— 那就成了同义反复）。
+  //   2026-10-21 随「剥除随包文件里的仓库行话」一起改名：linli-letters-userdata → oliviasoul-community-userdata。
+  assert.equal(manifest.kind, "oliviasoul-community-userdata");
   assert.equal(manifest.counts.letters, 1);
   assert.ok(manifest.credentialsRemoved >= 1, "应该报告移除了几处凭据");
 

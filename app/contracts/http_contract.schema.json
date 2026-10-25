@@ -1,7 +1,7 @@
 {
   "$schema": "https://example.invalid/endpoint",
   "$id": "http_contract.schema.json",
-  "title": "linli-letters 本地 HTTP 契约",
+  "title": "OliviaSoul-community独立版 本地 HTTP 契约",
   "description": "本文件的唯一作用是**把接口事实固定下来**：server.mjs 里每一条 /api 路由都必须在这里有一条记录，反之亦然（由 tests/http-contract.test.js 强制）。结构照姊妹端 bside-olivia-community 的 client/contracts/http_contract.schema.json —— 那边用契约层先把跨界交互说清楚再写码，我们吃过反过来的亏：/api/library 长期不回 genre，前端 2584 首全落到 undefined 档，静态读代码看不出来，跑起来才发现。",
   "type": "object",
   "additionalProperties": false,

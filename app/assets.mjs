@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TIME_SLOTS, TIME_SLOT_LABELS, TOD_SLOT, playbackTimeOfDay, transitionFile } from "./core.mjs";
+import { TIME_SLOTS, TIME_SLOT_LABELS, TOD_SLOT, SLOT_ORDER, playbackTimeOfDay, transitionFile } from "./core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -21,7 +21,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Wallpaper_Presence / Wallpaper_Ambience：36 个 mp4（三套场景 × 三种状态 × 三个时段
 // + 9 个过场片）与 22 段环境音。
 //
-// ★ 素材不随仓库、也不进 public/ —— 仓库是公开的，而 2.88 GB 视频更不可能塞进安装包。
+// ★ 素材不进仓库（体积过大，绝不进 git），但待机壁纸视频（Wallpaper_Presence）会在
+//   build.ps1 打包时从本机原版目录拷进安装包（落到 app/assets/Wallpaper_Presence），
+//   让未装原版的用户也能用待机；环境音与曲目演奏视频仍不随包。
 //   跟曲库一样是"指向"：打包时由 build.ps1 从游戏目录拷到 app\assets\，这里只负责找到它。
 // ★ 路径按**安装后的落点**算：server.mjs 在 {app}\app\ 下，素材在它同级的 assets\ ⇒
 //   默认 join(HERE, "assets")。再兜一层 join(HERE, "..", "assets")：万一打包脚本把素材
@@ -30,13 +32,116 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 //   真渲染体检要指着游戏目录里那 2.88 GB 真素材跑，不能为了自测把它们拷进仓库。
 // ★ LINLI_ASSETS_DIR 给空串时不能当成"根目录是 ''"—— `join("", "x")` 是相对**当前工作目录**，
 //   那等于让素材根跟着启动目录漂。空串一律丢弃，退到下面那两个默认落点。
+// ★ 2026-10-19 补第三档：**本机原版游戏装过就把它的 assets 认下来**。
+//   用户口径（m01034）：「刚打开软件就播放音乐，不应该是播放待机视频和待机音乐吗」
+//   —— 待机视频/环境音只有原版那套 2.88 GB 素材能给，而打包时没把它拷进 app\assets
+//   （仓库公开、包也不该有 2.8 GB），于是 hasAssets 恒 false、桌面那层只能退回一块空白。
+//   原版**装在用户自己机器上**时，这些素材本来就在那儿；这里只是把它当"引用"找到，
+//   不拷、不改、不写。找不到就照旧没有待机素材。
+//   ★ 查找顺序写死在这：%APPDATA% 的 Steam 配置里那几个库盘 → 常见安装盘。
+//     只认 `steamapps\common\BSide Olivia Lin Test\<版本>\assets\Wallpaper_Presence`。
+// ★ 两个子目录名必须先声明：detectedGameAssets() 会用到 PRESENCE_SUBDIR，
+//   而 ASSET_ROOTS 的初始化（下面几行）在模块加载时就会调到它 —— 声明晚了就是 TDZ 报错。
+export const PRESENCE_SUBDIR = "Wallpaper_Presence";
+export const AMBIENCE_SUBDIR = "Wallpaper_Ambience";
+
+/**
+ * ★ 2026-10-21 加：**随包的自制过渡片**目录（`app/transitions/`）。
+ *
+ * 为什么要有：原版有 9 个过场片（`{场景}_Transition_{旧}_{新}.mp4`），但**不随包**
+ *（红线：原版素材不打包不复制），只认本机装过的原版目录 ⇒ 没装原版的用户切时段是硬切。
+ * 这批是咱们自己生成的（纯本机、版权干净，生成脚本在 `analysis/_feat-20261021/`），
+ * 命名**沿用现有规则** ⇒ `transitionFile()` / `VIDEO_NAME_RE` / 前端播放全部复用，零改动。
+ *
+ * ★ 优先级：**素材根（原版）优先，找不到才落到这里** —— 装了原版的用户继续看原版的高质量
+ *   过场片，咱们这批只是"没装原版时的兜底"，不抢原版的位。
+ *   （所以**不能**把这批 3 支 A 场景自制过渡片塞进 `app/assets/Wallpaper_Presence/`：
+ *   那个目录在 ASSET_ROOTS 里排在原版目录**前面**，一旦塞进"只有 3 支 A"的残缺集，
+ *   就会把 B/C 场景与原版高质量过场全挡掉——待机视频/环境音的查找被残缺集劫持。
+ *   反之，build.ps1 在打包时把**完整**原版 Wallpaper_Presence（27 正片 + 9 过场）拷进
+ *   app\assets\Wallpaper_Presence\，正是要靠这个"优先"让安装包自包含；那是完整集，不算劫持。）
+ * ★ 2026-10-21：这个目录允许用 `LINLI_TRANSITIONS_DIR` 指到别处。加它不是为了产品功能，
+ *   是为了**测试能把"自带片也没有"这个状态造出来** —— 2026-10-21 起 A/B/C 九个方向全有片子，
+ *   测试若不能隔离这一层，"素材全缺 ⇒ url:null + 过场片缺失"这条契约就永远测不到了
+ *   （那条契约是真的：安装包残缺时用户会撞上）。与 `LINLI_ASSETS_DIR` 同一个口径。
+ */
+export const TRANSITIONS_DIR = process.env.LINLI_TRANSITIONS_DIR || join(HERE, "transitions");
+
+/** 盘符清单：只留真存在的（在 A–Z 上 existsSync 一次，26 次系统调用，代价可以忽略）。 */
+function driveRoots() {
+  const list = [];
+  for (let code = 65; code <= 90; code++) {
+    const root = `${String.fromCharCode(code)}:\\`;
+    try { if (statSync(root).isDirectory()) list.push(root); } catch { /* 没这个盘 */ }
+  }
+  return list;
+}
+
+/** 本机所有 Steam「库根」目录。
+ *
+ *  ★ 2026-10-19 实测踩坑：只按 `C:\Program Files (x86)\Steam` 那几个常见路径找是**找不到**的 ——
+ *    本机的 Steam 装在 `D:\steam1`，游戏库在 `E:\SteamLibrary`，而
+ *    `E:\SteamLibrary\steamapps\libraryfolders.vdf` **不存在**（那个文件只在 Steam 自己的
+ *    安装目录里有）。所以必须按「盘符 × 顶层目录」去翻，认出哪个目录里有
+ *    `steamapps\libraryfolders.vdf`（或 `config\libraryfolders.vdf`），再顺着里面的 "path" 展开。
+ *    只读顶层目录名，不递归全盘：每盘一次 readdir。 */
+function steamLibraryRoots() {
+  const roots = new Set();
+  for (const drive of driveRoots()) {
+    let names = [];
+    try {
+      names = readdirSync(drive, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch { continue; }
+    for (const name of names) {
+      const dir = join(drive, name);
+      const vdf = [
+        join(dir, "steamapps", "libraryfolders.vdf"),
+        join(dir, "config", "libraryfolders.vdf"),
+      ].find((p) => existsSync(p));
+      if (!vdf) continue;
+      roots.add(dir);
+      try {
+        // "path" 是全部库目录；vdf 里是双反斜杠，要还原。
+        const text = readFileSync(vdf, "utf8");
+        for (const m of text.matchAll(/"path"\s+"([^"]+)"/gu)) roots.add(m[1].replaceAll("\\\\", "\\"));
+      } catch { /* 这个 vdf 读不了就算了，起码 root 本身还在 */ }
+    }
+  }
+  return [...roots];
+}
+
+let _detectedAssets = null;
+let _detectedOnce = false;
+/** 本机原版游戏的 assets 目录（含 Wallpaper_Presence 的那个），没有就 null。只探一次。 */
+export function detectedGameAssets() {
+  if (_detectedOnce) return _detectedAssets;
+  _detectedOnce = true;
+  // ★ 测试开关：`LINLI_NO_GAME_ASSETS=1` 时**不**去认本机装的原版。
+  //   护栏测试要造"这台机器上没有待机素材"的场景，而测试机往往正装着游戏
+  //   （本机就是），不关掉自动发现的话，这个场景永远造不出来。
+  if (String(process.env.LINLI_NO_GAME_ASSETS ?? "") === "1") return null;
+  const env = String(process.env.LINLI_GAME_ASSETS ?? "").trim();
+  const candidates = env ? [env] : [];
+  for (const root of steamLibraryRoots()) {
+    const common = join(root, "steamapps", "common", "BSide Olivia Lin Test");
+    let versions = [];
+    try { versions = readdirSync(common); } catch { continue; }
+    for (const v of versions) candidates.push(join(common, v, "assets"));
+  }
+  for (const dir of candidates) {
+    try {
+      if (statSync(join(dir, PRESENCE_SUBDIR)).isDirectory()) { _detectedAssets = dir; break; }
+    } catch { /* 不是这个 */ }
+  }
+  return _detectedAssets;
+}
+
 const ASSET_ROOTS = [
   String(process.env.LINLI_ASSETS_DIR ?? "").trim(),
   join(HERE, "assets"),
   join(HERE, "..", "assets"),
+  detectedGameAssets(),   // 本机装过原版 ⇒ 直接用它那套（只读引用）
 ].filter(Boolean);
-export const PRESENCE_SUBDIR = "Wallpaper_Presence";
-export const AMBIENCE_SUBDIR = "Wallpaper_Ambience";
 
 /** 素材根目录下某个子目录，找到第一个真存在的；都没有就 null。 */
 export function assetRoot(subdir) {
@@ -97,14 +202,39 @@ export function idleChoice(seed, getSetting) {
   };
 }
 
-/** 环境音也钉住一段（同样不能每轮换），且同样只读：按种子从排好序的目录里取。 */
-export function idleAmbienceFile(dir, seed, getSetting) {
+/** 环境音**按时段轮换**：同一时段内钉住（不能每轮 tick 都换），换时段就换一首。
+ *  ★ 2026-10-20（用户：「待机音乐只会循环一个背景音乐」）：以前只按种子钉一个文件，
+ *    一天到晚都是同一首 ⇒ 把时段 slot 混进选取盐值，早/午/晚各挑各的。
+ *  只读：按「种子 + 时段」从排好序的目录里取；用户手动钉过的（idle_ambience 设置）照旧最优先。 */
+export function idleAmbienceFile(dir, seed, getSetting, slot = null) {
   if (!dir) return null;
   const keep = String(getSetting("idle_ambience") ?? "");
   if (AMBIENCE_NAME_RE.test(keep) && existsSync(join(dir, keep))) return keep;
   const files = readdirSync(dir).filter((f) => AMBIENCE_NAME_RE.test(f)).sort((a, b) => a.localeCompare(b, "en"));
   if (!files.length) return null;
-  return files[seededInt(Number(seed) || 0, 3) % files.length];
+  const salt = Number(slot) || 0;
+  return files[seededInt((Number(seed) || 0) + salt, 3) % files.length];
+}
+
+/** 同一时段里的**全部**环境音，按「种子 + 时段」轮转出一个播放顺序。
+ *
+ *  ★ 2026-10-20（用户：「待机时播放的音乐还是那一首一直循环，待机音乐可不止那些」）：
+ *    `idleAmbienceFile` 只挑**一个**文件，而一个时段（TOD12 覆盖 12:00–17:30）长达几小时，
+ *    于是整段时间只有同一首 —— 目录里明明躺着十几首。
+ *    这里给出顺序，前端放完一首接下一首，一轮走完再从第一首开始。
+ *  ★ 用户手动钉过 `idle_ambience` 的，只返回那一首（那是他的选择，不许被"轮换"顶掉）。
+ */
+export function idleAmbienceQueue(dir, seed, getSetting, slot = null) {
+  if (!dir) return [];
+  const keep = String(getSetting("idle_ambience") ?? "");
+  if (AMBIENCE_NAME_RE.test(keep) && existsSync(join(dir, keep))) return [keep];
+  const files = readdirSync(dir)
+    .filter((f) => AMBIENCE_NAME_RE.test(f))
+    .sort((a, b) => a.localeCompare(b, "en"));
+  if (!files.length) return [];
+  const salt = Number(slot) || 0;
+  const start = seededInt((Number(seed) || 0) + salt, 3) % files.length;
+  return files.slice(start).concat(files.slice(0, start));
 }
 
 /** 当前时段（正常跟本地时钟；todOverride 只给单测/预加载用，跟 /api/library/play 一个套路）。 */
@@ -131,34 +261,71 @@ export function idleNext({ todOverride = null, seed = 0, getSetting, now = new D
     if (!alt) return { ...base, video: null, ambience: null, hasAssets: false };
     file = alt;
   }
-  const ambienceFile = idleAmbienceFile(assetRoot(AMBIENCE_SUBDIR), seed, getSetting);
+  const ambienceFile = idleAmbienceFile(assetRoot(AMBIENCE_SUBDIR), seed, getSetting, slot);
   // 环境音开关（设置页那张卡片控制）。
   // ★ 关掉时**连地址都不给**：只给 `ambienceOn:false` 而照发地址，前端任何一个
   //   忘了判开关的地方都会把声音放出来 —— 用户的"关"不该依赖调用方记得检查。
   const ambienceOn = String(getSetting("idle_ambience_on") ?? "1") === "1";
+  // ★ 2026-10-20：整条轮换队列（第一项就是 ambience）。前端放完一首接下一首。
+  const ambienceQueue = ambienceOn
+    ? idleAmbienceQueue(assetRoot(AMBIENCE_SUBDIR), seed, getSetting, slot)
+    : [];
   return {
     ...base,
     video: `/api/idle/video?file=${encodeURIComponent(file)}`,
     ambience: ambienceOn && ambienceFile
       ? `/api/idle/ambience?file=${encodeURIComponent(ambienceFile)}`
       : null,
+    ambienceQueue: ambienceQueue.map((f) => `/api/idle/ambience?file=${encodeURIComponent(f)}`),
     hasAssets: true,
     ambienceOn,
   };
 }
 
-/** 换时段时的过场片：from/to 必须是相邻的两档，否则返回 null（前端直接切正片）。 */
+/** 换时段时的过场片：from/to 必须是相邻的两档，否则返回 null（前端直接切正片）。
+ *
+ * ★ 2026-10-19 真机探针补的两件事（这条路由此前零测试）：
+ *   ① 参数其实是**两套写法混着的**：`/api/idle/next` 回的 `slot` 是 `"1200"/"1730"/"2000"`
+ *      （前端就是拿它以原样回传），而别处的 `tod` 是 `"TOD12"/"TOD1730"/"TOD20"`。
+ *      以前这里只认前者，传后者会得到一句「不是相邻时段」—— **它其实是把"你名字写错了"
+ *      报成了"这两档不相邻"**，两种完全不同的问题给同一句话，排查时会被带偏。
+ *      现在两套写法都收，真不认识的才说「认不出这两个时段」。
+ *   ② `reason` 分得更细：认不出 / 不相邻 / 素材缺失，三种各说各的。
+ */
 export function idleTransition({ from, to, scene, seed = 0, getSetting }) {
-  const fromSlot = String(from ?? "").trim();
-  const toSlot = String(to ?? "").trim();
   const wanted = /^[ABC]$/u.test(String(scene ?? "")) ? String(scene) : idleChoice(seed, getSetting).scene;
+  const base = { scene: wanted, from: String(from ?? "").trim(), to: String(to ?? "").trim() };
+
+  // 两套写法归一：`TOD12 → 1200`；本来就是 `1200` 的原样留着。
+  const toSlotOf = (value) => {
+    const raw = String(value ?? "").trim();
+    if (SLOT_ORDER.includes(raw)) return raw;
+    const mapped = TOD_SLOT[raw];
+    return mapped && SLOT_ORDER.includes(mapped) ? mapped : null;
+  };
+  const fromSlot = toSlotOf(base.from);
+  const toSlot = toSlotOf(base.to);
+  if (!fromSlot || !toSlot) {
+    return { url: null, file: null, ...base, reason: "认不出这两个时段" };
+  }
+
   const file = transitionFile(wanted, fromSlot, toSlot);
   if (!file) {
-    return { url: null, file: null, scene: wanted, from: fromSlot, to: toSlot, reason: "不是相邻时段" };
+    return { url: null, file: null, ...base, from: fromSlot, to: toSlot, reason: "不是相邻时段" };
   }
   const dir = assetRoot(PRESENCE_SUBDIR);
   if (!dir || !existsSync(join(dir, file))) {
-    return { url: null, file: null, scene: wanted, from: fromSlot, to: toSlot, reason: "过场片缺失" };
+    // ★ 2026-10-21：原版过场片不随包 ⇒ 没装原版时原来直接"过场片缺失"（前端硬切）。
+    //   现在先落到**随包的自制过渡片**（app/transitions/，同名同规则、版权干净、纯本机生成）；
+    //   url 形状与原版完全一致 ⇒ 前端零改动。连它都没有（理论上不会：随包了）才真的缺失。
+    if (existsSync(join(TRANSITIONS_DIR, file))) {
+      return {
+        scene: wanted, from: fromSlot, to: toSlot, file,
+        url: `/api/idle/video?file=${encodeURIComponent(file)}`,
+        source: "built-in",
+      };
+    }
+    return { url: null, file: null, ...base, from: fromSlot, to: toSlot, reason: "过场片缺失" };
   }
   return {
     scene: wanted, from: fromSlot, to: toSlot, file,
@@ -167,6 +334,25 @@ export function idleTransition({ from, to, scene, seed = 0, getSetting }) {
 }
 
 /** 设置页「待机」卡片要看的一行状态：现在用哪套、素材在不在。 */
+export const DEFAULT_AMBIENCE_VOLUME = 35;
+// ★ 2026-10-20（用户原话：「咱们的程序的音乐声音是不是太小了，我要把声音调到好大才能听见，
+//   这个歌曲音量你和原版游戏学学吧」）：原版曲子是不衰减全量放的（同一批 mp4，音轨就那点
+//   动态，放多大声全靠这条滑块）⇒ 默认值跟原版口径对齐 = 100（不衰减）。用户自己存过
+//   的值不受影响（读侧只认库里的 song_volume）。再小就只剩 mp4 本身的响度了，那是素材
+//   的天花板，不是程序的锅。
+export const DEFAULT_SONG_VOLUME = 100;
+
+/**
+ * 音量设置的读取口径：**读侧宽容**（值坏了就用默认，不能因为一个脏值让设置页打不开），
+ * 写侧的严格校验在 server.mjs（非法值一律 400，不静默夹）。
+ * 存的是 0–100 的整数（跟界面上的滑块一致），播放时才除 100 变成 0–1。
+ */
+export function volumeSetting(getSetting, key, fallback) {
+  const raw = String(getSetting(key) ?? "").trim();
+  if (!/^\d{1,3}$/u.test(raw)) return fallback;
+  return Math.min(100, Math.max(0, Number(raw)));
+}
+
 export function idleSettingsView({ seed = 0, getSetting, now = new Date() }) {
   const { scene, state } = idleChoice(seed, getSetting);
   const tod = idleTimeOfDay(null, now);
@@ -174,6 +360,11 @@ export function idleSettingsView({ seed = 0, getSetting, now = new Date() }) {
   const presence = assetRoot(PRESENCE_SUBDIR);
   return {
     ambience: String(getSetting("idle_ambience_on") ?? "1") === "1",
+    // ★ 2026-10-19 用户要求：「这个背景音要加个调节背景音音量的条，还要加个调节演奏音量的条」
+    //   ⇒ 两条音量都落库（ambience_volume / song_volume，0–100），桌面那层每次 tick 读它。
+    //   以前这两个值是写死在 wallpaper.html 里的常量（0.35 / 0.55），改不了。
+    ambienceVolume: volumeSetting(getSetting, "ambience_volume", DEFAULT_AMBIENCE_VOLUME),
+    songVolume: volumeSetting(getSetting, "song_volume", DEFAULT_SONG_VOLUME),
     scene,
     state,
     tod,
@@ -201,9 +392,14 @@ export function idleFilePath(subdir, raw, pattern) {
   const name = idleFileName(raw, pattern);
   if (!name) return null;
   const dir = assetRoot(subdir);
-  if (!dir) return null;
-  const target = join(dir, name);
-  return existsSync(target) ? target : null;
+  if (dir) {
+    const target = join(dir, name);
+    if (existsSync(target)) return target;
+  }
+  // ★ 2026-10-21 回退：素材根里没有（没装原版）时，试**随包的自制过渡片**（app/transitions/）。
+  //   白名单校验（idleFileName：basename + 正则）在进来之前已做过 ⇒ 这条回退同样防穿越。
+  const builtin = join(TRANSITIONS_DIR, name);
+  return existsSync(builtin) ? builtin : null;
 }
 
 // ---------------------------------------------------------------- 信件字体

@@ -18,6 +18,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using Microsoft.Web.WebView2.Core;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -43,12 +44,113 @@ internal static class Program
     private static Mutex _single;
     private static MainWindow _window;
     private static WallpaperHost _wall;
+    /// <summary>桌面右下角那两个圆钮（独立顶层窗口，见 DesktopDock 的头注释）。</summary>
+    private static DesktopDock _dock;
+    /// <summary>
+    /// 主窗口**左沿外面**的导航浮层（独立顶层窗口，见 NavRail 的头注释）。
+    /// ★ 2026-10-20 用户口径：「这个按钮不在程序界面里，在程序外面」「独立浮层必须做」。
+    ///   它是自己的一块窗口，不属于页面 —— 所以主窗口显形时铺、藏起来时收。
+    /// </summary>
+    private static NavRail _rail;
     private static SplashWindow _splash;
     private static Stopwatch _splashAge;      // 动画已经放了多久（1.6 秒下限 / 6 秒上限都看它）
+
+    /// <summary>
+    /// 自检出口：`--check-recovery &lt;输出文件&gt;`。把三档决策按重建次数算一遍写进 JSON。
+    /// 返回 true 表示"这是自检调用，调用方该直接 return"。
+    /// ★ 为什么写在 exe 里而不是单测工程里：这个仓库没有 C# 测试工程（node --test 是主力），
+    ///   而"发出去的那个 exe 里这段判断对不对"恰恰是审查方要的证据 —— 就地给出口最省事、
+    ///   也不可能出现"源码与产物不一致"。
+    /// ★ 2026-10-19 事故：这个方法和它的注释被插在 `[STAThread]` 与 `Main` **之间**，
+    ///   特性于是挂到了这个方法上、`Main` 变成 MTA 线程 ⇒ WinForms 里的 WebView2 全部
+    ///   起不来，报 `RPC_E_CHANGED_MODE (0x80010106)`（正常启动也一样，退化成外链浏览器）。
+    ///   ⇒ `[STAThread]` 必须紧贴 `Main`，任何新方法都插在本行之后不要插到特性前。
+    /// </summary>
+    private static bool RunRecoverySelfCheck(string[] args)
+    {
+        var list = args ?? Array.Empty<string>();
+        int at = Array.FindIndex(list, a => string.Equals(a, "--check-recovery", StringComparison.OrdinalIgnoreCase));
+        if (at < 0) return false;
+
+        string outPath = at + 1 < list.Length ? list[at + 1] : "";
+        var rows = new System.Text.StringBuilder();
+        rows.Append("{\"maxRebuilds\":").Append(WebRecovery.MaxRebuilds).Append(",\"decisions\":[");
+        for (int rebuilds = 0; rebuilds <= WebRecovery.MaxRebuilds + 1; rebuilds++)
+        {
+            var action = WebRecovery.Decide(rebuilds);
+            if (rebuilds > 0) rows.Append(',');
+            rows.Append("{\"rebuilds\":").Append(rebuilds)
+                .Append(",\"action\":\"").Append(WebRecovery.Name(action)).Append("\"}");
+        }
+        // 负数也要能算（坏入参不该把程序搞崩）
+        rows.Append(",{\"rebuilds\":-1,\"action\":\"").Append(WebRecovery.Name(WebRecovery.Decide(-1))).Append("\"}]");
+
+        // 自检同时自查：这条口径错了就不该静默返回 0（否则测试也只能照抄实现）。
+        bool sane =
+            WebRecovery.Decide(0) == WebRecoveryAction.FallbackBrowser
+            && WebRecovery.Decide(1) == WebRecoveryAction.Rebuild
+            && WebRecovery.Decide(WebRecovery.MaxRebuilds - 1) == WebRecoveryAction.Rebuild
+            && WebRecovery.Decide(WebRecovery.MaxRebuilds) == WebRecoveryAction.DeadEnd
+            && WebRecovery.Decide(WebRecovery.MaxRebuilds + 5) == WebRecoveryAction.DeadEnd
+            && WebRecovery.Decide(-1) == WebRecoveryAction.FallbackBrowser;
+
+        // ★ 2026-10-19 第十九轮：把「进程出事」的分诊表也钉进自检输出。
+        //   那场黑窗事故的根因就是这张表原来写反了（GPU/Utility 也去换控件），
+        //   换控件必然失败 ⇒ 连锁崩 ⇒ 死路。钉在真 exe 里，测试才咬得住。
+        rows.Append(",\"triage\":[");
+        var triageKinds = new[]
+        {
+            CoreWebView2ProcessFailedKind.BrowserProcessExited,
+            CoreWebView2ProcessFailedKind.RenderProcessExited,
+            CoreWebView2ProcessFailedKind.RenderProcessUnresponsive,
+            CoreWebView2ProcessFailedKind.UtilityProcessExited,
+            CoreWebView2ProcessFailedKind.GpuProcessExited,
+        };
+        for (int i = 0; i < triageKinds.Length; i++)
+        {
+            if (i > 0) rows.Append(',');
+            rows.Append("{\"kind\":\"").Append(triageKinds[i])
+                .Append("\",\"action\":\"").Append(WebTriage.Name(WebTriage.Decide(triageKinds[i]))).Append("\"}");
+        }
+        rows.Append(']');
+        bool triageSane =
+            WebTriage.Decide(CoreWebView2ProcessFailedKind.BrowserProcessExited) == ProcessFailedAction.Rebuild
+            && WebTriage.Decide(CoreWebView2ProcessFailedKind.RenderProcessExited) == ProcessFailedAction.Reload
+            && WebTriage.Decide(CoreWebView2ProcessFailedKind.RenderProcessUnresponsive) == ProcessFailedAction.Reload
+            && WebTriage.Decide(CoreWebView2ProcessFailedKind.UtilityProcessExited) == ProcessFailedAction.Ignore
+            && WebTriage.Decide(CoreWebView2ProcessFailedKind.GpuProcessExited) == ProcessFailedAction.Ignore;
+        sane = sane && triageSane;
+
+        rows.Append(",\"sane\":").Append(sane ? "true" : "false");
+        // ★ 2026-10-19：顺手把 Main 线程的套间状态写出来。WinForms + WebView2 **必须**是 STA，
+        //   而 `[STAThread]` 只要被"插在特性与 Main 之间"的代码挤开，特性就悄悄挂到别的方法上、
+        //   Main 变成 MTA —— 症状是内核全部起不来（RPC_E_CHANGED_MODE），可编译、可运行、测试全绿。
+        //   把这一项钉进自检输出，回归就有硬证据了。
+        rows.Append(",\"apartment\":\"").Append(System.Threading.Thread.CurrentThread.GetApartmentState()).Append('"');
+        rows.Append('}');
+
+        try
+        {
+            if (outPath.Length > 0) File.WriteAllText(outPath, rows.ToString(), new System.Text.UTF8Encoding(false));
+            else Console.WriteLine(rows.ToString());
+        }
+        catch (Exception ex)
+        {
+            Dbg.Critical("自检写文件失败：" + Dbg.Ex(ex));
+        }
+        Environment.Exit(sane ? 0 : 2);
+        return true;
+    }
 
     [STAThread]
     private static void Main(string[] args)
     {
+        // ★ 自检出口（2026-10-19 第十六轮 §5）：`LinliLetters.exe --check-recovery <输出文件>`
+        //   把「内核起不来时的三档决策」按 rebuilds=0..4 逐个算出来写文件，然后立刻退出。
+        //   它不建任何窗口、不碰数据、不读 WebView2 —— 于是 tests\shell-recovery.test.js
+        //   可以在**真正发布出去的那个 exe** 上验证这段判断，而不是只读源码。
+        if (RunRecoverySelfCheck(args)) return;
+
         // ★ 2026-10-18：DPI 感知必须自己声明，而且必须在**任何窗口创建之前**。
         //   抓证据的过程：本机物理屏 2560×1600 @150%（缩放），可窗口怎么算都不对 ——
         //   曾以为 Screen.WorkingArea 报的是逻辑像素、于是乘除 DPI 系数，连错三轮（历史见
@@ -63,8 +165,29 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // ★ 2026-10-19：用户报「容易闪退」，但事件查看器里只有一条 .NET 的启动失败，
+        //   看不到崩在哪 —— WinExe 没有控制台，未处理异常就这么静默带走了整个进程。
+        //   这三条兜底把异常先写进 %APPDATA%\LinliLetters\shell.log，再让程序活着：
+        //   UI 线程的异常记下来继续跑（窗口没了比程序没了更难查）；后台线程与任务的
+        //   未观察异常只记录，不再往上抛。
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) =>
+            Dbg.Critical("UI 线程未处理异常：" + Dbg.Ex(e.Exception));
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Dbg.Critical("进程未处理异常（" + (e.IsTerminating ? "会退出" : "不退出") + "）："
+                         + Dbg.Ex(e.ExceptionObject as Exception));
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            Dbg.Critical("后台任务未观察异常：" + Dbg.Ex(e.Exception));
+            e.SetObserved();
+        };
+
         bool startup = Array.Exists(args ?? Array.Empty<string>(),
             a => string.Equals(a, "--startup", StringComparison.OrdinalIgnoreCase));
+
+        // ★ 2026-10-20：设置页「显示屏幕」的落点。host object 每次重建内核都会 new 一个，
+        //   所以这个回调必须是进程级的静态字段（见 ShellBridge.ApplyScreen 的注释）。
+        ShellBridge.ApplyScreen = ApplyScreenPref;
 
         // 只允许一个实例。第二个实例把已经开着的那一个叫醒就够了。
         // ★ LINLI_MUTEX 是**测试用的口子**：自动化要验证"窗口到底出不出来"时，
@@ -109,7 +232,10 @@ internal static class Program
         _splash?.SetStage(2, "运行时起来了。");     // 第 2 拍：起运行时
 
         // ★ 服务起来了 ≠ 能用。再探一次 /health，确认它真的在应答。
-        Check health = WaitForHealth(port, TimeSpan.FromSeconds(15));
+        //   自检模式下放宽到 45 秒：测试环境可能同时有多个 CPU/磁盘负载在跑，
+        //   15 秒对真实用户够用，对压力测试可能不够。
+        Check health = WaitForHealth(port, WebRecovery.IsSelfCheckRun()
+            ? TimeSpan.FromSeconds(45) : TimeSpan.FromSeconds(15));
         if (!health.Ok)
         {
             Report(health, _url);
@@ -119,18 +245,86 @@ internal static class Program
         }
         _splash?.SetStage(3, "她应声了。");         // 第 3 拍：探服务
 
-        // ★ 三步都过了 ⇒ 让她放飞。动画有下限（1.6 秒）也有上限（6 秒）。
-        CloseSplash();
+        // ★★ 2026-10-20（用户口径「程序还是会黑屏几秒才显示画面」+「不应该是启动动画
+        //   结束后进入程序吗，怎么启动动画和程序一起启动啊」——两句合起来的定稿）：
+        //   主窗口照常在动画后面建内核、导航、画首帧（把黑屏真空吃掉），
+        //   但**不显形**；等页面 ready（NotifyPageReady）把动画收完——包括折纸飞机
+        //   飞走的尾声——才 RevealMainWindow()。先后顺序：动画 ⇒ 程序。
+        //   兜底见 ArmSplashDeadman()：主窗口 20 秒还没报 ready 就强收动画并照常显形。
 
         BuildTray(appDir);
         StartWallpaper();                 // 桌面壁纸：开机自启动也要铺，它就是"待命"时的样子
+        StartDock();                      // 桌面圆钮：必须自己一个顶层窗口，否则点不动（见 DesktopDock）
         if (!startup) OpenWindow();       // --startup ⇒ 只进托盘
+        ArmSplashDeadman();               // splash 现在等主窗口报 ready 才收；兜底强收
         Application.Run();
 
         _single?.ReleaseMutex();
     }
 
     // ---------------------------------------------------------------- 启动动画
+
+    /// <summary>主窗口第一次把页面画好了（MainWindow 的 NavigationCompleted 成功回调里调）。</summary>
+    private static bool _pageReady;
+
+    private static System.Windows.Forms.Timer _splashDeadman;
+
+    /// <summary>
+    /// ★ 2026-10-20：主窗口首帧就绪的入口。先把动画收完（含折纸飞机飞走的尾声），
+    ///   然后**才**让主窗口显形 —— 用户要的先后顺序：动画结束 ⇒ 进入程序。
+    ///   只认第一次：之后窗口收进托盘再打开都走已建好的控件，与 splash 无关。
+    /// </summary>
+    public static void NotifyPageReady()
+    {
+        if (_pageReady) return;
+        _pageReady = true;
+        Dbg.Critical("Program: 页面 ready ⇒ 收启动动画，收完再显形主窗口");
+        try { _splash?.SetStage(4, "她把窗口画好了。"); } catch { /* splash 早没了就算了 */ }
+        CloseSplash();
+        RevealMainWindow();
+    }
+
+    /// <summary>
+    /// 主窗口显形的唯一入口。★ 2026-10-20：动画还在放（_splash != null）时窗口保持隐藏
+    /// ——内容在幕后照常加载，显形等 NotifyPageReady 来做；没有动画时（--startup /
+    /// splash 起失败 / 已收完）显形就是普通的 Show + Activate。
+    /// </summary>
+    private static void RevealMainWindow()
+    {
+        if (_splash != null) { Dbg.Critical("Program: 动画未收完，主窗口暂不显形"); return; }
+        if (_window == null || _window.IsDisposed) return;
+        Dbg.Critical("Program: 主窗口显形");
+        if (!_window.Visible) _window.Show();
+        if (_window.WindowState == FormWindowState.Minimized) _window.WindowState = FormWindowState.Normal;
+        _window.Activate();
+        // ★ 2026-10-20：用户选过屏幕 ⇒ 主窗口直接开在那块屏上。
+        //   只认显形这一次：用户后来手动把窗口拖到别处，下次从托盘打开不该被拽回来。
+        try { _window.MoveToScreen(FindScreen(new ShellBridge().GetScreen())); }
+        catch (Exception ex) { Dbg.Log("主窗口套用屏幕偏好失败 " + Dbg.Ex(ex)); }
+        // ★ 导航浮层在窗口显形之后才铺：它是 Owned 窗口，窗口藏着时铺出来会先露在桌面上。
+        StartRail();
+    }
+
+    /// <summary>
+    /// 兜底：主窗口 20 秒还没报 ready（WebView2 起不来、崩溃风暴里挣扎……），
+    /// 就把 splash 强收掉 —— 动画绝不能永挂，盖着用户什么都看不见。
+    /// </summary>
+    private static void ArmSplashDeadman()
+    {
+        if (_splash == null) return;
+        _splashDeadman = new System.Windows.Forms.Timer { Interval = 20000 };
+        _splashDeadman.Tick += (_, _) =>
+        {
+            _splashDeadman.Stop();
+            if (_splash != null)
+            {
+                Dbg.Critical("Program: 主窗口 20 秒没报 ready ⇒ 兜底强收启动动画");
+                CloseSplash(false);
+                RevealMainWindow();               // 强收之后窗口也得亮出来，别把用户晾着
+            }
+        };
+        _splashDeadman.Start();
+    }
 
     /// <summary>
     /// 把启动动画放出来。
@@ -230,30 +424,69 @@ internal static class Program
     }
 
     /// <summary>
-    /// 有没有曲子可播。
-    /// ★ 没有就**根本不往桌面上铺窗口** —— 铺上去是一个空窗口，用户看到的就是桌面被糊了一块。
-    ///   （页面那边也有 state:off 兜底：铺上去之后才发现没曲子，会自己请外壳关掉。）
+    /// 桌面上那层有没有东西可放：**有曲子、或者有待机素材**。
+    /// ★ 2026-10-19 改了判据（原来只认 `api/stage/next` 有 url）。
+    ///   用户口径：「刚打开软件应该播待机视频和待机音乐，不是播音乐」——
+    ///   曲库还没被点过的时候 `stage/next` 就是空的，只看它会把**待机也一起挡掉**，
+    ///   桌面上于是什么都没有（用户看到的就是"开机没动静"）。
+    ///   现在再看一眼 `api/idle/next` 的 `hasAssets`：本机装过原版就有待机素材。
+    /// ★ 仍然不铺空窗口：两个都没有才 return false。
     /// </summary>
-    private static bool HasStageVideo()
+    private static bool HasStageVideo(out string why)
     {
+        why = "";
         try
         {
-            var req = (HttpWebRequest)WebRequest.Create(_url + "api/stage/next");
-            req.Timeout = 4000;
-            req.ServicePoint.Expect100Continue = false;
-            using var resp = (HttpWebResponse)req.GetResponse();
-            using var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8);
-            using var doc = System.Text.Json.JsonDocument.Parse(reader.ReadToEnd());
-            return doc.RootElement.TryGetProperty("url", out var u) && u.ValueKind == System.Text.Json.JsonValueKind.String;
+            string stage = GetJson("api/stage/next");
+            using (var doc = System.Text.Json.JsonDocument.Parse(stage))
+            {
+                if (doc.RootElement.TryGetProperty("url", out var u)
+                    && u.ValueKind == System.Text.Json.JsonValueKind.String)
+                    return true;
+            }
+            string idle = GetJson("api/idle/next");
+            using (var d2 = System.Text.Json.JsonDocument.Parse(idle))
+            {
+                if (d2.RootElement.TryGetProperty("hasAssets", out var h)
+                    && h.ValueKind == System.Text.Json.JsonValueKind.True)
+                    return true;
+                if (d2.RootElement.TryGetProperty("video", out var v)
+                    && v.ValueKind == System.Text.Json.JsonValueKind.String)
+                    return true;
+            }
+            why = "stage:" + Clip(stage) + " idle:" + Clip(idle);
+            return false;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            why = Dbg.Ex(ex);
+            return false;
+        }
+    }
+
+    private static string Clip(string s) => s.Length > 160 ? s.Substring(0, 160) : s;
+
+    /// <summary>GET 一个本机接口，返回响应体原文（失败抛异常）。</summary>
+    private static string GetJson(string path)
+    {
+        var req = (HttpWebRequest)WebRequest.Create(_url + path);
+        req.Timeout = 4000;
+        req.ServicePoint.Expect100Continue = false;
+        using var resp = (HttpWebResponse)req.GetResponse();
+        using var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8);
+        return reader.ReadToEnd();
     }
 
     private static void StartWallpaper()
     {
-        if (_wall != null) return;
-        if (!StageEnabled()) return;
-        if (!HasStageVideo()) return;     // 曲库是空的 ⇒ 一点也不动用户的桌面
+        Dbg.Log("StartWallpaper: enter");
+        if (_wall != null) { Dbg.Log("StartWallpaper: 已经铺过，跳过"); return; }
+        if (!StageEnabled()) { Dbg.Log("StartWallpaper: 开关关着（desktop-stage.txt = 0）"); return; }
+        if (!HasStageVideo(out var why))
+        {
+            Dbg.Log("StartWallpaper: 没有可播的曲子 ⇒ 不铺窗口。原因：" + why);
+            return;     // 曲库是空的 ⇒ 一点也不动用户的桌面
+        }
         try
         {
             _wall = new WallpaperHost(_url + "wallpaper.html");
@@ -262,6 +495,10 @@ internal static class Program
                 OpenWindow();             // 主窗口可能还没建：先建，再让它翻到那一页
                 _window?.Go(page);
             };
+            // ★ 2026-10-20：曲库底部播放条要画真进度——片子在桌面那层，
+            //   它每秒上报一次进度，由外壳原样转给主窗口页面。
+            //   （订阅必须挂在 _wall 创建处：OpenWindow 可能晚于/早于铺壁纸，两边都靠 ?.。）
+            _wall.PlaybackReported += (_, json) => _window?.ForwardPlayback(json);
             // ★ Attach() 只是把窗口 SetParent 到桌面（含 SetWindowPos SWP_SHOWWINDOW），
             //   但 **Win32 的 SWP_SHOWWINDOW 不会触发 WinForms 的 Load 事件** ——
             //   Load 走的是托管路径 SetVisibleCore → OnLoad，SetParent 进来时窗口已创建，
@@ -273,13 +510,21 @@ internal static class Program
             //    → 20×DoEvents ⇒ loadFired=False；补一次 Show() 后 loadFired=True。）
             if (!_wall.Attach())          // 挂不上桌面（多半是 Explorer 没在）⇒ 当没这回事
             {
+                Dbg.Log("StartWallpaper: Attach() 失败 ⇒ 不铺（桌面上什么都不会出现）");
                 _wall.Dispose();
                 _wall = null;
             }
-            else _wall.Show();            // ★ 必须在 Attach() 之后：Load 依赖这一次可见化
+            else
+            {
+                Dbg.Log("StartWallpaper: Attach() 成功，接着 Show() 触发 Load");
+                _wall.Show();             // ★ 必须在 Attach() 之后：Load 依赖这一次可见化
+                // 用户选过屏幕的话，只铺那一块（没选就是整个桌面，WallpaperHost 自己就这么建的）。
+                ApplyScreenPref(new ShellBridge().GetScreen());
+            }
         }
-        catch
+        catch (Exception ex)
         {
+            Dbg.Log("StartWallpaper: 抛异常 " + Dbg.Ex(ex));
             if (_wall != null) { try { _wall.Dispose(); } catch { /* 已经没了 */ } }
             _wall = null;
         }
@@ -290,6 +535,117 @@ internal static class Program
         if (_wall == null) return;
         try { _wall.Dispose(); } catch { /* 退出时不纠缠 */ }
         _wall = null;
+    }
+
+    /// <summary>
+    /// 桌面上那两个圆钮。★ 它跟壁纸层是**两个窗口**：壁纸层挂在 WorkerW（图标层后面，
+    /// 点不动），圆钮必须是独立顶层窗口才收得到点击（见 DesktopDock 头注释）。
+    /// 开关跟着「桌面壁纸」那条设置走 —— 用户关掉桌面上的东西，就该一起消失。
+    /// </summary>
+    private static void StartDock()
+    {
+        if (_dock != null && !_dock.IsDisposed) return;
+        if (!StageEnabled()) return;
+        try
+        {
+            _dock = new DesktopDock();
+            _dock.OpenPageRequested += (_, page) =>
+            {
+                OpenWindow();
+                _window?.Go(page);
+            };
+            _dock.Show();
+            ApplyScreenPref(new ShellBridge().GetScreen());   // 选过屏幕 ⇒ 圆钮跟着去那块屏的右下角
+            Dbg.Critical("StartDock: 已显示桌面圆钮");
+        }
+        catch (Exception ex)
+        {
+            Dbg.Log("StartDock: 抛异常 " + Dbg.Ex(ex));
+            try { _dock?.Dispose(); } catch { /* 已经没了 */ }
+            _dock = null;
+        }
+    }
+
+    private static void StopDock()
+    {
+        if (_dock == null) return;
+        try { _dock.Dispose(); } catch { /* 退出时不纠缠 */ }
+        _dock = null;
+    }
+
+    // ---------------------------------------------------------------- 左侧导航浮层（2026-10-20）
+    //
+    // 用户口径：「这个按钮不在程序界面里，在程序外面」「独立浮层必须做，你照抄原版游戏的浮层逻辑」。
+    // ★ 它和桌面圆钮是同一套底子（LayeredLayer：layered window + 逐像素 alpha + 纯 GDI+），
+    //   区别只有两点：① 画的是一枚胶囊不是两颗圆；② `Owner = 主窗口` 并且不许拖 ——
+    //   它的位置由主窗口算出来，主窗口动它就跟上去（见 NavRail.Reposition）。
+    // ★ 页面里那条 `.rail` 已经整块删掉（含 HTML / CSS / 选中态），导航只有这一个入口。
+
+    private static void StartRail()
+    {
+        if (_window == null || _window.IsDisposed) return;
+        try
+        {
+            if (_rail == null || _rail.IsDisposed)
+            {
+                _rail = new NavRail();
+                _rail.PageRequested += (_, page) =>
+                {
+                    // 点导航 = 切页 + 把主窗口叫到前面（否则点完还盖在别的窗口下面）。
+                    _window?.Go(page);
+                    _rail?.SetActive(page);
+                    try { _window?.Activate(); } catch { /* 窗口正在藏，忽略 */ }
+                    Dbg.Log("NavRail: 点 " + page);
+                };
+                _rail.AttachTo(_window);
+                _rail.SetActive(_window.CurrentPage ?? "mail");
+            }
+            _rail.Show();
+            _rail.Reposition();
+        }
+        catch (Exception ex)
+        {
+            Dbg.Log("StartRail: 抛异常 " + Dbg.Ex(ex));
+            try { _rail?.Dispose(); } catch { /* 已经没了 */ }
+            _rail = null;
+        }
+    }
+
+    private static void StopRail()
+    {
+        if (_rail == null) return;
+        try { _rail.Dispose(); } catch { /* 退出时不纠缠 */ }
+        _rail = null;
+    }
+
+    // ---------------------------------------------------------------- 显示屏幕（2026-10-20）
+    //
+    // 用户口径：「原版游戏的设置界面可以让用户选择……显示屏幕……而咱们不行，你弄一下。」
+    // 偏好落盘在 %APPDATA%\LinliLetters\screen.txt（ShellBridge.SetScreen 写），
+    // 这里负责两件事：① 启动铺各层时按它定位；② 用户在设置页换屏时立刻搬过去。
+
+    /// <summary>按设备名找屏幕；找不到（屏被拔了）回 null。</summary>
+    private static Screen FindScreen(string deviceName)
+    {
+        if (string.IsNullOrEmpty(deviceName)) return null;
+        foreach (var s in Screen.AllScreens)
+            if (string.Equals(s.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase)) return s;
+        return null;
+    }
+
+    /// <summary>
+    /// 把三层窗口搬到选中的那块屏（空名 = 默认：壁纸层铺满整个桌面，其余层不管）。
+    /// ★ 壁纸层是 WorkerW 的子窗口，把 Bounds 设成目标屏就能只铺那块屏；
+    ///   找不到名字（屏没了）就什么也不做 —— 老偏好留着，用户回来还能看见。
+    /// </summary>
+    private static void ApplyScreenPref(string deviceName)
+    {
+        var s = FindScreen(deviceName);
+        if (s == null) return;
+        Dbg.Log($"ApplyScreenPref: {deviceName}");
+        try { _wall?.MoveToScreen(s); } catch (Exception ex) { Dbg.Log("壁纸层搬屏失败 " + Dbg.Ex(ex)); }
+        try { _dock?.MoveToScreen(s); } catch (Exception ex) { Dbg.Log("圆钮搬屏失败 " + Dbg.Ex(ex)); }
+        try { _window?.MoveToScreen(s); } catch (Exception ex) { Dbg.Log("主窗口搬屏失败 " + Dbg.Ex(ex)); }
     }
 
     // ---------------------------------------------------------------- 自检
@@ -325,6 +681,16 @@ internal static class Program
     private static void Report(Check c, string url)
     {
         CloseSplash(false);                   // ★ 先把动画收掉再弹框，否则动画会糊在报错框后面
+
+        // ★ 2026-10-20：自检模式下不弹 MessageBox —— 测试进程读不到模态框里的内容，
+        //   只能干等。写成 Dbg 日志，测试就能读到，进程也能正常退出。
+        if (WebRecovery.IsSelfCheckRun())
+        {
+            Dbg.Critical($"[自检] 前置失败 {c.Code}：{c.Title} — {c.Detail}"
+                + (string.IsNullOrWhiteSpace(c.Technical) ? "" : $"（原始信息：{c.Technical}）"));
+            return;
+        }
+
         var text = new StringBuilder();
         text.AppendLine(c.Title);
         text.AppendLine();
@@ -435,6 +801,7 @@ internal static class Program
             if (_shuttingDown) return;
             int code = -1;
             try { code = proc.ExitCode; } catch { }
+            Dbg.Critical("Program: 后台服务退了（code=" + code + "）⇒ 收摊");
             try
             {
                 if (_tray != null)
@@ -452,7 +819,9 @@ internal static class Program
 
         // ★ 等端口那 20 秒原来是 ready.Wait(...) 干等 ⇒ UI 线程被堵死、动画是冻的。
         //   换成 WaitPumped：同样的时间上限，等的同时把消息泵出去。
-        if (!WaitPumped(ready, TimeSpan.FromSeconds(20)))
+        //   自检模式下放宽到 60 秒，理由同上（负载下 node 启动可能超过 20 秒）。
+        if (!WaitPumped(ready, WebRecovery.IsSelfCheckRun()
+            ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(20)))
         {
             string why = firstError ?? (stderr.Length > 0 ? stderr.ToString() : "（没有任何输出）");
             error = Check.Fail("E-NODE-NO-PORT",
@@ -584,7 +953,8 @@ internal static class Program
         stageItem.CheckedChanged += (_, _) =>
         {
             SetStageEnabled(stageItem.Checked);
-            if (stageItem.Checked) StartWallpaper(); else StopWallpaper();
+            if (stageItem.Checked) { StartWallpaper(); StartDock(); }
+            else { StopWallpaper(); StopDock(); }
         };
         menu.Items.Add(stageItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -627,8 +997,24 @@ internal static class Program
                 _window.WallpaperRequested += (_, on) =>
                 {
                     SetStageEnabled(on);
-                    if (on) StartWallpaper(); else StopWallpaper();
+                    if (on) { StartWallpaper(); StartDock(); }
+                    else { StopWallpaper(); StopDock(); }
                 };
+                // ★ 2026-10-19：用户在曲库里点了播放 / 回到待机 ⇒ 桌面那层立刻换片。
+                //   没有这一步，用户点了播放要等桌面页自己 30 秒轮询才生效，
+                //   看起来就像点了没反应。（视频只在桌面放，窗口里那套播放器已删。）
+                _window.StageChanged += (_, _) => _wall?.RefreshStage();
+                // 设置页改了音量 / 拨了环境音开关：桌面那层只重设 volume，不掐声音。
+                _window.StageVolumeChanged += (_, _) => _wall?.RefreshVolume();
+                // 播放条上的静音键：声音出在桌面那层，所以静音也发到那边。
+                _window.StageMuteRequested += (_, muted) => _wall?.SetMuted(muted);
+                // ★ 2026-10-20：曲库底部播放条点进度条跳转——片子在桌面那层，
+                //   MainWindow 只发事件，这边转成对壁纸宿主的调用。
+                //   （播放键是「回待机」语义，走 StageChanged 既有链路，没有 toggle。）
+                _window.SeekRequested += (_, sec) => _wall?.SeekTo(sec);
+                // ★ 2026-10-20：页面切了页 ⇒ 同步左沿外面那枚导航浮层的选中态。
+                //   用户从页面里的齿轮进设置、点返回、点明信片跳曲库，导轨都得跟着亮。
+                _window.PageChanged += (_, page) => _rail?.SetActive(page);
                 _window.FormClosing += (_, e) =>
                 {
                     // Alt+F4 这类系统关闭也按"收进托盘"处理：陪伴类程序不该一点就死。
@@ -636,9 +1022,16 @@ internal static class Program
                     HideWindow();
                 };
             }
-            if (!_window.Visible) _window.Show();
-            if (_window.WindowState == FormWindowState.Minimized) _window.WindowState = FormWindowState.Normal;
-            _window.Activate();
+            // ★ 2026-10-20（用户口径「不应该是启动动画结束后进入程序吗」）：动画还在放
+            //   ⇒ 主窗口**只建不显**（幕后照常起内核、画首帧），显形交给 NotifyPageReady。
+            //   藏着时 Load 不触发，内核要在这里显式叫起（BootWeb 幂等，Show 后再叫也不怕）。
+            if (_splash != null)
+            {
+                Dbg.Critical("Program: 动画在放 ⇒ 主窗口只建不显，内核由 BootWeb 叫起");
+                _window.BootWeb();
+                return;
+            }
+            RevealMainWindow();
         }
         catch (Exception ex)
         {
@@ -650,6 +1043,9 @@ internal static class Program
     {
         if (_window == null) return;
         _window.Hide();
+        // ★ 2026-10-20：导航浮层跟着主窗口一起消失。Owned 窗口本来会跟着藏，
+        //   但那条依赖系统行为；显式藏一次更稳（用户看到"程序关了，盾牌还在"就是灾难）。
+        try { _rail?.Hide(); } catch { /* 已经没了 */ }
         // ★ 第一次收进托盘时说一句。不说的话，用户会以为"关掉了 = 没了"，
         //   然后每次都去桌面找图标重开，越开越多实例（虽然第二个只会叫醒第一个）。
         if (_tray != null && !_shownTrayHint)
@@ -663,8 +1059,11 @@ internal static class Program
 
     private static void Shutdown()
     {
+        Dbg.Critical("Program: Shutdown() 被调（托盘退出 / 页面退出请求）");
         KillNode();
         StopWallpaper();                  // 窗口销毁后桌面自动回到原样，不用"恢复壁纸"这类收尾
+        StopDock();
+        StopRail();
         if (_window != null && !_window.IsDisposed) { _window.Dispose(); _window = null; }
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
         Application.Exit();

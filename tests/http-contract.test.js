@@ -253,9 +253,14 @@ test("契约：会离开本机的接口必须是一份显式短名单", () => {
   for (const p of list) {
     assert.ok(ROUTES[p], `privacy.leaves_machine 里的 "${p}" 不是一条已登记的路由`);
   }
-  // 这三条是新版口径（写密钥、测连通、请模型判断要不要主动来信）。
+  // 这套口径分两组，**都由用户当轮的动作触发**，程序不自己往外发东西：
+  //   ① 模型组：写密钥（不代表发包）/ 测连通 / 查模型列表（用户点「查询模型列表」才去读那家的
+  //      /models，2026-10-20 加，见 README 与设置页）/ 请模型判断要不要主动来信；
+  //   ② 更新组（2026-10-20 加）：只有用户点「检查更新」才读 api.github.com 的 Release 列表、
+  //      点「下载」才从 github.com 取安装包；请求里不带 Cookie/Token/设备码，不上传本机数据。
   // 将来真加了会外发的接口，必须在这里补一条并说明理由，而不是让它悄悄多出来。
-  assert.deepEqual([...list].sort(), ["/api/model", "/api/model/test", "/api/proactive/check"],
+  assert.deepEqual([...list].sort(),
+    ["/api/model", "/api/model/models", "/api/model/test", "/api/proactive/check", "/api/update", "/api/update/download"],
     "会离开本机的接口清单变了：新增外发接口前先想清楚它对「不上传」这句承诺意味着什么");
 });
 

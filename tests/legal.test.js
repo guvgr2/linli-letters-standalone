@@ -156,7 +156,10 @@ test("底部链接的样式要「低对比、不抢版面」，且不被液态�
 
   const js = read(APPJS);
   assert.match(js, /querySelectorAll\(SELECTOR\)|button:not\(\.lnk\)/, "协议小链接必须被排除在液态玻璃之外");
-  assert.match(js, /const SELECTOR = "button:not\(\.lnk\), \.rb"/, "★ 排除写在选择器里，别只在 upgrade() 里加 if");
+  // ★ 2026-10-20：选择器里原来还带着 `.rb`（左栏三个圆钮）。左栏搬出页面之后页面里没有 `.rb` 了，
+  //   那条一并删掉 ⇒ 这里改成钉住"只剩 button、且仍然排除 .lnk"这个最终形态。
+  assert.match(js, /const SELECTOR = "button:not\(\.lnk\)"/, "★ 排除写在选择器里，别只在 upgrade() 里加 if");
+  assert.doesNotMatch(js, /SELECTOR = "[^"]*\.rb/, "页面里已经没有 .rb，选择器不许再留这条死分支");
 });
 
 // 阴性对照（手工跑，三条都该让上面变红）：

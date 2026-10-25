@@ -2,13 +2,13 @@
   "manifestVersion": 1,
   "generatedAt": "2026-10-17T11:20:06+08:00",
   "source": "repo/source/harness",
-  "sourceRepo": "E:/olivia-soul-community-kit",
+  "sourceRepo": "olivia-soul-community-kit",
   "status": "current",
   "statusNote": "当前清单：描述 2026-10-16 两端同步（S1–S9、P1–P5）全部落地之后的真源实况。已落地：**S1** 渲染严格化、**S2** 预检十七行 + 三处联动、**S3** 主动来信.md 独立化、**S4** 主动信语料.md（调性锚）、**S5** 行为参数.json、**S6** 人设/写法改显式整份读、**S7** 人设换代（§一 进 林离人设.md / §二 进它的「人格与气质」节 / §四 结构与红线进 写法.md，§三 数值不进来，以 行为参数.json 为单一来源）、**S9** 近况.md + 分档注入（含内容层与调用方接线）；P1–P5 已定案。真源任一文件改动必须同批重出本文件：`node repo/source/tools/gen-harness-manifest.mjs`（同步方案 §6.3；`--check` 只比对不写盘，供测试用）。本文件**不进打包产物**（开发/审计用）。",
   "pathSemantics": "files 的键是逻辑名；relPath 是相对 harness 目录的真实路径，缺省等于键名。★ 与同步方案 §6.1 的差异（必要修正）：林离人设.md 物理上位于 harness 的上一级（repo/source/），故它必须带 relPath，否则 join(harnessDir, name) 会 ENOENT。★ 行尾：清单记录的 bytes/lines 是真源文件的**确切字节数**（这批 md 是 LF-only、无 CRLF）。⚠️ 林离人设.md 的两端现状由生成器现算：<!--AUTO:sided-林离人设.md-->本侧 7550 B / f43562f9…；姊妹侧 7550 B / f43562f9…；**逐字节相同**<!--/AUTO:sided-林离人设.md-->。同步时**以本清单 files 记录的字节数为准**，不要为了「对齐」在某一侧补换行再比哈希。★ 本字段里的数字**不许手写**：写死就会在对方同步之后变成假话而没人知道（[审查-5] 🟠-7）。★ 解析路径请一律用 join(harnessDir, meta.relPath ?? name)；若消费方根目录命中下面的 pathOverrides，则优先用其中的覆盖值。",
   "pathOverrides": {
     "_说明": "按**消费方根目录**给出的 relPath 覆盖表（B6 的定案形态，2026-10-17 落地）。背景：relPath 的语义收敛为「真源侧相对 harness 目录的路径」；而姊妹项目 linli-letters 的 林离人设.md 就在 app/harness/ 里面，照 `../林离人设.md` 解析会得到不存在的 app/林离人设.md ⇒ 那份文件永远不被硬校验（这正是 B6 的静默洞）。消费方解析规则：join(消费方 harness 目录, pathOverrides[消费方根目录]?.[逻辑名] ?? meta.relPath ?? 逻辑名)。★ 硬约定（由 gen-harness-manifest.mjs 的 --check 把守）：**凡是 relPath 含 ../ 的文件，必须在每个覆盖条目里出现** —— 否则新增一个跨级文件时，姊妹侧又会退回「解析到空、静默不被校验」。★ 覆盖值一律是相对消费方 harness 目录的路径，且不得含 ..。",
-    "E:/linli-letters": {
+    "linli-letters": {
       "林离人设.md": "林离人设.md"
     }
   },
@@ -27,9 +27,9 @@
     "开信.md": { "bytes": 406, "lines": 7, "sha256": "904c653f02ddc7787c9886c61ea8db6f42a081dc80db0aca58f93e43941b660f" },
     "写法.md": { "bytes": 9829, "lines": 155, "sha256": "45872552ca2d508de20131cacd67bb1d73b9e61d26bad1f745ecea49b2ea7acc" },
     "林离人设.md": { "relPath": "../林离人设.md", "bytes": 7550, "lines": 101, "sha256": "f43562f952a5f5a0214c296685a4fbe2eb65dbdcedf0c2a5d75d631263216e57" },
-    "行为参数.json": { "bytes": 11907, "lines": 152, "sha256": "aec146bcab43efaf48ddf5c66927099d6172fb7e1af21eb2879951807a9f186a" },
-    "主动来信.md": { "bytes": 3966, "lines": 86, "sha256": "f0f59e9e22180c40c6a49095a2c04b6acbadd441be304b5e1120352b780da0e3" },
-    "主动信语料.md": { "bytes": 3474, "lines": 68, "sha256": "3bd72826523374aa54c116f56db19e5ca949eaa12240b8db212ba00d4a5423a0" },
+    "行为参数.json": { "bytes": 11439, "lines": 152, "sha256": "8d91c7f42a1f6ac94ef06a3a478479ac1e520a2cbf159825618fa0d9a5eff207" },
+    "主动来信.md": { "bytes": 3797, "lines": 86, "sha256": "fb3625f888b5584b7ccd10f9f72107df4348dd07f508b5ca83c0912bfe45201a" },
+    "主动信语料.md": { "bytes": 2913, "lines": 68, "sha256": "b8a5c9107b8539cc0be89378737835661c22342cf801f6c9a58ac37e8cc8024a" },
     "近况.md": { "bytes": 1903, "lines": 28, "sha256": "deadf04bd4a3f391180a806708d17be64eb6f4fd53d2ce799e3227c14782c1e8" }
   },
   "stepMap": {
@@ -75,9 +75,9 @@
     "开信.md": "与姊妹 app/harness/开信.md 同源，两端现状由生成器现算：<!--AUTO:synced-开信.md-->本侧 406 B / 904c653f…；姊妹侧 406 B / 904c653f…；**逐字节相同**<!--/AUTO:synced-开信.md-->。",
     "写法.md": "P5 落地后两侧同源，两端现状由生成器现算：<!--AUTO:synced-写法.md-->本侧 9829 B / 45872552…；姊妹侧 9829 B / 45872552…；**逐字节相同**<!--/AUTO:synced-写法.md-->。语义：§四 的六段结构 / 场景矩阵 / 红线 / 天气规则已进两侧；§三 的「常规 250–450 字」刻意没有进来（与 行为参数.json 的 reply.maxChars 冲突），字数以该 JSON 为单一来源。",
     "林离人设.md": "S7 换代（`## 人格与气质` 换成升级版 §二 的结构化准则）后的两端现状由生成器现算：<!--AUTO:synced-林离人设.md-->本侧 7550 B / f43562f9…；姊妹侧 7550 B / f43562f9…；**逐字节相同**<!--/AUTO:synced-林离人设.md-->。不要用本文件的 bytes 去校验姊妹侧 —— 以现算块为准。",
-    "主动来信.md": "两端现状由生成器现算：<!--AUTO:synced-主动来信.md-->本侧 3966 B / f0f59e9e…；姊妹侧 3966 B / f0f59e9e…；**逐字节相同**<!--/AUTO:synced-主动来信.md-->。差异在**结构**：本侧 System 段并入六步链的 {{rules}}，姊妹侧是 STEP6 单步渲染（见 stepMapNote 与同步方案 §5.1 的 S3）。",
-    "主动信语料.md": "S4 新建（5 封调性锚 + 使用声明 + 来源与授权留痕），两端现状由生成器现算：<!--AUTO:synced-主动信语料.md-->本侧 3474 B / 3bd72826…；姊妹侧 3474 B / 3bd72826…；**逐字节相同**<!--/AUTO:synced-主动信语料.md-->。",
-    "行为参数.json": "S5 新建，姊妹侧已按 T8 改成读它。两端现状由生成器现算：<!--AUTO:synced-行为参数.json-->本侧 11907 B / aec146bc…；姊妹侧 11907 B / aec146bc…；**逐字节相同**<!--/AUTO:synced-行为参数.json-->。",
+    "主动来信.md": "两端现状由生成器现算：<!--AUTO:synced-主动来信.md-->⚠️ 2026-10-21 本侧人工改过（剥除随包文件里的内部行话：施工单编号 / 姊妹项目名 / 内部脚本名），本侧 3797 B / fb3625f8…；姊妹侧仍为 3966 B / f0f59e9e… ⇒ **两侧暂时不同**，下一次两端同步请以本侧为准重跑生成器<!--/AUTO:synced-主动来信.md-->。差异在**结构**：本侧 System 段并入六步链的 {{rules}}，姊妹侧是 STEP6 单步渲染（见 stepMapNote 与同步方案 §5.1 的 S3）。",
+    "主动信语料.md": "S4 新建（5 封调性锚 + 使用声明 + 来源与授权留痕），两端现状由生成器现算：<!--AUTO:synced-主动信语料.md-->⚠️ 2026-10-21 本侧人工改过（剥除随包文件里的内部行话：施工单编号 / 姊妹项目名 / 上游快照检索明细），本侧 2913 B / b8a5c910…；姊妹侧仍为 3476 B / b77ef065… ⇒ **两侧暂时不同**，下一次两端同步时请以本侧为准重跑生成器<!--/AUTO:synced-主动信语料.md-->。",
+    "行为参数.json": "S5 新建，姊妹侧已按 T8 改成读它。两端现状由生成器现算：<!--AUTO:synced-行为参数.json-->⚠️ 2026-10-21 本侧人工改过（剥除随包文件里的内部行话：施工单编号 / 姊妹项目名 / 内部仓库与脚本路径 / DSH 代号 / 两端同步称谓 / 内部测试与变异配置路径），本侧 11439 B / 8d91c7f4…；姊妹侧仍为 11907 B / aec146bc… ⇒ **两侧暂时不同**，下一次两端同步时请以本侧为准重跑生成器<!--/AUTO:synced-行为参数.json-->。",
     "近况.md": "S9 新建，姊妹侧已同步同名文件。两端现状由生成器现算：<!--AUTO:synced-近况.md-->本侧 1903 B / deadf04b…；姊妹侧 1903 B / deadf04b…；**逐字节相同**<!--/AUTO:synced-近况.md-->。"
   },
   "tierThresholds": "已落到 行为参数.json 的 nearTerm 段（tiers 四档：0 封信不注入 / 4–20 / 21–60 / >60 或账本「关系」≥ 密友；thresholdMode=letters；allowRollback=false；userToggle=设置页「保持她现在的样子」；引擎接线由 server.js 的 resolveDriftTier(person) 算档后经 -DriftTier 走两条链路）。",

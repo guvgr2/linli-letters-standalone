@@ -61,34 +61,34 @@ html, body {
   overflow: hidden;
 }
 
-/* ★★ 液态玻璃 2026-10-18（用户拍板「把桌面或者在这个程序后面的界面当背景」）：
-   原生窗口里外壳开了 DWM 亚克力（把窗口正后方的桌面实时模糊垫底）+ WebView2
-   页面透明。要让那层真桌面透进来，页面上所有"不透明的底"都得让开：
-   - body/html/.win 的近黑底色在 body.native 下改透明；
-   - #glassBg 四个假光斑同层隐藏 —— 真桌面比假光斑"真"得多；
-   - 浏览器打开（没有 .native）保持原样，什么都不变。
-   backdrop-filter 会自动去模糊"身后的一切"= 现在是真实桌面。 */
-body.native { background: transparent; }
-body.native #glassBg { display: none; }
-/* ★ 桌面模糊已经由 DWM 亚克力做掉了（系统垫在窗口底下）。
-   页面这边如果再 backdrop-filter blur 一次 = 双层模糊 = 均匀灰雾，
-   桌面本来的色彩层次全被抹平（实测：桌面深蓝→亮灰的变化，
-   透过两层 blur 后只剩 RGB 24,24,27 的均匀灰）。
-   所以 native 下 .win 自己不再 blur —— 只保留轻提饱和，
-   让透过来的桌面色更艳。 */
+/* ★★ 液态玻璃 2026-10-19 第三次定稿（用户原话：「背景只透过壁纸视频试试，
+   就是不透过后面程序的界面」）：
+   前两轮走的是「窗口透明 + DWM 亚克力垫底」，让**窗口背后的真实桌面**透进来。
+   代价是窗口背后**任何**程序（浏览器、照片查看器、桌面图标）都会透进来 ⇒「背景太乱」；
+   而且页面透明后 WebView2 把透明像素合成成窗口 BackColor，客户区边缘就是一圈实心黑 ⇒
+   「黑边」；亚克力那 30% 黑 tint 又把整扇窗压灰、字压沉 ⇒「字体看不清」。
+   ⇒ 现在窗口**不透明**：这里就是窗口的底（--bg），能透的只有窗口**内部**那层壁纸视频
+      （#stage，见下面「舞台层」）。背后是别的程序还是桌面，一律进不来。
+   ★ 透明窗口一关，backdrop-filter 也就恢复正常了 —— 它模糊的是页面自己的内容
+     （那层压暗的视频），不再有「透明窗口里抓到透明黑」的怪路径。 */
+body.native { background: var(--bg); }
+/* 视频在播时不要那层假光斑抢画面；没视频时它就是兜底的氛围底，照旧露着。 */
+body.native.stage-on #glassBg { display: none; }
 body.native .win {
-  background: none;
-  backdrop-filter: saturate(1.35);
-  -webkit-backdrop-filter: saturate(1.35);
+  background:
+    radial-gradient(132% 72% at 8% -14%, rgba(255, 255, 255, .14), transparent 58%),
+    radial-gradient(80% 50% at 108% 106%, rgba(255, 255, 255, .06), transparent 62%),
+    linear-gradient(155deg, rgba(255, 255, 255, .085) 0%, rgba(255, 255, 255, .022) 52%, rgba(255, 255, 255, .045) 100%);
+  backdrop-filter: blur(26px) saturate(150%);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
 }
-/* 各玻璃面板同理：blur 已经由亚克力管，面板只做提饱和提亮。
-   --glass-blur 里的 blur(22px)/contrast 在 native 下换掉。 */
+/* 各玻璃面板照旧走 --glass-blur（native 下同样成立，因为背后现在是页面自己的视频）。 */
 body.native .mail-sidebar,
 body.native .mail-content,
 body.native .library-sidebar,
 body.native .library-content {
-  backdrop-filter: saturate(1.5) brightness(1.03);
-  -webkit-backdrop-filter: saturate(1.5) brightness(1.03);
+  backdrop-filter: var(--glass-blur, blur(22px) saturate(140%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(22px) saturate(140%));
 }
 
 /* ---- 氛围层：四个中性白柔光斑，无彩色 ---- */
@@ -152,6 +152,23 @@ body.stage-on #stage { opacity: 1; }
   transition: opacity 1s ease, transform 1s ease;
 }
 #stage video.under { opacity: 0; transform: scale(1.02); }
+
+/* ★★ 原生窗口里的舞台层（2026-10-19 重新启用）：窗口不透明了，这一层就是窗口的
+   **背景本身** —— 用户要的「背景只透过壁纸视频」就是它。
+   两处跟浏览器里不一样：
+     ① object-fit: cover —— 背景要铺满，容不下黑边；浏览器里那套 contain 是给
+        「看视频」用的，这里只是背景，模糊成一片色块之后裁掉边角没人看得出来。
+     ② 压暗 + 重模糊 —— 上面还要压玻璃和文字。不压暗的话，一段明亮的演奏画面
+        会把信箱列表的字全吃掉（用户说的「字体看不清」就是这个：亮背景 + 浅字）。
+   数值是照对比度算的：最亮的一帧 × brightness(.62) 之后，--tx(#e8e9eb) 仍有
+   约 6.5:1，--tx4(#7d818c) 约 3.2:1（次要信息够用）。 */
+body.native #stage video {
+  object-fit: cover;
+  filter: blur(22px) saturate(128%) brightness(.62);
+  transform: scale(1.06);          /* blur 会让四周发虚露透明边，放大一点盖住 */
+}
+/* 已经 cover + blur 了，那层 80×50 的模糊延伸底就没用了（它本来是补 contain 的黑边）。 */
+body.native #stage #cbg { display: none; }
 
 /* 写信卡上的邮戳小片。★ 用 float 而不是绝对定位：.card 没有定位上下文，
    absolute 会一路找到视口，邮戳就跑到屏幕角上去了。float 让它停在右上，
@@ -221,7 +238,7 @@ body.native .winchrome { display: flex; }
   margin: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   border-radius: 0;
   border: 1px solid rgba(255, 255, 255, .16);
   border-top-color: transparent;
@@ -244,60 +261,35 @@ body.native .winchrome { display: flex; }
     inset 0 0 0 1px rgba(255, 255, 255, .035);
   overflow: hidden;
 }
+/* ★ 2026-10-19：这里原本是「四边 40px 内侧暗影」（box-shadow inset ±40px，
+   rgba(8,9,12,.55)），为的是给透明的玻璃窗"描一圈厚度"。
+   窗口改成不透明之后，它画的就只是一圈**真黑边** —— 用户圈了两次的就是它。
+   整块删掉：玻璃的边由 .win 自己那 1px 亮边和面板圆角给，不需要暗影。 */
 
-/* ---- 左栏：四个圆形导航按钮 ---- */
-/* ★ 2026-10-18 用户截图圈红：「最左边三个按钮是悬空的，底下没有背景」。
-   rail 列以前只有一根 1px 右边框，native 透明玻璃下背后直接是桌面，
-   圆钮像浮在空气里。补一块与右侧玻璃面板同材质的底（同 --glass-a/--glass-sheen/
-   --glass-edge），让圆钮"坐"在一块玻璃上，而不是悬空。 */
-.rail {
-  position: relative;
-  border-right: 1px solid rgba(255, 255, 255, .08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--glass-sheen, none), var(--glass-a, rgba(255,255,255,.05));
-  box-shadow: var(--glass-edge, none);
-  backdrop-filter: var(--glass-blur, none);
-  -webkit-backdrop-filter: var(--glass-blur, none);
-}
-/* ★★ 这里原来是 `right: 100%` —— 那会把整组按钮放到左栏的**左侧外面**
-   （栏左沿 x=23，按钮右沿正好落在 23，于是整组落在 x=-29..23）。
-   而 .win 有 overflow:hidden（圆角要它），超过窗口内边 22px 的部分一律被裁掉
-   ⇒ 四个导航按钮一个都看不见，用户根本切不了页。
-   真渲染一跑就露出来了；静态读 CSS 很难发现（`right: 100%` 看起来像个刻意的布局）。
-   现在改成在栏内居中：46px 的按钮放进 76px 的栏，左右各留 15px。 */
-.rail .stack {
+/* ★★ 用户原话「加点高光」：暗色 tint 上去后玻璃容易“闷”。补一道左上高光
+   （0.10 alpha、68° 斜向、42% 高度后淡出）\+ 右上各一处的锐利反光点。
+   只在 native 下加：浏览器打开时本来就是普通深色界面，不需要这层。 */
+body.native .win::after {
+  content: "";
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 20px;
+  background:
+    radial-gradient(90% 60% at 4% 0%, rgba(255, 255, 255, 0.10), transparent 60%),
+    radial-gradient(38% 26% at 96% 0%, rgba(255, 255, 255, 0.06), transparent 70%),
+    linear-gradient(68deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0) 42%);
 }
-.rb {
-  width: 46px; height: 46px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--tx2);
-  font: 700 13px/1 inherit;
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: background .18s, color .18s, border-color .18s;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
-}
-.rb:hover { background: var(--hi); color: var(--tx); }
-.rb.on { background: var(--p2); color: #121214; border-color: var(--p2); }
 
-/* ---- .rb 真折射玻璃覆盖层 ---- */
-/* ★ 尺寸必须显式写成和 .rb 一样的 46px。
-   canvas 的 width/height 属性是**内部分辨率**（46×3=138，超采样用），不是显示尺寸；
-   只给属性不给 CSS 时，浏览器按 138×138 的固有尺寸排版 ⇒ 圆钮上压出一个 3 倍大的
-   玻璃圆盘，还会盖住左边的列表。rb-glass.js 里也设了一次（双保险，防止 CSS 被覆盖）。 */
-.rb-glass { position: fixed; width: 46px; height: 46px; pointer-events: none; z-index: 50; border-radius: 50%; }
-.rail.glass-on .rb { background: transparent !important; border-color: transparent !important; color: transparent !important; box-shadow: none !important; }
+/* ---- 左栏：已搬到窗口外面（2026-10-20） ----
+   ★★ 这里原本是页面里的 `.rail` 导航胶囊（`.stack` / `.rb` / `.rb.on` / `.glass-on` / `.rb-glass`）。
+   用户口径：「这个按钮不在程序界面里，在程序外面」「独立浮层必须做，你照抄原版游戏的浮层逻辑」。
+   拆原版 feapp.dat 也印证了这一点：导航根本不在网页里，是外壳画的一层独立浮层
+   （75 个 Vue 组件里没有 nav/rail/side，JS 里连「信箱」「音乐」都没有）。
+   ⇒ HTML / CSS / app.js 里的绑定 / rb-glass.js 一起删掉；
+     现在由 src/LinliShell/NavRail.cs 画在主窗口**左沿外面**（近黑胶囊 + 米色选中 + 浅灰图标）。
+   不要在页面里加回一条左栏 —— 那会把内容区再挤窄 62px，而且永远做不出「悬空」。 */
 
 /* ---- 内容区 ---- */
 .main { position: relative; overflow: hidden; }
@@ -333,6 +325,9 @@ body.native .winchrome { display: flex; }
 .card p { margin: 0 0 10px; color: var(--tx2); }
 .card p:last-child { margin-bottom: 0; }
 .hint { color: var(--tx4); font-size: 12px; padding-left: 11px; }
+/* 这几处提示（搬家 / 诊断包）要当场说清结果，所以成功与失败得看得出来。 */
+.hint[data-tone="good"] { color: #8fc7a1; }
+.hint[data-tone="bad"] { color: #e08b8b; }
 
 /* ---- 表单 ---- */
 label { display: block; margin: 0 0 6px; color: var(--tx3); font-size: 12.5px; }
@@ -387,21 +382,21 @@ button:disabled { opacity: .5; cursor: not-allowed; }
      ④ 一次性扫光：指针进入时掠过一道
      ⑤ 点击涟漪：从指针位置散两层，带 overlay 混合 ⇒ 出折射感
    ★ 只套在**能点**的东西上（button / .rb）。卡片不可点，套上去只会让人以为能点。 */
-button, .rb {
+button {
   --mx: 50%; --my: 0%;
   position: relative; overflow: hidden; isolation: isolate;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .19), 0 10px 30px rgba(0, 0, 0, .30);
   transition: transform .2s cubic-bezier(.22, 1, .36, 1), box-shadow .2s,
               border-color .2s, background .16s, color .16s;
 }
-button::before, .rb::before {
+button::before::before {
   content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2;
   background: radial-gradient(240px circle at var(--mx) var(--my),
               rgba(255, 255, 255, .17), rgba(255, 255, 255, .05) 42%, transparent 66%);
   opacity: 0; transition: opacity .28s;
 }
-button:hover::before, .rb:hover::before { opacity: 1; }
-button::after, .rb::after {
+button:hover::before:hover::before { opacity: 1; }
+button::after::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
   pointer-events: none; z-index: 3; padding: 1px;
   background: radial-gradient(180px circle at var(--mx) var(--my),
@@ -410,8 +405,8 @@ button::after, .rb::after {
   -webkit-mask-composite: xor; mask-composite: exclude;
   opacity: 0; transition: opacity .28s;
 }
-button:hover::after, .rb:hover::after { opacity: .9; }
-button:active, .rb:active {
+button:hover::after:hover::after { opacity: .9; }
+button:active:active {
   transform: scale(.988, .978) translateY(1px);
   border-color: rgba(255, 255, 255, .26);
   box-shadow: inset 0 2px 10px rgba(0, 0, 0, .28),
@@ -420,7 +415,7 @@ button:active, .rb:active {
 }
 /* 禁用态不该"被挤"——按不动的东西给按下反馈是在骗人 */
 button:disabled:active { transform: none; }
-button:focus-visible, .rb:focus-visible {
+button:focus-visible:focus-visible {
   outline: none; border-color: var(--p2);
   box-shadow: 0 0 0 3px rgba(216, 207, 196, .16),
               inset 0 1px 0 rgba(255, 255, 255, .22),
@@ -446,7 +441,7 @@ button:focus-visible, .rb:focus-visible {
 /* 系统里勾了"减少动效"就别硬给：扫光/涟漪/挤压全关，只留颜色变化 */
 @media (prefers-reduced-motion: reduce) {
   .sheen-on .sheen, .ripple { animation: none; }
-  button:active, .rb:active { transform: none; }
+  button:active:active { transform: none; }
 }
 
 /* ---- 信件 ---- */
@@ -612,9 +607,291 @@ pre.ctx {
   font: 12px/1.8 Consolas, monospace; white-space: pre-wrap; max-height: 260px; overflow: auto;
 }
 
-/* ---- 协议：底部一行小链接 + 弹层 ----
+/* ---- 设置页：照原版的「段标题 + 一行一条，控件靠右」----
+   ★ 2026-10-19 用户口径：设置页要和原版布局一致、保留功能但精简。原版就是
+     一条条排下来、没有卡片边框的；这里照做，只有「高级」那几段才收进 <details> 里。 */
+.set-sec { margin: 0 0 24px; }
+/* 第一段紧贴页标题时看着像标题的一部分：单独让出一点距离。 */
+.set-sec:first-of-type { margin-top: 6px; }
+.set-h {
+  margin: 0 0 8px; font-size: 15px; font-weight: 700;
+  letter-spacing: .3px; color: var(--tx);
+}
+.set-sub { margin: -2px 0 12px; color: var(--tx4); font-size: 12.5px; line-height: 1.7; }
+/* ★★ 2026-10-20「弹唱视角 / 状态」那两组卡片（照原版设置页：一排卡片，选中的那张带 ✓）。
+   ★ 2026-10-20 第二轮（用户口径，对着原版截图：「这个弹唱视角底下没有图片演示啊，
+     还有状态也是，这是原版游戏」）⇒ 卡片改回**带图**：
+       · 弹唱视角卡：mode-focus / mode-interactive 两张 webp（原版同款文件名）；
+       · 状态卡：idle_normal / idle_creative / idle_thinking 三支 mp4 的**首帧**
+         （只 preload=metadata，画静态帧，不播放、不下整段）。
+     说明：这三个 webp 与三支 mp4 2026-10-16 就已在本目录 assets/ 下、也已经随包
+     发过用户（不是这一轮新搬进来的素材）；用户明确要看演示，那就给他看。
+     选中态用 --p2 描边（跟 .rb.on 同一套颜色语言）。 */
+.view-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 2px 0 4px; }
+.view-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 4px;
+  /* ★★ 必须定宽（不能只给 min-width）：卡里媒体的 width:100% 要有个确定基准，
+     否则百分比对着 auto 宽的父元素解析成媒体的**自然尺寸** —— 实测 420px 的 webp
+     把卡片撑到 420px、1280px 的 mp4 首帧把卡片撑到 1082px，一排卡全毁。
+     ★★ 也必须显式 height:auto：全局 `button { height: 36px }`（styles.css 里那颗
+     普通按钮的钉子）级联下来，卡片会停在 36px 高、把 101px 的媒体裁成一条
+     （overflow:hidden 是 button,.rb 那条给的，裁得干干净净，肉眼只看到一条糊边）。
+     CDP 实测证据：analysis/_audit22/verify-cards-cdp.js 前两轮 inside=false。 */
+  flex: 0 0 196px;
+  width: 196px;
+  height: auto;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--tx2);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .16s ease, background .16s ease, color .16s ease;
+}
+/* 卡片配图 / 配视频首帧：排在上、名字在下；cover 裁掉多余部分，圆角照卡片来。
+   ★ 视频只 preload=metadata + src 带 #t=0.1 ⇒ 浏览器画出第一帧当静态图用，
+     不自动播（原版那三支是循环小片子，我们只取首帧当示意图，省 3.5MB 流量）。
+   ★ pointer-events:none —— 整张卡是一个按钮，别让媒体把点击吃了。 */
+.view-card-media {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  background: var(--card);
+  pointer-events: none;
+}
+.view-card:hover { background: var(--hi); color: var(--tx); }
+.view-card-name { font: 600 13.5px/1.4 var(--ui); color: var(--tx); }
+.view-card-sub { font-size: 12px; color: var(--tx4); line-height: 1.5; }
+/* ✓：默认藏着，选中才露 —— 跟原版"选中的卡片打勾"一个意思。 */
+.view-card-tick {
+  position: absolute; top: 10px; right: 12px;
+  font-size: 13px; color: var(--p2);
+  opacity: 0; transform: scale(.6);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.view-card[aria-checked="true"] {
+  border-color: var(--p2);
+  background: color-mix(in srgb, var(--p2) 12%, var(--card));
+}
+.view-card[aria-checked="true"] .view-card-tick { opacity: 1; transform: scale(1); }
+.set-item {
+  display: flex; align-items: center; gap: 18px;
+  padding: 13px 2px; border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+.set-item:last-child { border-bottom: 0; }
+.set-item-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.set-item-t b { font-size: 13.5px; font-weight: 600; color: var(--tx); }
+.set-item-t span { color: var(--tx4); font-size: 12px; line-height: 1.65; }
+.set-item-c { flex: none; display: flex; align-items: center; gap: 8px; }
+/* 右边这几个控件不跟大表单一样撑满（input 全局是 width:100%）。 */
+.set-item-c input:not([type="checkbox"]) { width: 320px; }
+.set-item-c button { height: 32px; padding: 0 14px; }
+
+/* ---- 模型接口（2026-10-20 搬进第一段） ---- */
+/* 右栏那个「当前在用」小牌子：只报现在挂的是哪一家哪个型号，不是输入框。 */
+.model-current {
+  padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .05);
+  color: var(--tx2); font: 600 12.5px/1.5 var(--ui);
+  /* 型号名可能很长（豆包那种带日期尾巴的）：一律单行省略，别把卡片撑宽。 */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* ★ 主动来信的时段必须单独收窄：`.set-item-c input:not([type="checkbox"])` 给的是 320px
+   （那是「一整行一个控件」的宽度），两个时间控件并排就是 640px ⇒ 右栏直接被撑出屏幕。 */
+.set-item-c input.set-time { width: 108px; }
+
+/* ★★ 2026-10-20：模型 / 主动来信这两块的说明文字用的是 --tx4（#7d818c）——
+   那是给**页面背景**调的淡色，叠在玻璃卡 + 一张亮壁纸后面几乎看不见
+   （实测 computed color rgb(125,129,140)，在亮卡上对比度不到 2:1；
+   用户装的壁纸是自家桌面，什么颜色都有可能，不能赌它是深的）。
+   ⇒ 这两张卡给一层暗底，说明文字提到 --tx3。只改这两块，不动别的卡。 */
+#modelSec .card, #proactiveSec .card {
+  background:
+    radial-gradient(112% 62% at 12% -10%, rgba(255, 255, 255, .10), transparent 56%),
+    linear-gradient(150deg, rgba(10, 12, 16, .84), rgba(10, 12, 16, .74));
+}
+#modelSec .card .hint,
+#proactiveSec .card .hint,
+#proactiveSec .card .set-item-t span { color: var(--tx3); }
+
+/* 备份 / 搬家 / 诊断包这三处都是「一行一份 + 右侧动作」的列表。
+   ★ 这些类名（ds-list/ds-row/...）在 app.js 里早就用上了，样式却一直是空的 ——
+     数据备份那块从上线起就是裸排的。既然这次要接搬家与诊断包，一起补齐。 */
+.ds-list { display: grid; gap: 0; margin: 2px 0 14px; }
+.ds-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 2px; border-top: 1px solid rgba(255, 255, 255, .07);
+}
+.ds-list > .ds-row:first-child { border-top: 0; }
+.ds-row-main {
+  flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  font-size: 13px; color: var(--tx3); line-height: 1.6;
+}
+.ds-row-main code {
+  font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--tx2); word-break: break-all;
+}
+.ds-row-main > span { color: var(--tx4); font-size: 12px; }
+.ds-row-kind { color: var(--tx); font-size: 13px; }
+.ds-row-time, .ds-row-size { color: var(--tx4); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ds-row-acts { flex: none; display: flex; align-items: center; gap: 8px; }
+.ds-row-acts button, .ds-row > button { height: 28px; padding: 0 12px; font-size: 12.5px; }
+.ds-row-waiting { font-size: 12px; color: #e2c275; }
+.ds-tag {
+  flex: none; font-size: 12px; color: var(--tx3);
+  border: 1px solid rgba(255, 255, 255, .14); border-radius: 999px; padding: 1px 9px;
+}
+.ds-inline {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--tx3);
+}
+.ds-inline input[type="number"] { width: 62px; }
+.ds-inline.ds-danger { color: #e08b8b; }
+.ds-pending { margin: 4px 0 10px; }
+.ds-pending-text { font-size: 12.5px; color: #e2c275; }
+
+/* 音量滑块：跟原版一样是一条细轨 + 一枚圆头，右端跟一个数字。
+   ★ 2026-10-20 改自绘（用户圈出来「0 没到底、100 没到头」）：原生 range 的圆头行程
+   不含端点（0 时圆头离左缘还差半个圆头宽），accent-color 那套改不了。
+   ⇒ appearance:none 自绘细轨 + 填充 + 圆头：填充宽度由 app.js 的 setRange 写进
+     --fill（0–100 ⇒ 0–100%），0 时填充为 0、100 时贴到右缘，视觉上两端都到头。 */
+.set-item-c .set-range {
+  -webkit-appearance: none; appearance: none;
+  width: 260px; height: 16px; margin: 0; background: transparent; cursor: pointer;
+  --fill: 50%;
+}
+.set-item-c .set-range::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(var(--p3), var(--p3)) 0 0 / var(--fill) 100% no-repeat,
+              var(--line);
+}
+.set-item-c .set-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; margin-top: -4px; border: none; border-radius: 50%;
+  background: var(--tx2); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.set-item-c .set-range:focus-visible { outline: 1px solid var(--p3); outline-offset: 2px; }
+.set-item-c .set-range-n {
+  width: 34px; text-align: right; font: 600 13px/1 var(--ui);
+  color: var(--tx2); font-variant-numeric: tabular-nums;
+}
+
+/* 首次询问弹窗（#introModal）：两个开关一屏说清，一行一条，左边说明右边开关。 */
+.intro-box { max-width: 560px; }
+.intro-item {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 14px 0; cursor: pointer;
+  border-top: 1px solid var(--hair, rgba(255, 255, 255, .10));
+}
+.intro-item:first-of-type { border-top: 0; }
+.intro-text { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.intro-text b { font: 600 14px/1.5 var(--ui); color: var(--tx); }
+.intro-item .switch { margin-top: 2px; }
+
+/* 「为什么」弹层：把依据一条条摊开，不做解释。 */
+.world-why-line { font: 600 14px/1.6 var(--ui); color: var(--tx); margin: 0 0 10px; }
+.world-why-list { margin: 0 0 12px; padding-left: 18px; }
+.world-why-list li { font: 13px/1.8 var(--ui); color: var(--tx2); }
+
+/* 记忆条目（A1）：一行一条，"哪一条 / 值 / 动作"三列；你改过的那条左侧有色条。 */
+.mem-list { display: flex; flex-direction: column; }
+.mem-row {
+  display: grid; grid-template-columns: 96px 1fr auto;
+  align-items: center; gap: 10px;
+  padding: 10px 0; border-top: 1px solid var(--hair, rgba(255, 255, 255, .08));
+}
+.mem-row:first-child { border-top: 0; }
+.mem-row.mine { box-shadow: inset 2px 0 0 var(--p3, #c9b38a); padding-left: 10px; }
+.mem-k { font: 600 13px/1.5 var(--ui); color: var(--tx2); }
+.mem-v { font: 13px/1.6 var(--ui); color: var(--tx); word-break: break-word; }
+.mem-acts { display: flex; align-items: center; gap: 10px; }
+.mem-tag {
+  font: 600 11px/1 var(--ui); color: var(--p3, #c9b38a);
+  border: 1px solid currentColor; border-radius: 999px; padding: 3px 7px;
+}
+.mem-src { grid-column: 2 / -1; font: 12px/1.6 var(--ui); color: var(--tx3); }
+.mem-edit {
+  width: 100%; height: 30px; padding: 0 10px;
+  font: 13px/1 var(--ui); color: var(--tx);
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--p3, #c9b38a); border-radius: 8px;
+}
+.mem-gone-h { padding: 14px 0 6px; font: 600 12px/1 var(--ui); color: var(--tx3); }
+.mem-row.gone .mem-v { color: var(--tx3); text-decoration: line-through; }
+
+/* A1 工具条：搜索 + 字段筛选 + 分页（每页 20 条） */
+.mem-tools { display: flex; gap: 8px; align-items: center; padding: 0 0 10px; flex-wrap: wrap; }
+.mem-tools input[type="search"], .mem-tools select {
+  height: 30px; padding: 0 10px; border-radius: 8px;
+  font: 13px/1 var(--ui); color: var(--tx);
+  background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .14);
+}
+.mem-tools input[type="search"] { flex: 1 1 180px; min-width: 120px; }
+.mem-tools select { flex: 0 0 auto; max-width: 42%; }
+
+/* A2 日记：按天倒序，折叠展开 */
+.diary-list { display: flex; flex-direction: column; }
+.diary-item { border-top: 1px solid rgba(255, 255, 255, .07); }
+.diary-item:first-child { border-top: 0; }
+.diary-item > summary {
+  display: flex; gap: 12px; align-items: baseline; list-style: none;
+  padding: 11px 0; cursor: pointer;
+}
+.diary-item > summary::-webkit-details-marker { display: none; }
+.diary-day { flex: none; font: 600 13px/1.5 var(--ui); color: var(--tx2); font-variant-numeric: tabular-nums; }
+.diary-ex { flex: 1; min-width: 0; font: 14px/1.7 var(--ui); color: var(--tx);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diary-body { padding: 0 0 14px 84px; }
+.diary-text { font: 15px/1.9 var(--letter-font, var(--ui)); color: var(--tx); }
+.diary-facts { margin-top: 10px; font: 12px/1.7 var(--ui); color: var(--tx3); }
+
+/* 开关：原版设置里就是这种胶囊拨动，不是复选框。 */
+.switch { position: relative; display: inline-block; width: 40px; height: 23px; flex: none; }
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; z-index: 2; cursor: pointer; }
+.switch i {
+  position: absolute; inset: 0; border-radius: 999px;
+  background: rgba(255, 255, 255, .16);
+  transition: background .18s;
+}
+.switch i:after {
+  content: ""; position: absolute; left: 3px; top: 3px; width: 17px; height: 17px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
+  transition: transform .18s;
+}
+.switch input:checked + i { background: var(--p3); }
+.switch input:checked + i:after { transform: translateX(17px); }
+.switch input:focus-visible + i { outline: 2px solid var(--p3); outline-offset: 2px; }
+
+/* 高级项折叠。 */
+.set-more { margin: 0 0 12px; }
+
+/* ★ 2026-10-19 修（七轮审查 F7）：`<details>` 收起时，内容按规范确实不该显示，
+   但这条 HTML 元素的默认行为被我们自己的 `.card { display: block }` 之类的规则整片盖掉过 ——
+   实测收起后内部卡片仍占 366 / 321px 高度，与下一块重叠 368 / 383px（页面看起来没重影，
+   只是白占位置、把下面的分区推远）。
+   ⇒ 一行兜底，对所有 `<details>` 生效（往后再加第 3、第 4 个折叠块也不会重犯）。
+   ★ 用 `:not(summary)` 而不是 `> *`：`<summary>` 自己必须留着，它是标题和开关。 */
+details:not([open]) > :not(summary) { display: none; }
+
+.set-more > summary {
+  list-style: none; cursor: pointer;
+  padding: 12px 2px; border-bottom: 1px solid rgba(255, 255, 255, .07);
+  font-size: 13.5px; font-weight: 600; color: var(--tx2);
+}
+.set-more > summary::-webkit-details-marker { display: none; }
+.set-more > summary:before { content: "＋"; display: inline-block; width: 17px; color: var(--tx4); }
+.set-more[open] > summary:before { content: "－"; }
+.set-more[open] > summary { color: var(--tx); }
+.set-more > .card { margin-top: 14px; }
+
+/* 协议：底部一行小链接 + 弹层 ----
    常见桌面软件的排法：正文不占设置页版面，只留一行低对比的小字，
-   点开在弹层里读全文。安装向导里读的是**同一份** 协议.txt（见 tools/sync-legal.mjs）。 */
+   点开在弹层里读全文。安装向导里读的是**同一份** 协议.txt（由同一个同步脚本生成）。 */
 .legalbar {
   display: flex; align-items: center; justify-content: flex-end; gap: 10px;
   margin: 22px 2px 6px; padding-bottom: 4px;
@@ -636,6 +913,36 @@ pre.ctx {
      会盖住静态子项 ⇒ .modal-head/.modal-body/.modal-foot 必须抬到 z-index:3。 */
 .modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; }
 .modal[hidden] { display: none; }
+
+/* ---- 问一句话的弹层（2026-10-20：歌单新建/改名/删除） ----
+   ★ 为什么它必须存在：`window.prompt()` 在 WebView2 里不弹窗、静默返回 null，
+     歌单一个都建不出来（用户："歌单功能是摆设"）。这里给它一个自己画的替身。
+   ★ 宽度收窄到 380px：它只问一句话，撑成 680px 的阅读弹层只会像"又开了一个设置页"。 */
+.ask-box { width: min(380px, calc(100vw - 48px)); }
+.ask-input {
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(255, 255, 255, .05);
+  color: var(--tx);
+  font: 400 13.5px/1.4 inherit;
+  outline: none;
+  transition: border-color .16s ease, background .16s ease;
+}
+.ask-input:focus { border-color: var(--p2); background: rgba(255, 255, 255, .08); }
+/* 取消键：跟 .pri 平级但更轻，不跟"确定"抢视线 */
+.ask-cancel {
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  background: transparent;
+  color: var(--tx2);
+  cursor: pointer;
+  font: 500 12.5px/1 inherit;
+}
+.ask-cancel:hover { background: rgba(255, 255, 255, .07); color: var(--tx); }
 .modal-mask {
   position: absolute; inset: 0;
   background: rgba(8, 8, 10, .56);
@@ -720,9 +1027,20 @@ pre.ctx {
 }
 .toast.on { opacity: 1; }
 
-::-webkit-scrollbar { width: 9px; height: 9px; }
-::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .12); border-radius: 9px; }
-::-webkit-scrollbar-track { background: transparent; }
+/* ★ 2026-10-18：这条 9px 全局滚动条是「信箱白条」的总根源（在玻璃面板上格外显眼）。
+   原版所有滚动区域都是 4px、rgba(255,255,255,.14)。这里把全局默认改成窄轨，
+   并在液态玻璃面板（.glass-panel / .mail-sidebar 等）里完全隐藏——styles-original.css
+   的 .mail-list 另有 hover 才显身的 4px 规则。
+   滚动条宽 0 时部分内核仍画 1px 边，配合 track 透明 + thumb 无边框可彻底消除。 */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .14);
+  border-radius: 2px;
+  border: 0;
+  box-shadow: none;
+}
+::-webkit-scrollbar-track { background: transparent; border: 0; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---- 播放器：时段跨越走交叉淡入，不硬切 ----
    竞品有专门的 Transition_1200_1730.mp4 转场片，我们没有这类素材，
@@ -736,3 +1054,57 @@ pre.ctx {
   transition: opacity .9s ease, transform .9s ease;
 }
 .xfade video.under { opacity: 0; transform: scale(1.03); pointer-events: none; }
+
+/* ★ 2026-10-20：曲库底部播放条（用户圈原版截图指定）。
+   原 .player-bar 是全屏播放页的"悬停浮出"条（styles-original.css），曲库这条要
+   **常驻**钉在页底：页面改 flex 列布局，.library 吃掉剩余高度，条子自然贴底。
+   不用 absolute —— .page 是滚动容器，absolute 会跟着内容滚走。
+   控制钮/进度条的尺寸口径全部沿用原版那套（.player-btn 32 / .is-main 40 圆钮 /
+   进度 max-w 480），只把材质换成玻璃条的深底。 */
+.is-library { display: flex; flex-direction: column; }
+.is-library > .library { flex: 1 1 auto; min-height: 0; }
+.is-library .player-bar.is-lib-bar {
+  position: static;
+  opacity: 1;
+  padding: 10px 20px 10px;
+  background: rgba(5, 6, 9, 0.55);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+  transition: none;
+}
+.is-library .player-bar.is-lib-bar .player-center {
+  flex: 0 1 auto;
+  width: min(520px, 100%);
+  margin: 0 auto;
+}
+/* ★ 2026-10-20 补：把条子贴到曲库页真正的底边 —— .page 自带 padding(24 26 32)，
+   不抵消的话条子底下会悬 32px（实测几何：barBottom=843 vs pageBottom=875）。 */
+.is-library .player-bar.is-lib-bar { margin: 0 -26px -32px; padding: 10px 46px 12px; }
+
+/* ---- 更新（2026-10-20）----
+   照设置页既有写法：一段一标题、一条一行、控件靠右。
+   新增的只有三样东西：通道下拉的宽度、降级链接那一行、以及进度条与更新日志。
+   ★ 下拉宽度必须写死：`.set-item-c input:not([type=checkbox])` 那条 320px 只管 input，
+     select 会沿用全局 width:100% 撑满右侧，把「更新通道」那一行压成两行。 */
+.set-item-c select { width: 176px; }
+.update-fallback-row {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px;
+}
+.update-fallback-row code { word-break: break-all; color: var(--tx3); }
+/* 更新日志：Release 正文是纯文本，保留换行；太长就在框里滚，别把整页撑长。 */
+.set-notes {
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 260px; overflow: auto;
+  margin-top: 6px; color: var(--tx3); font-size: 12.5px; line-height: 1.7;
+  padding: 10px 12px; border-radius: 8px; background: rgba(255, 255, 255, .04);
+}
+.update-meter { padding: 10px 2px 2px; }
+.update-meter progress {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 6px; border: 0; border-radius: 3px; overflow: hidden;
+  background: var(--line);
+}
+.update-meter progress::-webkit-progress-bar { background: var(--line); border-radius: 3px; }
+.update-meter progress::-webkit-progress-value { background: var(--p3); border-radius: 3px; }
+.update-meter .hint { padding-left: 0; margin-top: 6px; }

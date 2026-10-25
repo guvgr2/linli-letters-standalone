@@ -41,9 +41,16 @@ internal sealed class SplashWindow : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        // ★ 纯色背景：WebView2 初始化那几百毫秒里窗体是空的，不给底色会闪一块白。
+        // ★ 2026-10-18 用户指令「把黑框去掉，只留里面的动画」：
+        //   页面背景透明 + WebView2 DefaultBackgroundColor=Transparent 之后，
+        //   WebView2 挖空的像素透出的是**窗体自己的 BackColor** —— 仍是 Bg 深色，
+        //   用户看到的"黑框"就是它。修法：TransparencyKey = Bg，
+        //   窗体上所有等于该色的像素整块透空，只有动画有像素的地方可见。
+        //   ★ 注意动画本体里有相近的深色（页面 #16141A 残留元素）会一起透空，
+        //     页面里所有底色已全部改 transparent，不存在该色像素。
         BackColor = Bg;
-        Size = new Size(480, 640);
+        TransparencyKey = Bg;
+        Size = new Size(400, 700);
 
         // 居中偏上：正中偏下的话，主窗口弹出来时两个中心是错开的，看着像跳了一下。
         Rectangle area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1440, 900);
@@ -61,7 +68,9 @@ internal sealed class SplashWindow : Form
         }
 
         _web = new WebView2 { Dock = DockStyle.Fill };
-        _web.DefaultBackgroundColor = Bg;
+        // ★ 透明底：页面 body 是 transparent 的（去黑框），WebView2 必须跟着透明，
+        //   否则内核自己会垫一层白/黑，"只留动画"就白做了。
+        _web.DefaultBackgroundColor = Color.Transparent;
         Controls.Add(_web);
 
         // 页面跑完最后一段会发这一句过来 ⇒ 由外壳关窗口
@@ -79,13 +88,36 @@ internal sealed class SplashWindow : Form
                 // ★ 独立的用户数据目录（见文件头）：与主窗口、壁纸窗口各用一份。
                 string dir = Path.Combine(App.DataDir, "webview2-splash");
                 Directory.CreateDirectory(dir);
-                var env = await CoreWebView2Environment.CreateAsync(userDataFolder: dir)
+
+                // ★★ 2026-10-20（用户口径「黑屏几秒、启动动画都显示不出来」）：
+                //   启动动画自己也是一块 WebView2，在这台机器上一样会被第三方拦沙箱
+                //   ⇒ 内核崩 ⇒ 页面冻在黑底（或干脆没画）⇒ 用户看到的就是"黑几秒"。
+                //   修法跟主窗口同一套：① 按记忆旗标决定是否 --no-sandbox
+                //   ② 建内核**之前**先把句柄逼出来（顺序错了这行等于没写，
+                //      壁纸层就是这么坏的，报 0x8007139F）
+                //   ③ 内核崩了立刻退化成纯色窗体，不许留一块黑。
+                var options = new CoreWebView2EnvironmentOptions();
+                // ★ 只有明确记着"这台机器沙箱能用"才带沙箱；**没记录（首次）也脱沙箱**：
+                //   动画只加载一段本地 HTML 字符串、只活几秒、不碰任何外部内容，
+                //   与它在启动瞬间崩成一块黑相比，稳稳把画放出来更重要。
+                if (!WebTriage.SandboxOkRemembered())
+                    options.AdditionalBrowserArguments = WebTriage.NoSandboxArg;
+                if (!_web.IsHandleCreated) { var _ = _web.Handle; }
+
+                var env = await CoreWebView2Environment.CreateAsync(null, dir, options)
                                                        .ConfigureAwait(true);
                 await _web.EnsureCoreWebView2Async(env).ConfigureAwait(true);
 
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 _web.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                // ★ 动画这一层不搞分诊重建（它只活几秒，不值得换控件）：
+                //   内核一挂就退化成那句「正在打开……」—— 一句字也比一块黑强。
+                _web.CoreWebView2.ProcessFailed += (_, _) =>
+                {
+                    Dbg.Log("SplashWindow: 动画内核掉了 ⇒ 退化成纯色窗体，不留黑块");
+                    BeginInvoke(new Action(() => { Degrade(); _done = true; }));
+                };
 
                 _web.CoreWebView2.NavigateToString(html);
             }

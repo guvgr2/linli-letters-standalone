@@ -32,6 +32,7 @@ import {
   SOUL_LIMITS,
 } from "../app/soul-archive.mjs";
 import { contentFingerprint, exchangeFingerprint } from "../app/import-preview.mjs";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 // 测试用的魔法头（8 字节，与 DSH 侧同长；真值见 ⑮）
 const MAGIC = Buffer.from("OLIVIASL", "ascii");
@@ -283,7 +284,7 @@ test("⑯ 文件版与内存版结果逐字相同 —— 判据只有一份，�
     assert.deepEqual(disk.videos, mem.videos);
     assert.equal(disk.manifestBytes, mem.manifestBytes);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanupDir(dir);
   }
 });
 
@@ -307,7 +308,7 @@ test("⑯b 文件版不许把整份归档读进内存 —— 大视频只读它�
       `只该读头与清单附近，实际读了 ${got.bytesRead} / ${buf.length} 字节`,
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanupDir(dir);
   }
 });
 
@@ -330,7 +331,7 @@ test("⑯c 文件版的失败信息与内存版一字不差（用户看到的提
     await writeFile(tiny, Buffer.alloc(8, 0));
     await assert.rejects(() => parseSoulArchiveFile(tiny, LIMITS), /\.soul 文件格式不正确/u);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await cleanupDir(dir);
   }
 });
 

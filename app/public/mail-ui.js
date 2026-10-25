@@ -38,6 +38,10 @@
     ASSET("stamp_2-e2fc3bbe.webp"),
     ASSET("stamp_3-14d40a34.webp"),
   ];
+  /** 等待回信时的那支视频：原版 `mailbox_waiting_for_reply` 那一态用的就是它（home_idle）。 */
+  const WAIT_VIDEO = ASSET("home_idle-eb9cb735.mp4");
+  /** 原版文案（zh-cn `mailbox_waiting_for_reply`，逐字抄，别改成"她还在写"）。 */
+  const WAIT_TEXT = "林离回信中...";
 
   const pick = (list, seed) => list[Math.floor(seed * list.length) % list.length];
   const escapeHtml = (text) => String(text ?? "")
@@ -104,6 +108,59 @@
   // ---------------------------------------------------------------- 读信
 
   /**
+   * 「她正在回信」那一块：**圆形小视频**（她本人在动）+ 一行字。
+   *
+   * ★ 2026-10-20 用户口径：「在回信的过程中，要播放原版游戏的林离正在回信的动画」。
+   *   上一版这张卡只有静态底图 postcard_video.webp ＋ 一行「她还在写……」——
+   *   `.mail-card-waiting*` 那三条样式早在抄原版时就跟进来了，可**从来没人渲染它们**
+   *   （纯死 CSS），所以等回信的时候画面一动不动。
+   *
+   * ★ 原版实现（main-31595bd3.js 的 MailBoxReplyContent，type 为空且 vault 里没内容那一支）：
+   *   `<div class="flex items-center justify-center relative">`
+   *     `<div class="absolute bottom-5 text-[var(--tp-primary-3)]">林离回信中...</div>`
+   *     `<video src=home_idle muted autoplay loop playsinline
+   *            class="rounded-full w-[clamp(64px,18cqw,128px)] aspect-square object-cover
+   *                   border-2 border-[var(--tp-grey-0)]">`
+   *   视频挂的是 `home_idle-eb9cb735.mp4`（她站着轻轻晃的那支），圆形裁切、2px 深墨描边。
+   *   尺寸按卡片宽度的 18cqw 走 —— 我们这张卡是定宽 516px，用等价的百分比。
+   *
+   * ★ 播不动（无解码器 / 被策略拦）就把视频整个摘掉，只留文案：宁可少一块，
+   *   也不能在纸面上留一个黑圆（那是"坏了"，不是"她在写"）。
+   */
+  function waitingBlock() {
+    const box = document.createElement("div");
+    box.className = "mail-card-waiting";
+
+    const video = document.createElement("video");
+    video.className = "mail-card-waiting-video";
+    // 属性 + 特性都写：Autoplay 策略看的是 HTML 特性（muted/playsinline），
+    // 只设 JS 属性在某些内核版本上会被判成"有声自动播放"直接拒掉。
+    video.muted = true;
+    video.defaultMuted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.setAttribute("muted", "");
+    video.setAttribute("playsinline", "");
+    video.setAttribute("aria-label", "林离正在回信");
+    video.src = WAIT_VIDEO;
+
+    const text = document.createElement("div");
+    text.className = "mail-card-waiting-text";
+    text.textContent = WAIT_TEXT;
+
+    const drop = () => { if (video.parentNode) video.remove(); };
+    video.addEventListener("error", drop);
+
+    box.appendChild(video);
+    box.appendChild(text);
+    const p = video.play();
+    if (p && typeof p.catch === "function") p.catch(drop);
+    return box;
+  }
+
+  /**
    * 右栏：选中一封之后画这张 16:9 明信片。
    * @param {{title:string, when:string, kind:string, text:string, from:string}} view
    *   kind: letter（她的回信）/ sealed（已封）/ retry（失败可重试）/ video（她还在写）
@@ -128,8 +185,13 @@
 
     const text = document.createElement("div");
     text.className = "mail-box-reply-content-text";
-    text.textContent = view.text;
-    card.appendChild(text);
+    if (view.kind === "video") {
+      // 等待回信 = 圆形小视频 + 文案（原版那一支），不要再叠一行静态正文。
+      card.appendChild(waitingBlock());
+    } else {
+      text.textContent = view.text;
+      card.appendChild(text);
+    }
 
     // 右下角放大钮：悬停才出现（原版 .envelope-zoom-trigger 同款行为）。
     const zoom = document.createElement("button");
@@ -142,6 +204,26 @@
       openEnvelope(view.text);
     });
     card.appendChild(zoom);
+
+    // ★ 2026-10-20：失败态的重试按钮。原版这张卡的版式里本来就留着右下角的重试位
+    //   （`.mail-card-retry` 这条样式一直都在），但**从来没有代码渲染它** ——
+    //   于是卡片印成"失败可重试"，用户却只能再写一封。动作由调用方给（`view.onRetry`）。
+    if (view.kind === "retry" && typeof view.onRetry === "function") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "mail-card-retry";
+      retry.textContent = "重试";
+      retry.addEventListener("click", (e) => {
+        // 卡片本身点了是"拆信封"，别让重试顺带把卡点开。
+        e.stopPropagation();
+        retry.disabled = true;
+        retry.textContent = "正在排队…";
+        Promise.resolve()
+          .then(() => view.onRetry())
+          .catch(() => { retry.disabled = false; retry.textContent = "重试"; });
+      });
+      card.appendChild(retry);
+    }
 
     // ★ 原版就是这样：卡片本身可点，点了才拆信封。不是所有信都适合展开 ——
     //   「她还在写」那张没有正文，展开一封信纸是空的，所以只给有正文的开。

@@ -24,6 +24,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -72,7 +73,7 @@ async function startServer({ dataDir, libraryDir }) {
   const res = await fetch(`${base}/api/session`, { signal: AbortSignal.timeout(10000) });
   assert.equal(res.status, 200, `拿会话令牌失败：${res.status}`);
   const token = (await res.json()).token;
-  // 曲库目录得靠写接口设进去（server.mjs 的 DEFAULT_LIBRARY_DIR 是写死的 E:\linlimusic）
+  // 曲库目录得靠写接口设进去（server.mjs 的默认曲库是空串 = 还没选过，见 libraryDirSetting）
   const put = await fetch(`${base}/api/library/dir`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-linli-token": token },
@@ -136,7 +137,7 @@ describe("歌单：数据与接口", () => {
 
   after(async () => {
     await stopServer(child);
-    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+    if (dataDir) await cleanupDir(dataDir);
   });
 
   test("① 一开始没有歌单，GET 回空数组而不是 null", { timeout: 60000 }, async () => {

@@ -1,7 +1,7 @@
 /**
  * 数据备份与恢复 —— 纯函数模块（不碰 express、不碰 socket、不读环境变量以外的东西）。
  *
- * 照姊妹项目 `repo\source\local-service\midi\data-safety.js` 的三条硬约束做，
+ * 照原版程序 `midi\data-safety.js` 的三条硬约束做，
  * 那三条都是踩过坑才立的，一条都不能省：
  *
  * ① **恢复不热执行**。主连接是程序启动时 open、退出才 close 的，Windows 上这个文件
@@ -19,7 +19,7 @@
  * 另外两条是我方自己的情况：
  *  · 我们的库是 **journal_mode=delete**（实测现网 letters.sqlite，数据目录里只有
  *    `letters.sqlite` + 若干 `.bak`，没有 -wal/-shm）。所以复制主库就是完整的一份，
- *    不必像姊妹项目那样先 checkpoint WAL。★ 但**若将来改成 WAL，这里必须先 checkpoint**，
+ *    不必像原版程序那样先 checkpoint WAL。★ 但**若将来改成 WAL，这里必须先 checkpoint**，
  *    否则备份里会漏掉最近的事务。留这条注释是为了改模式那天能看见。
  *  · 独立版没有 `.osfolder` 分享码那些东西，所以导出包里只有 README + manifest + 库本体。
  */
@@ -272,7 +272,15 @@ export async function arrangeRestore(databasePath, source, { label = "", origin 
   }
   if (!existsOrThrow(abs)) throw fail(404, ERR.COMMON_BACKUP_NOT_FOUND, "要恢复的那一份不在了");
   const record = { source: basename(abs), label: String(label || basename(abs)), origin, at: Date.now() };
-  await writeFile(pendingRestorePath(databasePath), JSON.stringify(record, null, 2), "utf8");
+  // ★ 2026-10-19 修（七轮审查 F11）：原来是直接 writeFile 目标文件 —— 写到一半断电/被杀，
+  //   留一个半截 JSON，`readPendingRestore` 解析失败就把这次恢复**静默作废**（用户还得重来）。
+  //   改成"写临时文件 → rename"：rename 在同一个卷上是原子的，
+  //   要么是完整的旧内容、要么是完整的新内容，不会出现半截文件。
+  //   写法与同文件 :109（备份库落盘）保持一致。
+  const target = pendingRestorePath(databasePath);
+  const temp = `${target}.tmp-${process.pid}`;
+  await writeFile(temp, JSON.stringify(record, null, 2), "utf8");
+  await rename(temp, target);
   return record;
 }
 
@@ -333,7 +341,7 @@ export async function applyPendingRestore(databasePath, { log = () => {} } = {})
 // ---------------------------------------------------------------- 导出（脱敏）
 
 export const MAX_EXPORT_BYTES = 512 * 1024 * 1024;
-const EXPORT_KIND = "linli-letters-userdata";
+const EXPORT_KIND = "oliviasoul-community-userdata";
 
 /**
  * 把 settings 里的凭据清空（就地改）。
@@ -369,12 +377,26 @@ export async function exportUserData(databasePath, { version = "0.0.0" } = {}) {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(temp);
     try {
+      // ★ 2026-10-19 修（七轮审查 F2）：凭据类设置**按 key 名整行删除**，不能只靠上面的正则。
+      //   原因：`model_key_dpapi` 存的是 DPAPI 密文（十六进制、以 01000000d08c9ddf 开头），
+      //   四条正则一条都不匹配 ⇒ 导出包里原样带着密文，而 README/manifest 明写「不含 API Key」。
+      //   密文虽然绑定「本机 + 本 Windows 用户」（发到别人机器解不开），但同一台机器同一账户
+      //   仍可解密 —— 承诺与事实不符就是问题，所以整行删掉。
+      let keyRowsRemoved = 0;
+      try {
+        const credKeys = db.prepare("SELECT key FROM settings WHERE key LIKE 'model_key_%' OR key LIKE '%_key_dpapi'").all();
+        const del = db.prepare("DELETE FROM settings WHERE key = ?");
+        for (const row of credKeys) { del.run(row.key); keyRowsRemoved += 1; }
+      } catch {
+        /* settings 表不存在（很旧的库）：没有可删的 */
+      }
       const rows = db.prepare("SELECT key, value FROM settings").all();
       const upd = db.prepare("UPDATE settings SET value = ? WHERE key = ?");
       for (const row of rows) {
         const { value, removed } = scrubCredentials(String(row.value ?? ""));
         if (removed > 0) { upd.run(value, row.key); credentialsRemoved += removed; }
       }
+      credentialsRemoved += keyRowsRemoved;
       const count = (t) => { try { return db.prepare(`SELECT COUNT(*) c FROM "${t}"`).get().c; } catch { return 0; } };
       manifest = {
         kind: EXPORT_KIND,

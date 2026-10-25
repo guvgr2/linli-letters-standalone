@@ -4,9 +4,11 @@
 // 埋在 HTTP 处理器里就没法测，而没法测的护栏等于没有护栏（旧项目踩过：沙箱自造前提 ⇒ 全绿却漏 P0）。
 //
 // ★ 唯一的例外（2026-10-16 T8）：自检阈值改从 `app/harness/行为参数.json` 读，
-//   那是真源侧维护的唯一一份口径。它读不到就抛 —— 不回退、不静默。
+//   那是上游维护的唯一一份口径。它读不到就抛 —— 不回退、不静默。
 
 import { nearTermLimits, proactiveLimits, replyLimits } from "./behavior-params.mjs";
+// ★ 只用于给记忆条目算稳定 id（`ledgerItemId`）—— 不是 IO，也不引随机源，纯函数仍然成立。
+import { createHash } from "node:crypto";
 
 export const PROACTIVE_DEFAULTS = Object.freeze({
   // 用户 2026-10-13 定：默认开启，7 天最多 4 封。
@@ -452,7 +454,7 @@ export function reserveDue(nowSeconds, minGapHours, jitterSeed = 0) {
  *   并且**全局最多重写一次**（竞品也是这样，防止越改越不像人写的）。
  */
 export function withoutSentences(text, spans) {
-  // ★ 2026-10-16 修（DSH 互查 F2）：以前这里**不 trim**，而调用方 `inspectReplyDegraded:464`
+  // ★ 2026-10-16 修（与原版互查 F2）：以前这里**不 trim**，而调用方 `inspectReplyDegraded:464`
   //   比较时**trim 了** ⇒ 若 spans 是按 trimmed 文本算的，删除会落在首尾空白上（删了空白、
   //   没删句子），随后判等成立 ⇒ 静默返回「降级失败」：不抛错、不告警。
   //   ⇒ 进函数第一件事统一坐标系：**一律相对 trimmed 文本**。
@@ -478,11 +480,11 @@ export function inspectReplyDegraded(text, spans) {
 }
 
 /**
- * 主动信设置**落盘前**的整批校验（2026-10-16，两端同步 §9.2）。
+ * 主动信设置**落盘前**的整批校验（2026-10-16，规范 §9.2）。
  *
- * 为什么要有这道：DSH 侧 `POST /toy/letter/proactive` 的缺陷是「先落盘、后校验」⇒
+ * 为什么要有这道：原版 `POST /toy/letter/proactive` 的缺陷是「先落盘、后校验」⇒
  * 其余设置非法时开关已经被改掉（界面表现为「保存失败，但那个勾选框变了」）。
- * 我侧的形态其实**更松** —— 原来压根没有校验，是**逐键 setSetting 直接写**：
+ * 本程序的形态其实**更松** —— 原来压根没有校验，是**逐键 setSetting 直接写**：
  *   `windowStart: "99:99"`、`minGapHours: -5` 这类值会原样进库，而且中途任一键抛错时
  *   前面已经写进去的键不会回滚。
  *
@@ -572,10 +574,10 @@ export function normalizeSettings(raw) {
 
 // ------------------------------------------------------------------ 自检
 //
-// ★ 2026-10-16（两端同步 T8）：下面这批阈值**不再是本文件里的数字**。
-//   唯一真源是随包下发的 `app/harness/行为参数.json`（真源侧维护、随清单推送）。
-//   改口径请改那份 JSON，两端同时生效；本文件**不留任何回退用的硬编码副本**
-//   （留了就是第二份真源，两端漂移正是从"为了不崩先给个默认值"开始的）。
+// ★ 2026-10-16（行为参数统一）：下面这批阈值**不再是本文件里的数字**。
+//   唯一真源是随包下发的 `app/harness/行为参数.json`（上游维护、随清单推送）。
+//   改口径请改那份 JSON，两边同时生效；本文件**不留任何回退用的硬编码副本**
+//   （留了就是第二份真源，两边漂移正是从"为了不崩先给个默认值"开始的）。
 //   `tests/core.test.js` 有一条反向断言钉住这件事：本文件不许再出现「字段名 + 数字字面量」的写法。
 
 const FORBIDDEN_REPLY = replyLimits().forbiddenWords;
@@ -634,8 +636,8 @@ export function inspectProactive(text) {
 
 // ------------------------------------------------------------------ 近况层（T9）
 //
-// ★ 2026-10-16（两端同步 T9）：近况层档位判定。真源 = `行为参数.json` 的 `nearTerm`
-//   （DSH 侧 §4.22 ⑤ 给了可执行判定式，封锁解除）。本函数是**纯函数**：
+// ★ 2026-10-16（近况层接线）：近况层档位判定。真源 = `行为参数.json` 的 `nearTerm`
+//   （原版 §4.22 ⑤ 给了可执行判定式，封锁解除）。本函数是**纯函数**：
 //   输入「信件数 / 用户开关 / 历史最高档 / 关系」，输出档位号（-1 = 不注入）。
 //
 // 判定顺序（与真源 §4.22 ⑤ 的 5 步逐条对应）：
@@ -655,7 +657,7 @@ export function inspectProactive(text) {
 //     排除主动信（她自己写来的信不该推高『往来多久』的档位）；
 //     排除在途信（生成回信时那封信已在表里，不排除会比已回信数提前 1 封）。」
 //
-// 本侧列名不同但语义一一对应：`person` 无（单人）· `source` ⇒ `origin`
+// 本程序列名不同但语义一一对应：`person` 无（单人）· `source` ⇒ `origin`
 // （NULL = 用户来信，'proactive' = 林离先写）· `status` ⇒ 同为 `status`。
 //
 // ⚠️ 两个会写错的地方（都是真踩过的）：
@@ -804,7 +806,7 @@ export function prettySongName(dirName) {
 //   用户 2026-10-14 把原版那四档**逐张截图**发过来校准（古典 7 张 / ACG 10 张 /
 //   轻音乐 2 张）。把那些曲目和曲库里的目录名逐首对上之后，得到一个可复核的事实：
 //       古典 48 + ACG 68 + 轻音乐 13 = 129，
-//   而 129 正好就是 `E:\linlimusic` 里 `Solo_` 98 + `PlaySing_` 31 的**全集**。
+//   而 129 正好就是 `<曲库目录>` 里 `Solo_` 98 + `PlaySing_` 31 的**全集**。
 //   也就是说这套命名与原版四档是**一一对应**的 —— 分类不是猜，是查表。
 //   （`midi_` / `oliviasoul_` 那 2455 个目录全是「我的上传」，见下。）
 //
@@ -948,7 +950,7 @@ export function classifyGenre(dirName, songName = "") {
 // ---------------------------------------------------------------- 官方曲名表
 //
 // ★ 来源（2026-10-15 定稿）：用户 2026-10-14 深夜截的**原版曲库页** 19 张截图
-//   （古典 7 + ACG 10 + 轻音乐 2），逐行读出后与 `E://linlimusic` 的 129 个目录
+//   （古典 7 + ACG 10 + 轻音乐 2），逐行读出后与 `<曲库目录>` 的 129 个目录
 //   用「模式列（独奏98/弹唱31）+ 实测时长 + 目录名语义」三重指纹对表 —— 129/129
 //   零歧义（见 analysis/songs/）。**没有这层，用户电脑里有官方歌曲时界面只会显示
 //   裸目录名**（`PlaySing The Road Not Taken`），这是用户明确在意的事。
@@ -1188,4 +1190,263 @@ export function parseLedger(text) {
     if (LEDGER_FIELDS.includes(key)) out[key] = trimmed.slice(idx + 1).trim();
   }
   return out;
+}
+
+// ---------------------------------------------------------------- 账本条目化（A1 记忆可更正）
+
+/** 把「键　值」文本拆成条目数组。与 `parseLedger` 的唯一区别是**保留顺序与重复**：
+ *  parseLedger 是「同键后者覆盖前者」，条目化需要知道"这一版是第几次写"，所以不能合并。 */
+export function ledgerItemsFromText(text) {
+  const out = [];
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf("　");
+    if (idx < 0) continue;
+    const field = trimmed.slice(0, idx).trim();
+    if (!LEDGER_FIELDS.includes(field)) continue;
+    const value = trimmed.slice(idx + 1).trim();
+    if (!value) continue;
+    out.push({ field, value });
+  }
+  return out;
+}
+
+/** 稳定 id：同一 (字段, 值) 的哈希 + 修订号。
+ *  ★ 为什么不用自增主键：迁移与"用户在另一台机器上改过"都要能对上同一条记忆；
+ *    用内容哈希 + 修订号，同一内容重跑迁移不会产生新 id（重复跑出不同 id 会让"撤销"失效）。
+ *  ★ 为什么带修订号：用户把「关系」从 A 改成 B 再改回 A 时，id 必须不同 ——
+ *    否则 supersedes 链会指回自己。 */
+export function ledgerItemId(field, value, revision = 1) {
+  const hash = createHash("sha1").update(`${field}\u0000${value}`).digest("hex").slice(0, 12);
+  return `${hash}-v${revision}`;
+}
+
+/** 同字段只留最新的 `perFieldLimit` 条（其余视为过期）。
+ *  ★ 为什么不是"全留"：账本字段是**当前状态**，不是流水；留一堆历史会让
+ *    「给模型看的上下文」里出现自相矛盾的两条（旧的是"一般朋友"、新的是"密友"）。 */
+export function mergeLedgerItems(items, { perFieldLimit = 5 } = {}) {
+  const byField = new Map();
+  for (const item of items) {
+    if (!item || item.status === "deleted") continue;
+    const list = byField.get(item.field) ?? [];
+    list.push(item);
+    byField.set(item.field, list);
+  }
+  const out = [];
+  for (const [field, list] of byField) {
+    list.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+    for (const item of list.slice(0, perFieldLimit)) out.push({ ...item, field });
+  }
+  return out;
+}
+
+/** 把条目拼回「键　值」文本（只给仍然 active 的、每字段最新一条）。 */
+export function ledgerItemsToText(items) {
+  const latest = new Map();
+  for (const item of items) {
+    if (!item || item.status !== "active") continue;
+    const seen = latest.get(item.field);
+    if (!seen || (item.updated_at ?? 0) >= (seen.updated_at ?? 0)) latest.set(item.field, item);
+  }
+  return [...latest.values()].map((item) => `${item.field}　${item.value}`).join("\n");
+}
+
+// ---------------------------------------------------------------- 她的世界（A3）
+//
+// ★ 这里只放**纯函数**：同一组输入必须给同一组输出，不碰数据库、不碰网络、不读文件。
+//   原因不是洁癖 —— 世界状态要能单测（"不同信号给不同状态"），
+//   而模型只允许改写 `detail` 的措辞，不允许新增事实，所以"算状态"与"写句子"必须分开。
+
+export const WORLD_ACTIVITIES = Object.freeze([
+  "练琴", "听歌", "写信", "发呆", "收拾", "睡了", "在忙", "等你",
+]);
+
+const HOUR = 3600;
+const DAY = 86400;
+
+function localParts(seconds) {
+  const d = new Date(seconds * 1000);
+  return { hour: d.getHours(), month: d.getMonth() + 1, day: d.getDate() };
+}
+
+/** 她此刻在做什么。
+ *  信号优先级（高 → 低）：重要日子 › 你很久没来信 › 刚写完回信 › 在练你常放的曲子 › 你的惯常时段 › 按钟点的基础作息。
+ *  ★ 「没有信号时退化成基础作息，绝不硬编」—— 这是与竞品最大的区别：
+ *    竞品是时钟驱动的生理模拟器，我们是"她的当下由你的行为供料，并且说得清"。 */
+export function worldAt({ now, lastLetterAt = null, lastReplyAt = null, plays = [], habits = [], importantDates = [] } = {}) {
+  const at = Number(now);
+  if (!Number.isFinite(at) || at <= 0) throw new Error("worldAt 需要 now（秒）");
+  const { hour, month, day } = localParts(at);
+
+  const today = importantDates
+    .map((item) => (typeof item === "string" ? { label: item } : item))
+    .find((item) => Number(item.month) === month && Number(item.day) === day);
+  if (today) {
+    return {
+      activity: "收拾",
+      detail: `在收拾一下屋子 —— 今天是${today.label ? `「${today.label}」` : "个要紧的日子"}。`,
+      reason: `今天是${today.label ?? "你提过的日子"}，她提前收拾`,
+      evidence: { date: `${month}-${day}`, label: today.label ?? null },
+      source: "date",
+    };
+  }
+
+  if (Number.isFinite(Number(lastLetterAt)) && lastLetterAt) {
+    const days = Math.floor((at - Number(lastLetterAt)) / DAY);
+    if (days >= 3) {
+      return {
+        activity: "等你",
+        detail: "把之前的信翻出来又看了一遍，信纸摊着。",
+        reason: `你已经 ${days} 天没来信了`,
+        evidence: { daysSince: days, lastLetterAt: Number(lastLetterAt) },
+        source: "letter",
+      };
+    }
+  }
+
+  if (Number.isFinite(Number(lastReplyAt)) && lastReplyAt) {
+    const since = at - Number(lastReplyAt);
+    if (since >= 0 && since < 6 * HOUR) {
+      return {
+        activity: "写信",
+        detail: "刚把那封回信写完，笔还没收。",
+        reason: "她刚给你写完回信",
+        evidence: { lastReplyAt: Number(lastReplyAt), hoursSince: Math.round(since / HOUR) },
+        source: "letter",
+      };
+    }
+  }
+
+  // plays: [{ dir, at, count }] —— 只统计最近 24 小时；同一首放过 >=2 次才算"常放"
+  const recent = (Array.isArray(plays) ? plays : [])
+    .filter((p) => p && p.dir && Number(p.at) > 0 && at - Number(p.at) <= DAY)
+    .sort((a, b) => Number(b.at) - Number(a.at));
+  if (recent.length) {
+    const counts = new Map();
+    for (const p of recent) counts.set(p.dir, (counts.get(p.dir) ?? 0) + (Number(p.count) || 1));
+    const [dir, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (count >= 2) {
+      return {
+        activity: "练琴",
+        detail: `在练那首你最近总放的曲子（${count} 次）。`,
+        reason: `你最近放过这首 ${count} 次`,
+        evidence: { songDir: dir, count, lastPlayedAt: Number(recent[0].at) },
+        source: "song",
+      };
+    }
+  }
+
+  const habit = (Array.isArray(habits) ? habits : []).find((h) => hour >= Number(h.fromHour) && hour < Number(h.toHour));
+  if (habit) {
+    return {
+      activity: "写信",
+      detail: "把信纸摊开了 —— 你常在这个时候来。",
+      reason: "这是你惯常来信的时段",
+      evidence: { fromHour: Number(habit.fromHour), toHour: Number(habit.toHour) },
+      source: "habit",
+    };
+  }
+
+  if (hour < 6) {
+    return { activity: "睡了", detail: "已经睡了。", reason: "按时间的基础作息：深夜", evidence: { hour }, source: "clock" };
+  }
+  if (hour < 9) {
+    return { activity: "在忙", detail: "刚醒，在忙自己的事。", reason: "按时间的基础作息：早晨", evidence: { hour }, source: "clock" };
+  }
+  if (hour < 12) {
+    return { activity: "听歌", detail: "戴着耳机听一会儿。", reason: "按时间的基础作息：上午", evidence: { hour }, source: "clock" };
+  }
+  if (hour < 18) {
+    return { activity: "发呆", detail: "坐在窗边发呆。", reason: "按时间的基础作息：下午", evidence: { hour }, source: "clock" };
+  }
+  if (hour < 24) {
+    return { activity: "练琴", detail: "在练琴。", reason: "按时间的基础作息：傍晚", evidence: { hour }, source: "clock" };
+  }
+  return { activity: "睡了", detail: "已经睡了。", reason: "按时间的基础作息：深夜", evidence: { hour }, source: "clock" };
+}
+
+/** 校验一条世界状态：activity 必须是枚举、evidence 必须存在。
+ *  ★ 放成导出函数是为了让"非法值直接抛，不落库"这条能被单测钉住。 */
+export function assertWorldState(state) {
+  if (!state || typeof state !== "object") throw new Error("世界状态必须是对象");
+  if (!WORLD_ACTIVITIES.includes(state.activity)) {
+    throw new Error(`世界状态的 activity 不在枚举里：${state.activity}`);
+  }
+  if (!state.evidence || typeof state.evidence !== "object") throw new Error("世界状态必须有 evidence");
+  if (!state.reason) throw new Error("世界状态必须有 reason");
+  if (!state.source) throw new Error("世界状态必须有 source");
+  return state;
+}
+
+// ---------------------------------------------------------------- 她的日记（A2）
+
+/** 锁住"那一天发生过什么"。
+ *  ★ 这是日记的唯一事实来源，生成后**不再重算**：改设定、改信件都不许让旧日记改写。
+ *    只存 id 与摘要，绝不存正文副本（数据安全底线：新表里不出现信件正文）。 */
+export function diaryFacts({ day, letters = [], plays = [], world = null } = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(day ?? ""))) throw new Error("日记的 day 必须是 YYYY-MM-DD");
+  return {
+    day,
+    letters: (Array.isArray(letters) ? letters : []).map((l) => ({
+      id: String(l.id ?? ""),
+      at: Number(l.at ?? 0),
+      excerpt: String(l.excerpt ?? "").slice(0, 40),
+    })),
+    plays: (Array.isArray(plays) ? plays : []).map((p) => ({ dir: String(p.dir ?? ""), count: Number(p.count) || 1 })),
+    world: world ? { activity: world.activity, reason: world.reason } : null,
+  };
+}
+
+/** 日记该不该写：默认"这一天和她没有任何往来就不写"，除非用户显式打开那个开关。
+ *  ★ 这条规则放在纯函数里，是因为它决定了"日记会不会变成机械流水账"。 */
+export function shouldWriteDiary({ facts, writeEmptyDay = false } = {}) {
+  const hasLetters = (facts?.letters?.length ?? 0) > 0;
+  const hasMusic = (facts?.plays?.length ?? 0) > 0;
+  if (hasLetters || hasMusic) return true;
+  return Boolean(writeEmptyDay);
+}
+
+/** 「最近往来」能塞进 prompt 的字符预算。
+ *  ★ 为什么要有预算：以前固定送最近 6 封**全文**，单封上限 4000 字 ⇒ 最坏 48000 字
+ *    （中文差不多就是四万多个 token），再加上人设 + 写法 + 预检，小上下文的模型直接被顶爆，
+ *    表现成 callModel 抛 400，那封信变「生成失败」—— 用户看不出是"信写太长了"。
+ *  ★ 原版程序的做法是给每封信存一条 LLM 摘要（`letter_summaries`），
+ *    再按摘要压缩历史。那套要额外的整理任务、要缓存、要版本号，代价不小；这里先做**便宜的
+ *    那半**：按预算整段取舍，绝不截断某一封的正文（截断会把一句话切掉半句，模型会当真的读）。
+ *  12000 字 ≈ 中文 1.2 万 token 量级，给 6 封往来留够位置，也不至于压垮 8k 上下文以外的常见模型。 */
+export const HISTORY_BUDGET_CHARS = 12000;
+
+/** 从「时间正序」的往来里挑出能放进预算的一段（还是时间正序）。
+ *  ★ 永远保留最近一封 —— 哪怕它一封就超预算：最新的那封是这封回信唯一必须接住的上文，
+ *    为了"守预算"把它丢掉，等于让林离忘了刚说完的话。
+ *  ★ 只在**整封**的边界上取舍，绝不切正文。 */
+export function pickRecentWithinBudget(rows, budget = HISTORY_BUDGET_CHARS) {
+  const list = Array.isArray(rows) ? rows : [];
+  const limit = Number.isFinite(budget) && budget > 0 ? budget : HISTORY_BUDGET_CHARS;
+  const picked = [];
+  let used = 0;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const row = list[i] ?? {};
+    const cost = String(row.content ?? "").length + String(row.reply_text ?? "").length;
+    if (picked.length && used + cost > limit) break;
+    picked.unshift(row);
+    used += cost;
+  }
+  return picked;
+}
+
+/** 预检回来的值该不该落库（A1 的核心规则，抽成纯函数才测得住）。
+ *  ① 你亲手改过这一字段且值不同 ⇒ 不覆盖，挂冲突；
+ *  ② 已经是同一个值 ⇒ 跳过（不要每封信都插一条重复行）；
+ *  ③ 否则写一条新条目，`supersedes` 指向同字段上一条 active。
+ *  ★ 这条规则就是"改完下次又被模型写回去"这个痛点的解 —— 放在纯函数里，
+ *    测试可以直接喂三种情形，不必起服务、更不必真调模型。 */
+export function decideLedgerWrite({ value, existing = [] } = {}) {
+  const active = (Array.isArray(existing) ? existing : []).filter((item) => item && item.status === "active");
+  const mine = active.filter((item) => item.origin === "user").sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))[0];
+  if (mine && mine.value !== value) return { action: "conflict", mine: mine.value };
+  if (active.some((item) => item.value === value)) return { action: "skip" };
+  const prev = [...active].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))[0];
+  return { action: "write", supersedes: prev?.id ?? null };
 }

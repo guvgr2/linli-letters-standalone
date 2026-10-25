@@ -32,6 +32,17 @@ const COLUMN_TESTS = ["tests/import-columns.test.js"];
 const TIER_TESTS = ["tests/tier-count.test.js"];
 const VARS_TESTS = ["tests/harness-vars.test.js"];
 const PLAYER_TESTS = ["tests/player-queue.test.js"];
+// 曲库扫描的接线（官方曲名/作曲家/模式/时段）只由这一层守 —— scanLibrary 是 server 里的
+// async 函数，没有独立的纯函数测试文件，所以要打就打能在 /api/library 响应里露头的位置。
+const LIBRARY_SCAN_TESTS = ["tests/library-scan.test.js"];
+// 播放顺序 / 自动走下一首的规则全在 server.mjs 的 stageAdvance() 里（桌面层调它），
+// 由这一层守：顺序到头回待机、单曲不换、随机不给自己。
+const STAGE_MODE_TESTS = ["tests/stage-mode.test.js"];
+// A1/A2/A3（记忆条目 / 她的日记 / 她的世界）的规则都在 server.mjs 里，
+// 三份测试都是起真服务打 HTTP —— 变异要打在"能在响应或库里露头"的位置。
+const MEMORY_ITEM_TESTS = ["tests/memory-items.test.js"];
+const DIARY_TESTS = ["tests/diary.test.js"];
+const WORLD_TESTS = ["tests/world.test.js"];
 
 // ---------------------------------------------------------------- 变异清单
 //
@@ -39,6 +50,67 @@ const PLAYER_TESTS = ["tests/player-queue.test.js"];
 // from 必须**原样**出现在 core.mjs 里，否则这一条等于没测，脚本会单独标出来。
 
 const MUTATIONS = [
+  // ---- 曲库扫描的接线（2026-10-18 接上 officialSong/songMode/slots 时补） ----
+  //
+  // `officialSong()` / `songDisplayName()` / `songMode()` 三个纯函数早就在 core.mjs 写好了，
+  // 但 `scanLibrary()` 一直只吐 `{name, dir}` —— **函数摆着没人调**，界面于是只显示裸
+  // 目录名。这批变异专打"接线"，跟上面那条等价变异（主动来信的未读门槛）无关。
+  {
+    name: "曲库-官方曲名没了(界面退回裸目录名 PlaySing The Road Not Taken)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    from: "name: songDisplayName(entry.name),",
+    to: "name: prettySongName(entry.name),",
+  },
+  {
+    name: "曲库-作曲家没了(曲名后面那个 Bach/童谣 永远空着)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    // ★ 2026-10-19：scanLibrary 的作曲家现在有两级来源（官方表 → covers-meta.json），
+    //   锚点跟着改成三级空值合并；只认官方表的话这条变异不再命中原文。
+    from: "composer: official?.composer ?? meta?.composer ?? null,",
+    to: "composer: null,",
+  },
+  {
+    name: "曲库-表外也硬凑作曲家(表里查不到也给个名字)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    from: "composer: official?.composer ?? meta?.composer ?? null,",
+    to: 'composer: official?.composer ?? meta?.composer ?? "HOYO-MIX",',
+  },
+  {
+    name: "曲库-模式列全变成独奏(弹唱那 31 首认不出来)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    // ★ 不能写 `SONG_MODES.solo`：server.mjs 没 import 这个常量，植入后服务一启动就
+    //   `ReferenceError: SONG_MODES is not defined`（实测：设曲库目录直接 500，
+    //   before 钩子挂掉，断言根本没跑到 —— 看着"变红"，其实什么都没证明）。
+    //   要打的是"songMode 被绕过"，所以用字面量 "独奏"。
+    from: "mode: songMode(entry.name),",
+    to: 'mode: "独奏",',
+  },
+  {
+    name: "曲库-时段不去重(同一段的 NI/WI 两个机位算成两段)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    from: "slots = TIME_SLOTS.filter((t) => set.has(t));",
+    to: "slots = TIME_SLOTS.filter((t) => set.has(t) || true);",
+  },
+  {
+    name: "曲库-时段顺序倒了(不按白天到夜晚排)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    from: "slots = TIME_SLOTS.filter((t) => set.has(t));",
+    to: "slots = TIME_SLOTS.filter((t) => set.has(t)).reverse();",
+  },
+  {
+    name: "曲库-没片子也假装有三段(界面上点进去一片黑)",
+    file: "app/server.mjs",
+    tests: LIBRARY_SCAN_TESTS,
+    from: "catch { slots = []; }",
+    to: "catch { slots = []; } slots = slots.length ? slots : [...TIME_SLOTS];",
+  },
+
   // ---- 借鉴竞品那 9 条 ----
   {
     name: "她自己的作息(1)-闸门只留用户那一侧",
@@ -238,25 +310,102 @@ const MUTATIONS = [
     to: "if (false) {",
   },
   {
-    name: "播放-顺序播放最后首页也绕回去(和列表循环没区别了)",
+    // ★ 2026-10-19：窗口内的 video 播放链整条删掉了（片子只在桌面那层放），
+    //   原来那三条针对 `__onEndedSong`/自动续播的变异已无原文可打。
+    //   队列规则现在只有 `step(delta)` 一处，变异直接打在它的两个判据上。
+    name: "播放-下一首不按列表顺序走(永远从第一首开始)",
     file: "app/public/app.js",
     tests: PLAYER_TESTS,
-    from: "if (at < 0 || at >= list.length - 1) return;",
-    to: "if (false) return;",
+    from: "next = list[(base + delta + list.length) % list.length] ?? list[0];",
+    to: "next = list[0];",
   },
   {
-    name: "播放-正片播完不接下一首(停在那儿像卡死)",
+    name: "播放-上一首从第一首不绕回最后一首(环形断了)",
     file: "app/public/app.js",
     tests: PLAYER_TESTS,
-    from: 'v.addEventListener("ended", v.__onEndedSong);',
-    to: "",
+    from: "next = list[(base + delta + list.length) % list.length] ?? list[0];",
+    to: "next = list[Math.max(0, base + delta)] ?? list[0];",
   },
   {
-    name: "播放-ended 挂上不摘(播一首挂一个，播完连跳好几首)",
+    name: "播放-随机模式原地打转(点下一首可能还是这首)",
     file: "app/public/app.js",
     tests: PLAYER_TESTS,
-    from: 'if (v.__onEndedSong) { v.removeEventListener("ended", v.__onEndedSong); v.__onEndedSong = null; }',
-    to: "",
+    from: "const pool = list.filter((s) => s.dir !== player.dir);",
+    to: "const pool = list;",
+  },
+  {
+    // 服务端这条（桌面层在曲子播完时调的）：顺序播放到头必须回待机，
+    // 绕回去就跟"列表循环"一模一样了。
+    name: "播放-顺序播放到头不清曲子(顺序和列表循环没区别了)",
+    file: "app/server.mjs",
+    tests: STAGE_MODE_TESTS,
+    from: '        stageForced = "";\n        return { dir: null, url: null, reason: "idle", mode, ended: true };',
+    to: '        return { dir: null, url: null, reason: "idle", mode, ended: true };',
+  },
+  {
+    name: "播放-单曲循环也换下一首(单曲形同虚设)",
+    file: "app/server.mjs",
+    tests: STAGE_MODE_TESTS,
+    from: '  if (mode === "single") return { ...(await stageNext()), mode };',
+    to: '  if (false) return { ...(await stageNext()), mode };',
+  },
+  {
+    name: "播放-随机选到自己(桌面连放同一首)",
+    file: "app/server.mjs",
+    tests: STAGE_MODE_TESTS,
+    from: "    const pool = queue.filter((dir) => dir !== forced);",
+    to: "    const pool = queue;",
+  },
+
+  // ---- A1 记忆可更正（2026-10-19 方案 1 节） ----
+  {
+    // 你亲手改的那条必须 origin='user'：否则「以你为准」在 memoryContext 里就不成立，
+    // 模型下次仍会拿自己推断的那条去顶。
+    name: "记忆-用户更正被记成模型推断(你的更正失去优先权)",
+    file: "app/server.mjs",
+    tests: MEMORY_ITEM_TESTS,
+    from: "            VALUES (?, ?, ?, 'user', NULL, 'active', ?, ?, ?)",
+    to: "            VALUES (?, ?, ?, 'model', NULL, 'active', ?, ?, ?)",
+  },
+  {
+    // 软删除的条目绝不能进 memoryContext —— 否则「这条不对」点了也没用。
+    name: "记忆-已删除的条目仍然喂给模型(点这条不对等于没点)",
+    file: "app/server.mjs",
+    tests: MEMORY_ITEM_TESTS,
+    from: "    \"SELECT field, value FROM ledger_items WHERE status = 'active' AND origin = 'user' ORDER BY updated_at DESC, rowid DESC\",",
+    to: "    \"SELECT field, value FROM ledger_items WHERE origin = 'user' ORDER BY updated_at DESC, rowid DESC\",",
+  },
+
+  // ---- A2 她的日记（方案 2 节） ----
+  {
+    name: "日记-没有往来的日子也硬写一篇(每天都有日记)",
+    file: "app/server.mjs",
+    tests: DIARY_TESTS,
+    from: "  if (!shouldWriteDiary({ facts, writeEmptyDay:",
+    to: "  if (false && !shouldWriteDiary({ facts, writeEmptyDay:",
+  },
+  {
+    name: "日记-重写不留旧版本(当时依据什么写的再也查不到)",
+    file: "app/server.mjs",
+    tests: DIARY_TESTS,
+    from: "    db.prepare(\"INSERT INTO diary_history(day, body, facts, replaced_at) VALUES(?,?,?,?)\")",
+    to: "    db.prepare(\"SELECT ?,?,?,?\")",
+  },
+
+  // ---- A3 她的世界（方案 3 节） ----
+  {
+    name: "世界-用户点了曲子她还在练(该让开却抢桌面)",
+    file: "app/server.mjs",
+    tests: WORLD_TESTS,
+    from: "  if (stageForced) return null;",
+    to: "  if (false) return null;",
+  },
+  {
+    name: "世界-限频失效(同一首反复练,一小时能放几十遍)",
+    file: "app/server.mjs",
+    tests: WORLD_TESTS,
+    from: "  if (practicedThisHour >= WORLD_MAX_PER_HOUR) return null;",
+    to: "  if (false) return null;",
   },
 
   // ---- 协议那一链（用户 2026-10-13：「设置页的协议还是别删了」） ----
@@ -292,8 +441,10 @@ const MUTATIONS = [
     name: "协议-正文被手抄进 index.html(从此有两份会各改各的)",
     file: "app/public/index.html",
     tests: LEGAL_TESTS,
-    from: "      <div class=\"legalbar\">",
-    to: "      <p>一、你的东西都在你自己机器上</p>\n      <div class=\"legalbar\">",
+    // ★ 2026-10-19：设置页重排后 `.legalbar` 没了，协议入口改成「工具」段的两个 .lnk 按钮；
+    //   变异仍要证明「正文不许手抄到页面里」，锚点换成这段动作区。
+    from: '          <div class="set-item-c">\n            <button class="lnk" id="lnkPrivacy">隐私政策</button>',
+    to: '          <div class="set-item-c">\n            <p>一、你的东西都在你自己机器上</p>\n            <button class="lnk" id="lnkPrivacy">隐私政策</button>',
   },
   {
     name: "协议-小链接被套上液态玻璃高光(变成视觉焦点)",

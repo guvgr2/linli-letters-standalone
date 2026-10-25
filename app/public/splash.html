@@ -29,7 +29,7 @@
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
-  margin:0; background:#16141A; color:var(--tx);
+  margin:0; background:transparent; color:var(--tx);
   font:14px/1.7 "PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased;
   overflow:hidden;
@@ -37,6 +37,14 @@ body{
   /* 无边框窗体：整页不可选、不出现文本光标 */
   user-select:none; -webkit-user-select:none; cursor:default;
 }
+/* ★ 2026-10-18 用户指令「把黑框去掉，只留里面的动画」：
+   以前 body 是不透明的 #16141A，窗体 480×640 比动画本体（320×480 舞台 + 底部一行文案）
+   大一圈，那一圈就是用户看到的"黑框"。现在页面背景透明，
+   配合外壳的透明窗体（SplashWindow），只有动画本身有像素，其余透空。 */
+.splash{background:transparent}
+/* 氛围光斑跟着去黑框一起删：它们是给"死板的纯色底"打的补丁，
+   底没了它们就是悬在用户桌面上的三团白雾。 */
+#bg{display:none}
 
 /* 氛围层：三团极淡的白光斑，只为让纯色底不是一块死板的板 */
 #bg{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
@@ -239,9 +247,11 @@ body{
   100%{opacity:1;transform:scale(1) rotate(-6deg)}}
 
 /* ---- 下方的文案与光轨 ---- */
-.p-stage{margin:20px 0 0;font-size:13px;color:var(--tx2);min-height:22px;text-align:center;
-  transition:opacity .22s}
-.p-stage.swap{opacity:0}
+/* ★ 2026-10-21 用户指令「启动动画底下的字去掉，不要向用户解释咱们的材质是什么」：
+   阶段解说行（"把林离叫起来…""飞到半路，它会变成玻璃的"……）整行删除 ——
+   那一行既在向用户解释程序内部在干什么，最后一句还在解说我们自己的材质。
+   动画自己会说话：信封、信纸、折飞机、飞走，不需要旁白。
+   （元素与两条样式一起删；JS 里 stageEl 可能为 null，已加 guard。） */
 .track{position:relative;width:320px;max-width:88%;height:2px;margin:16px 0 0;border-radius:2px;
   background:rgba(255,255,255,.13)}
 .track i{position:absolute;left:0;top:0;height:100%;border-radius:2px;width:var(--p,0%);
@@ -336,7 +346,6 @@ body{
   </div>
   </div>
 
-  <p class="p-stage" id="stage">正在准备信纸…</p>
   <div class="track"><i></i><b></b></div>
   <p class="p-sign" id="sign">OliviaSoul-community独立版</p>
   <div class="dots" id="dots"></div>
@@ -460,35 +469,62 @@ function atProgress(pRaw){
   lines.forEach((ln, i) => ln.classList.toggle("on", p >= 81 + i * 2.7));
   sheetSig.classList.toggle("on", p >= 94);
 
-  // ⑤ 折飞机 + 放飞（这一段用 **pRaw**）
-  //   ★★ 要**看得见折**：顿一拍 → 折一 → 顿一拍 → 折二 → 换手（整段 1500ms）
+  // ⑤ 折成纸飞机 + 放飞（这一段用 **pRaw**）
+  //   ★★ 2026-10-21（用户口径：「信不能收回去啊，这样纸飞机从哪出来的。
+  //      要加个折叠动画，把他折成纸飞机啊」）：
+  //     以前这里是"信纸用 clip 倒着收回去 + 淡出，飞机另起一处淡入" ⇒ 读作
+  //     "信被收回、飞机不知从哪来"。现在飞机**从信里折出来**，四步：
+  //       ① 顶折折回：摊开时翻上来的那片折片（lidB）原路 rotateX 0→-90 折下去，
+  //          clip 同步收起 33.333% —— 跟 ③ 摊开是逆运算，看起来就是"在折信"；
+  //       ② 中折折回：lidA 同样折下去，clip 再收 33.333% ⇒ 信折成一条；
+  //       ③ 对折：折条横向收窄（scaleX 1→0.55）—— 纸飞机折成前的最后一下；
+  //       ④ 飞机从折条处**长出来**：同位置（起点低 50px＝折条中心）、从小放大、
+  //          与折条交叉淡化 ⇒ 因果连上，再接飞走。
   const HOLD1 = LETTER_END + 1.0, FOLD1 = LETTER_END + 3.5;   // 顶折 57.0 → 59.5
   const HOLD2 = LETTER_END + 4.0, FOLD2 = LETTER_END + 6.5;   // 中折 60.0 → 62.5
+  const HOLD3 = LETTER_END + 7.2;                             // 折成条后顿一拍 63.2
   const f1 = ease(span(pRaw, HOLD1, FOLD1));
   const f2 = ease(span(pRaw, HOLD2, FOLD2));
+  const half  = ease(span(pRaw, HOLD3, FOLD_END + 1.5));      // 对折 + 飞机长出 63.2 → 65.5
   const flyT   = ease(span(pRaw, FOLD_END, 100));
   const glassT = ease(span(pRaw, GLASS_FROM, GLASS_END));
   const gone   = ease(span(pRaw, GONE_FROM, 100));
+  // 两块折片原路折回去（与 ③ 摊开时互为逆运算）。各自只在自己的那一拍里可见 ——
+  // 折到 -90° 时侧面对着屏幕，本来也看不见；不折时是 0°，盖在信纸对应那一份上
+  // （同纸色，摊开时就是这么交接的，反过来一样）。
+  lidB.style.transform = `rotateX(${(-90 * f1).toFixed(2)}deg)`;   // 顶折先折
+  lidA.style.transform = `rotateX(${(-90 * f2).toFixed(2)}deg)`;   // 中折后折
+  lidB.style.opacity = (pRaw >= HOLD1 && pRaw < FOLD1 + 0.8) ? "1" : "0";
+  lidA.style.opacity = (pRaw >= HOLD2 && pRaw < FOLD2 + 0.8) ? "1" : "0";
+  // 折痕跟着回来（c1＝顶折缝、c2＝中折缝，与 ③ 的淡出互为逆运算）
+  creaseC1.style.setProperty("--crease", ease(f1).toFixed(3));
+  creaseC2.style.setProperty("--crease", ease(f2).toFixed(3));
   if (pRaw >= LETTER_END) {
-    // 信**倒着折回去**：摊开是 clip 从 66.667% 收到 0%，折回去就是 0% → 66.667%。
-    // 分**两拍**收（每拍 33.333%，中间停一拍）⇒ 才是"折了两次"，不是一次缩放。
+    // clip 跟着两拍折回收起：0% → 33.333% → 66.667%（信纸本体不变形，折的是那两片）
     sheet.style.clipPath = `inset(${(33.333 * f1 + 33.333 * f2).toFixed(3)}% 0 0 0)`;
     const foldTilt = -1.8 * Math.sin(f1 * Math.PI) + 1.8 * Math.sin(f2 * Math.PI);
-    sheet.style.transform = `translateY(${(-RISE).toFixed(1)}px) rotate(${foldTilt.toFixed(3)}deg)`;
-    sheet.style.opacity = (1 - ease(span(pRaw, FOLD2, FOLD_END))).toFixed(3);
+    sheet.style.transform =
+      `translateY(${(-RISE).toFixed(1)}px) rotate(${foldTilt.toFixed(3)}deg) scaleX(${(1 - 0.45 * half).toFixed(3)})`;
+    sheet.style.opacity = (1 - ease(span(pRaw, HOLD3, FOLD_END + 1.2))).toFixed(3);
   } else {
     sheet.style.opacity = "1";
   }
-  // 飞机：先长出来（不是"啪"地出现），再飞走
-  const born = ease(span(pRaw, FOLD2, FOLD_END));
+  // 飞机：从折条处长出来（born 0→1 时从折条中心升到飞行位、从 0.35 长到 1），再飞走
+  const born = ease(span(pRaw, HOLD3 - 0.2, FOLD_END + 2.0));   // 63.0 → 66.0
   const flyE = 1 - Math.pow(1 - flyT, 2);
   const dash = Math.pow(span(pRaw, GONE_FROM, 100), 2);
   const px = 30 * flyE + 40 * dash;
-  const py = -54 * flyE - 12 * Math.sin(flyT * Math.PI) - 30 * dash;
-  const ps = (0.62 + 0.38 * born) * (1 - 0.28 * Math.pow(flyE, 3));
+  const py = -54 * flyE - 12 * Math.sin(flyT * Math.PI) - 30 * dash + 50 * (1 - born);
+  const ps = (0.35 + 0.65 * born) * (1 - 0.28 * Math.pow(flyE, 3));
   const prot = -13 + 9 * flyT + 3.4 * Math.sin(flyT * Math.PI * 2);
   plane.style.opacity = (born * (1 - gone)).toFixed(3);
   plane.style.transform = `translate(${px.toFixed(1)}px,${py.toFixed(1)}px) rotate(${prot.toFixed(2)}deg) scale(${ps.toFixed(3)})`;
+  // 火漆印是盖在信纸上的 ⇒ 跟着信一起折没，不独自漂在信封上
+  // （① 在 p>=96 会把 wax 的行内 opacity 清空，所以这里必须每帧盖回去；
+  //   ★ 还必须写 important：.wax.stamped 挂着 animation:stamp ... forwards，
+  //     animation 的填充值压在普通行内样式之上 —— 不写 important 这行等于没写。）
+  if (pRaw >= HOLD3)
+    wax.style.setProperty("opacity", (1 - ease(span(pRaw, HOLD3, FOLD_END + 1.2))).toFixed(3), "important");
   // 材质在飞行途中换：纸 → 玻璃
   plPaper.style.opacity = (1 - glassT).toFixed(3);
   plGlass.style.opacity = glassT.toFixed(3);
@@ -500,9 +536,11 @@ function atProgress(pRaw){
   // 信封在飞机走远时淡出 ⇒ 最后一帧是干净的
   // ★★ wax 挂着 `animation:stamp ... forwards`，而 animation 压在普通内联样式之上
   //    ⇒ 淡出必须写 important（important author 排在 animation 之上）才压得住。
+  // ★ 2026-10-21：wax 不在这张表里了 —— 它是盖在信纸上的，已在 ⑤ 跟着信一起折没；
+  //   留在这会把它从"折没了"又救回来（important 盖得住行内样式），白漂半秒。
   if (pRaw >= ENV_OUT) {
     const envOut = (1 - ease(span(pRaw, ENV_OUT, 100))).toFixed(3);
-    for (const el of [envFront, envFace, envInner, envPaper, flap, wax]) {
+    for (const el of [envFront, envFace, envInner, envPaper, flap]) {
       el.style.setProperty("opacity", envOut, "important");
     }
   } else {
@@ -519,9 +557,11 @@ function atProgress(pRaw){
     d.classList.toggle("done", i < idx || pRaw >= 100);
   });
   const text = STAGES[idx].text;
-  if (stageEl.textContent !== text){
+  // ★ 2026-10-21：阶段解说行已删（不再向用户解释程序内部/材质），stageEl 为 null。
+  //   guard 不能省——没有它这里每帧都会抛，整条动画直接停。
+  if (stageEl && stageEl.textContent !== text){
     stageEl.classList.add("swap");
-    setTimeout(()=>{ stageEl.textContent = text; stageEl.classList.remove("swap"); }, 170);
+    setTimeout(()=>{ if (!stageEl) return; stageEl.textContent = text; stageEl.classList.remove("swap"); }, 170);
   }
 }
 
@@ -529,7 +569,12 @@ function atProgress(pRaw){
    驱动：自动推进 + C# 打进来的三个拍子
    ============================================================ */
 const FINISH_FROM = LETTER_END;      // 放飞从"信写完"开始
-const FINISH_MS   = 2600;            // 折飞机 + 飞走：KF 的 4900..7500
+// ★ 2026-10-21：折与飞拆成两段、分别给时长 —— 折是这套动画的主角（用户专门要求
+//   "加个折叠动画"），1.25 秒两拍才看得清；原来折只有 ~0.47 秒（2600ms 里按 8/44 分），
+//   一眨眼就过去，用户根本看不清信是怎么变成飞机的。
+const FINISH_FOLD_MS = 1250;         // 折：56 → 64（顶折 + 中折 + 对折 + 飞机长出）
+const FINISH_FLY_MS  = 2500;         // 飞：64 → 100
+const FINISH_MS   = FINISH_FOLD_MS + FINISH_FLY_MS;
 const AUTO_MS     = 7500;            // 什么都不调时的自我播放总长
 
 let pShown = 0;          // 实际渲染到的进度
@@ -537,6 +582,7 @@ let floorP = 0;          // setStage 顶上来的最低进度
 let T0 = 0;              // 自动播放的起点
 let lastT = 0;
 let finT0 = -1;          // finish() 的起点
+let finFrom = FINISH_FROM;  // finish() 时信写到哪儿了（接上去折，不 stall）
 let finished = false;
 let doneFired = false;
 
@@ -566,7 +612,14 @@ function frame(now){
   if (finished){
     const ft = Math.max(0, now - finT0);
     if (ft >= FINISH_MS){ atProgress(100); fireDone(); return; }
-    const target = FINISH_FROM + (100 - FINISH_FROM) * (ft / FINISH_MS);
+    // 折一段按"从哪儿接上"缩放：finish() 打得晚（信已写了一半）时不 stall，
+    // 直接从当前进度折到 64 再飞；打得晚到 64 以后（薄启动）就整段跳过折，直接飞。
+    const from = finFrom;
+    const foldSpan = FOLD_END - from;
+    const foldMs = FINISH_FOLD_MS * (foldSpan / (FOLD_END - FINISH_FROM));
+    const target = (foldMs > 0 && ft <= foldMs)
+      ? from + foldSpan * (ft / foldMs)
+      : FOLD_END + (100 - FOLD_END) * Math.min(1, (ft - foldMs) / FINISH_FLY_MS);
     if (target > pShown)
       pShown = Math.min(target, pShown + Math.max(100 / FINISH_MS * dt, (target - pShown) * 0.10));
     atProgress(pShown);
@@ -599,6 +652,9 @@ window.__splash = {
     finished = true;
     finT0 = performance.now();
     lastT = 0;
+    // 从当前进度接上去折（夹在 56..64）：启动快时信还没写到 56，
+    // 启动慢时可能已写过一半 —— 两种情况都不 stall、都不跳步。
+    finFrom = Math.min(Math.max(pShown, FINISH_FROM), FOLD_END);
     if (raf == null) { T0 = finT0; raf = requestAnimationFrame(frame); }
   },
   /** 直接定位到某一帧（第二组渲安装帧用）。 */

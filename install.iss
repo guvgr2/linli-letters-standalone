@@ -174,11 +174,16 @@ Name: "autostart"; Description: "开机时自动启动（会常驻在托盘里�
 
 [Files]
 Source: "dist\package\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\package\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\package\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "assets\Wallpaper_Presence\*"
 Source: "dist\package\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "协议.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; ★ 开源组件声明：随包带了 Node.js 与 .NET 两个运行时，分发二进制就得把许可一并带上。
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+; ★ 2026-10-21 加：原版待机壁纸视频（build.ps1 拷进 dist\package\app\assets\Wallpaper_Presence\，
+;   约 2.9 GB）。单独一条、nocompression：视频本身是压缩过的 mp4，再压几乎零收益，
+;   反而让 lzma2/ultra64 的 solid 块扛 2.9 GB，又慢又吃内存；直接存盘即可。
+;   上面那条 app\* 已用 Excludes 把这一目录踢掉，避免重复安装同一批文件。
+Source: "dist\package\app\assets\Wallpaper_Presence\*"; DestDir: "{app}\app\assets\Wallpaper_Presence"; Flags: ignoreversion recursesubdirs createallsubdirs nocompression
 ; ★ 2026-10-17 补（审核）：项目自身的 LICENSE（MIT）必须随包 —— MIT 要求随附许可文本，
 ;   而之前只带了 THIRD-PARTY-NOTICES.txt（那是**第三方**的声明，不是本项目的许可）。
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion

@@ -22,6 +22,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -192,7 +193,7 @@ describe(".soul 导入端到端（预览 → 落库 → 回读对账）", () => 
 
   after(async () => {
     await stopServer(child);
-    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+    if (dataDir) await cleanupDir(dataDir);
   });
 
   test("① 预览：三个数与一句话都对得上，且**一行都不写库**", { timeout: 60000 }, async () => {

@@ -75,6 +75,15 @@
   --glass-blur: saturate(1.7) contrast(1.06) brightness(1.04) blur(22px);
   --glass-hi: rgba(255, 255, 255, 0.10);
   --glass-selected: rgba(255, 255, 255, 0.11);
+  /* ★★ 2026-10-18 深夜：亮桌面实测 —— 面板只有 0.05 白漆时，透进来的亮壁纸
+     把界面洗成 230+ 亮度，正文对比仅 2.76:1（实测）。玻璃可以透，但透多少得
+     有上限：native 下两栏各加一层固定黑做"镜面镀银的背面"。
+     ★★ 2026-10-18 用户再次反馈「太透明了，用户很难看见字体，再降低一点透明度和折射」
+     ⇒ 两档都加深近 3 倍，同时 liquid-glass.js 里 blurRadius 6→9、tintOpacity
+     0.08→0.20、rimIntensity 0.06→0.028（折射强度同步降）。目标：正文最差 ≥4.5:1。
+     ★★ 第三次反馈（截图面板中央仍透出桌面色带）再加深一档到 0.30/0.44。 */
+  --glass-a-tint: rgba(8, 9, 12, 0.30);
+  --glass-b-tint: rgba(8, 9, 12, 0.44);
   /* 玻璃厚度感：只靠描边是没有厚度的（描边是 2D 的），必须上亮下暗 */
   --glass-edge:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
@@ -111,7 +120,7 @@
   height: 100%;
   padding: 12px;
   border-radius: var(--tp-radius-2);
-  background: var(--glass-sheen), var(--glass-a);
+  background: var(--glass-sheen), var(--glass-a), var(--glass-a-tint);
   border: 1px solid var(--glass-a-border);
   box-shadow: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -135,33 +144,245 @@
   color: var(--tp-text-secondary);
 }
 
+/* ★ 2026-10-21 加：往年今日——信箱顶部一行淡字（"去年的今天你写过 N 封"），默认隐藏。
+   只在去年的今天确有信件/日记时由 app.js 的 loadOnThisDay() 显示；点一下跳到那封信。 */
+.onthisday {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tp-text-secondary);
+  background: rgba(127, 127, 127, .08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.onthisday:hover { background: rgba(127, 127, 127, .14); }
+.onthisday[hidden] { display: none; }
+.onthisday-lead { color: var(--tp-text-title); }
+
+/* ★ 2026-10-21 加：连续写信——信箱顶部一行淡字（"你已经连续 N 天给她写信了"），默认隐藏。
+   不是勋章/积分：只是淡字、不可点；断了就不显示，不飘红（用户拍板：不惩罚）。 */
+.writing-streak {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tp-text-secondary);
+  background: rgba(127, 127, 127, .06);
+  border-radius: 8px;
+}
+.writing-streak[hidden] { display: none; }
+
+/* ★ 2026-10-21：回顾的三种看法（列表 / 时间轴 / 日历）。
+   一排小胶囊，比下拉框省一次点击；颜色只用既有的 --tp-* 变量，不新造色。 */
+.mail-viewswitch {
+  margin: 0 12px 8px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(127, 127, 127, .08);
+  border-radius: 8px;
+}
+.mail-viewswitch-btn {
+  flex: 1 1 0;
+  padding: 4px 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tp-text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.mail-viewswitch-btn:hover { color: var(--tp-text-body); }
+.mail-viewswitch-btn.is-active {
+  color: var(--tp-text-title);
+  background: var(--glass-selected);
+}
+
+/* ---- 时间轴：一天一块，左边一条竖线串起来 ---- */
+.timeline-day { padding: 2px 12px 4px; }
+.timeline-date {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 0 4px;
+  border-bottom: 1px solid rgba(127, 127, 127, .12);
+}
+.timeline-date-md { font-size: 13px; color: var(--tp-text-title); }
+.timeline-date-wd { font-size: 11px; color: var(--tp-text-tertiary); }
+.timeline-date-count { margin-left: auto; font-size: 11px; color: var(--tp-text-tertiary); }
+.timeline-items {
+  padding: 4px 0 2px 10px;
+  border-left: 1px solid rgba(127, 127, 127, .14);
+  margin-left: 2px;
+}
+.timeline-diary,
+.timeline-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .14s;
+}
+.timeline-diary:hover,
+.timeline-row:hover { background: var(--glass-selected); }
+.timeline-diary-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--tp-text-tertiary);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, .12);
+}
+.timeline-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tp-text-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-row-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--tp-text-tertiary);
+}
+.timeline-row-unread .timeline-text { color: var(--tp-text-title); font-weight: 600; }
+/* 状态点四态，必须彼此分得开（实测口径：暗底上 #2F3036 那种深色等于看不见）：
+   失败=橙红 / 她写的=暖灰 / 我已寄且她已回=绿 / 我已寄她还没回=中性灰。 */
+.timeline-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6B645B;
+  transform: translateY(-1px);
+}
+.timeline-dot.is-send { background: #4F6F5E; }
+.timeline-dot.is-her { background: #8A7C6A; }
+.timeline-dot.is-waiting { background: #6B645B; }
+.timeline-dot.is-error { background: #B4553F; }
+
+/* ---- 日历：一个月，有信/有日记的格子点亮 ---- */
+.cal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 8px;
+}
+.cal-title { flex: 1 1 auto; font-size: 13px; color: var(--tp-text-title); }
+.cal-nav {
+  width: 22px;
+  height: 22px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--tp-text-secondary);
+  background: rgba(127, 127, 127, .08);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cal-nav:hover { color: var(--tp-text-title); background: rgba(127, 127, 127, .16); }
+.cal-weekdays,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  padding: 0 12px;
+}
+.cal-weekdays {
+  padding-bottom: 4px;
+  font-size: 11px;
+  color: var(--tp-text-tertiary);
+  text-align: center;
+}
+.cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 0 4px;
+  min-height: 34px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--tp-text-tertiary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: default;
+}
+.cal-cell.is-blank { visibility: hidden; }
+.cal-cell.has-mark {
+  cursor: pointer;
+  color: var(--tp-text-title);
+  background: rgba(127, 127, 127, .07);
+}
+.cal-cell.has-mark:hover { background: var(--glass-selected); }
+.cal-cell.is-today { box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .45); }
+.cal-cell-num { line-height: 1; }
+.cal-dots { display: flex; gap: 2px; height: 4px; }
+.cal-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #6B645B;
+}
+.cal-dot.is-letter { background: #4F6F5E; }
+.cal-dot.is-diary { background: #8A7C6A; }
+
 /* 原版 .mail-list：flex-1 min-h-0 p-3 rounded-2，滚动条 padding 由原版的 pr-3 提供。
    ★ 2026-10-18 修：这里原来只有 `padding-right: 12px`，而全局 scrollbar 是 styles.css:659
      的 `::-webkit-scrollbar { width: 9px }`（阴影贴右侧）。两个一叠：滚动条离列表右边
      还有 12px 间隙，看起来像「白条悬在列表中间」，用户原话「这个信箱的白条是什么，
      还是不同颜色的」。现在 width/padding 都收窄，并且**给滚动条明确的颜色**（跟原版
-     一致：rgba(255,255,255,.14) + 圆角 3px），不再退回全局样式表的默认值。 */
+     一致：rgba(255,255,255,.14) + 圆角 3px），不再退回全局样式表的默认值。
+   ★★ 2026-10-18 第二次修：滚动条本体颜色是淡的、可**溢出容器的 `box-shadow`**
+     在 4px 轨道上仍会渗成一条亮边（实测截图里列表右缘有一条白柱）。改为让轨道
+     贴边收满、并显式声明 thumb 无阴影无边框、宽度 0 也用 scrollbar-width:none
+     兜底（Firefox/新 Chromium 走标准属性）。 */
 .mail-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 6px;
+  padding-right: 4px;
   margin-bottom: 8px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  scrollbar-width: none; /* 滚动条只在悬停时出现；-webkit 规则见下 */
 }
-.mail-list::-webkit-scrollbar { width: 4px; }
-.mail-list::-webkit-scrollbar-track { background: transparent; }
+.mail-list::-webkit-scrollbar {
+  width: 0;
+  background: transparent;
+}
+.mail-list:hover::-webkit-scrollbar { width: 4px; }
+.mail-list::-webkit-scrollbar-track {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
 .mail-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border-radius: 2px;
+  border: 0;
+  box-shadow: none;
 }
 .mail-list::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
 }
+/* 同一症状的第二处：全局 scrollbar 规则对左栏同样生效（用户截图里左栏底部的竖白条）。 */
+.mail-sidebar ::-webkit-scrollbar { width: 0; background: transparent; }
 
 /* 原版 .mail-item：px-3 py-2 gap-12 rounded-8，hover/选中都上 --tp-surface-1 */
 .mail-item {
@@ -197,6 +418,14 @@
 .mail-item-content {
   flex: 1 1 auto;
   min-width: 0;
+  /* ★ 2026-10-21 修（真机量出来的）：这里原来是块盒，里面两个 span 是**行内**元素 ——
+     行内盒上的 overflow/text-overflow 不生效，`white-space: nowrap` 于是按整行文字宽度
+     撑出去：实测 #letters 的 scrollWidth 399 > clientWidth 334，右侧 65px 被裁掉且没有省略号
+     （截图里标题被切断在侧栏边缘）。改成纵向 flex，两个 span 变成 flex item（块级化），
+     ellipsis 才真的起作用，视觉上仍然是"标题一行 + 时间一行"。 */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 .mail-item-subject {
   font-size: 16px;
@@ -204,6 +433,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 .mail-item-subject-unread {
   font-weight: 700;
@@ -215,6 +445,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 .mail-item-unread {
   width: 6px;
@@ -232,8 +463,11 @@
   overflow: hidden;
   flex-shrink: 0;
 }
+/* ★ 2026-10-18：maii-footer-inner 的半透明白字压在液态玻璃上，桌面亮处会糊成一片
+   （用户截图左下角胶囊条几乎读不出字）。加深底 + 给文字一层薄描边阴影，保证
+   亮/暗桌面两种情形都 ≥4.5:1。 */
 .mail-footer-inner {
-  background: linear-gradient(107deg, rgba(23, 24, 28, 0.82) 0%, rgba(47, 48, 54, 0.7) 100%);
+  background: linear-gradient(107deg, rgba(20, 21, 26, 0.86) 0%, rgba(38, 40, 46, 0.78) 100%);
   border-radius: 14px;
   display: flex;
   align-items: center;
@@ -249,15 +483,17 @@
 }
 .mail-footer-title {
   font-size: 14px;
-  color: var(--tp-primary-2);
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 .mail-footer-sub {
   font-size: 12px;
-  color: var(--tp-text-tertiary);
+  color: rgba(255, 255, 255, 0.72);
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 .mail-footer-action-button {
   flex-shrink: 0;
@@ -279,7 +515,15 @@
   cursor: not-allowed;
 }
 
-/* 原版 .mail-content：flex-[2] min-w-[548px] flex-col h-full rounded-2 */
+/* 原版 .mail-content：flex-[2] min-w-[548px] flex-col h-full rounded-2
+   ★★ 2026-10-18：液态玻璃换成 liquid-glass-js（WebGL 真折射）之后，这里的
+     `-webkit-backdrop-filter/backdrop-filter` 必须保留 —— 它是探针（无外壳消息）时的
+     降级路径。但在外壳里，页面自己的底层 backdrop 是"透明的页面自身"⇒ 抓出来是
+     纯黑，再叠上真玻璃会发灰。所以 `body.native`（外壳运行）下把它关掉，
+     只留半透明底色，让 WebGL 的桌面帧透出来。
+   ★★ 另外亲测：桌面上用户常放亮色壁纸/窗口，若玻璃 tint 太淡，面板会整体发亮、
+     文字对比跌到 2.8:1（实测）。所以底色要够暗（--glass-b 已含 0.36 黑），
+     并给文字区域加一层极淡的暗色底做"纸面"。 */
 .mail-content {
   display: flex;
   flex: 2 1 0;
@@ -294,6 +538,36 @@
   backdrop-filter: var(--glass-blur);
   overflow: hidden;
 }
+body.native .mail-content,
+body.native .mail-sidebar,
+body.native .library-sidebar,
+body.native .library-content {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* 亮桌面下的可读性保底：正文纸面 */
+body.native .mail-content-body {
+  background: rgba(10, 11, 14, 0.46);
+  border-radius: var(--tp-radius-2);
+}
+/* ★★ 2026-10-18 用户第四次反馈（截图「为什么周围一圈是黑的」）：DWM 只把 blur
+   给客户区边缘，页面自身的近黑底会把中央盖住。这里给四根边各一条 40px 的
+   内发光阴影（不是 border：border 会挤占布局），颜色与 tint 同源，
+   使玻璃的"暗底"从窗口边缘就开始，而不是从内容面板才开始。 */
+body.native .win::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 20px;
+  box-shadow:
+    inset 40px 0 40px -40px rgba(8, 9, 12, 0.55),
+    inset -40px 0 40px -40px rgba(8, 9, 12, 0.55),
+    inset 0 40px 40px -40px rgba(8, 9, 12, 0.55),
+    inset 0 -40px 40px -40px rgba(8, 9, 12, 0.55);
+}
+/* 统一改成只在 styles.css 里定义一次（native .win 的两层 ::before/::after），
+   这里不再重复，避免两处规则互相覆盖。 */
 
 /* 原版 .mail-content-header / .mail-welcome-header：padding 16px 24px + 底部一条 1px 分隔 */
 .mail-content-header {
@@ -305,6 +579,11 @@
   padding: 16px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+}
+/* ★ 2026-10-18：renderReader 会用 hidden 属性切 header 显隐（没选中时整条收掉，
+   不留一块空 header）—— 同样的特异性问题，[hidden] 得顶回去。 */
+.mail-content-header[hidden] {
+  display: none;
 }
 .mail-content-header-text {
   display: flex;
@@ -354,6 +633,13 @@
   margin-bottom: 64px;
   gap: 8px;
 }
+/* ★ 2026-10-18 实测 bug（用户截图）：renderCard/showEmpty 用 empty.hidden=true/false 切换，
+   但上面这条 display:flex 的类选择器特异性**高于** UA 样式表的 [hidden]{display:none}
+   ⇒ hidden 属性形同虚设，空态永远可见、和信卡同屏（"未选中任何信件"插画 + 明信片一起出现）。
+   这条把特异性顶回去 —— 有 hidden 属性就必须藏。 */
+.mail-content-empty[hidden] {
+  display: none;
+}
 .mailbox-empty-art {
   height: 200px;
   width: 300px;
@@ -371,6 +657,33 @@
 .mail-content-empty-sub {
   font-size: 16px;
   color: var(--tp-text-tertiary);
+}
+
+/* ★ 2026-10-19 首装引导（第十六轮审查 P1）：曲库目录默认值改空之后，
+   「还没选目录」这件事要给一条路，不能拿「目录不存在」把人挡回去。 */
+.lib-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 28px 22px;
+}
+.lib-empty[hidden] {
+  display: none;
+}
+.lib-empty > b {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--tp-text-title);
+}
+.lib-empty > span {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--tp-text-tertiary);
+  max-width: 46ch;
+}
+.lib-empty > button {
+  margin-top: 4px;
 }
 
 /* ======================== 明信片（原版 16:9 卡面） ======================== */
@@ -547,25 +860,40 @@
   display: block;
 }
 
-/* 原版等待回信：一个圆形小视频 + 一行字 */
+/* 原版等待回信：一个圆形小视频（她在动）+ 一行字（贴卡片底部）。
+   ★ 2026-10-20：这三条以前是死样式 —— 抄原版时跟了进来，但 mail-ui.js 从来没渲染过
+     它们，所以"她在回信"这种事在界面上是静态的。现在 waitingBlock() 真的用了。
+   ★ 尺寸口径同原版 `w-[clamp(64px,18cqw,128px)] aspect-square`：卡定宽 516 ⇒ 19%≈98px。 */
 .mail-card-waiting {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  gap: 12px;
+  pointer-events: none;          /* 卡片本身要点开等动作，别挡住它 */
 }
 .mail-card-waiting-video {
-  width: 96px;
-  height: 96px;
+  width: 19%;
+  min-width: 64px;
+  max-width: 128px;
+  aspect-ratio: 1;
   border-radius: 50%;
   object-fit: cover;
   border: 2px solid var(--tp-grey-0);
+  box-sizing: border-box;
+  /* 解码前的第一帧底色：不给的话是透明白圈，看着像"没加载出来" */
+  background: rgba(23, 24, 28, 0.08);
 }
 .mail-card-waiting-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 20px;                  /* 原版 bottom-5 = 20px */
+  text-align: center;
   font-size: 15px;
-  color: rgba(23, 24, 28, 0.62);
+  color: var(--tp-primary-3);
 }
 
 /* 原版失败态：标题 + 提示 + 右下角重试按钮 */
@@ -1131,6 +1459,10 @@
   color: var(--tp-text-tertiary);
   cursor: pointer;
   transition: color 0.16s ease;
+  /* ★ 2026-10-19：styles.css 里那条通用 button 带 `box-shadow: inset 0 1px 0 白 + 0 10px 30px 黑`，
+     套在页签上就成了一枚「有厚度的胶囊」——用户对照原版一眼看出"排版不像"就是这个。
+     原版的页签是**平铺文字 + 当前项一道下划线**，必须把投影整条摘掉。 */
+  box-shadow: none;
 }
 .library-tab:hover { color: var(--tp-text-secondary); }
 .library-tab.on { color: var(--tp-text-title); }
@@ -1217,6 +1549,17 @@
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
+/* ★ 2026-10-19 用户口径：「曲库界面和原版的曲库界面不一样」——原版左边就是一片
+   列表（页签 + 表头 + 行），没有"卡片"这层壳；右边「音乐桌面」才是一块面板。
+   所以左栏去掉玻璃底与描边，只留内边距。 */
+.library-sidebar {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  padding-top: 0;
+}
 .library-content {
   display: flex;
   flex: 2 1 0;
@@ -1302,6 +1645,18 @@
   font-weight: 500;
   overflow: hidden;
 }
+/* 封面图（官方 129 首才有）：铺满那一格，圆角跟格子一致。
+   ★ 失败时前端会把 <img> 摘掉（onerror），露出底下那个首字母块 —— 所以这里不写底色、
+     两个叠在一起也看不出来。 */
+.song-item-cover-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+/* 有封面图就别同时显示首字母（两个都在格子里会并排挤成两半）。 */
+.song-item-cover:has(.song-item-cover-img) .song-item-cover-fallback { display: none; }
 .song-item-title {
   font-size: 18px;
   line-height: 22px;
@@ -1386,6 +1741,25 @@
 .song-item:hover .song-item-import { opacity: 1; }
 .song-item-import:hover { background: rgba(255, 255, 255, 0.16); }
 
+/* 「移出」：入库之后同一位置变成它（2026-10-20 用户：「添加进音乐结果删不掉了」）。
+   跟「入库」同一档尺寸与显隐规则，只是悬停底色偏警示 —— 它是不可逆动作的入口。 */
+.song-item-remove {
+  flex: none;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--tp-radius-5);
+  border: 1px solid rgba(214, 120, 100, 0.42);
+  background: rgba(214, 120, 100, 0.10);
+  color: #e0a294;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.song-item:hover .song-item-remove,
+.song-item-remove:focus-visible { opacity: 1; }
+.song-item-remove:hover { background: rgba(214, 120, 100, 0.24); }
+
 /* 「试听」：原版 `Ke="试听"`，跟「入库」同一档小圆角按钮，悬停才显形；
    正在试听时保持显形并换成米色底（否则用户不知道还在放）。 */
 .song-item-audition {
@@ -1410,7 +1784,7 @@
   border-color: transparent;
 }
 
-/* ---- 歌单（照姊妹项目的「加播单 / 歌单管理」）-----------------------------
+/* ---- 歌单（照原版程序的「加播单 / 歌单管理」）-----------------------------
    页签：用户起的名字可能很长，限制宽度、超出打省略号 —— 否则一个长名字
    会把后面所有页签挤出可视区。 */
 .library-tab-folder {
@@ -1521,44 +1895,10 @@
 .song-item.is-dragging { opacity: 0.4; }
 .song-item.is-drop { box-shadow: inset 0 2px 0 var(--tp-primary-1); }
 
-/* 原版目录输入框：沿用玻璃材质，但尺寸对齐 .mail-item 的内边距 */
-.library-field {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 4px 0 16px 12px;
-}
-/* 分档结果那一行（古典 48 · ACG 68 · …）：比正文小一号、更暗，是旁注不是内容 */
-.library-note {
-  padding: 0 12px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--tp-text-tertiary);
-}
-.library-field input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: var(--tp-radius-1);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.22);
-  color: var(--tp-text-body);
-  font-size: 13px;
-  outline: none;
-}
-.library-field input:focus { border-color: rgba(255, 255, 255, 0.26); }
-.library-field button {
-  height: 32px;
-  padding: 0 14px;
-  border-radius: var(--tp-radius-1);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--tp-text-body);
-  font-size: 13px;
-  cursor: pointer;
-}
-.library-field button:hover { background: rgba(255, 255, 255, 0.13); }
+/* 原版目录输入框已搬去设置页（曲库页照原版只留页签 + 列表），
+   设置页里它用的是通用的 .field / .pri / .hint，所以这几条规则整段删掉了。
+   ★ 2026-10-19：用户口径「曲库页面和原版的排版一点都不像」——目录输入、分档说明、
+     「已入库」chip 带、页脚这些都不是原版的东西，留着就是一眼不像。 */
 
 /* 曲库右侧：舞台预览。原版播放器是全屏黑底 contain，这里同款但装在卡片里 */
 .library-stage {
@@ -1605,9 +1945,12 @@
   font-size: 13px;
   color: var(--tp-text-tertiary);
   font-variant-numeric: tabular-nums;
+  /* ★ 两个按钮都靠右 ⇒ 让首数把右侧撑开，按钮不必各自 margin-left:auto
+     （两个都 auto 的话它们会分掉多余空间、中间裂开一道）。 */
+  margin-right: auto;
 }
 .desk-btn {
-  margin-left: auto;
+  margin-left: 0;
   height: 28px;
   padding: 0 14px;
   border-radius: var(--tp-radius-5);
@@ -1619,6 +1962,46 @@
   transition: background 0.16s ease;
 }
 .desk-btn:hover { background: rgba(255, 255, 255, 0.16); }
+/* 「随机导入」是次要动作：不描边、灰一档，别和「歌单」抢同一个重量 */
+.desk-btn-quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--tp-text-tertiary);
+}
+.desk-btn-quiet:hover { background: rgba(255, 255, 255, 0.10); color: var(--tp-text-secondary); }
+/* ★ 2026-10-19 修（七轮审查 F9）：播放顺序按钮显示的是**当前规则**（状态），不是次要动作。
+   原来给它套的是 `.desk-btn-quiet`（--tp-text-tertiary #7d818c / 13px），
+   在卡片底 rgb(50,53,59) 上实测对比度只有 3.16:1，低于 WCAG AA 小字要求的 4.5:1；
+   换成 secondary（#a1a5ad）是 4.98:1。⇒ 改用带描边的 `.desk-btn` 常态。
+   `.is-active` 是"不是默认顺序"时的那一档高亮 —— 这条类以前**没有任何样式**
+   （paintPlayMode 加了它、CSS 里查无此规则，等于白加），现在两边都补上了。
+
+   ★★ 这一段是第二版。第一版只做了"提亮"（白字 + 白底 14%），**验收数值只测了默认态**，
+   而缺陷原本就出在选中态：工具行背后是视频，底色一透亮，近白文字压上去立刻掉下来。
+   在真浏览器里实测（把文字设成 transparent 截一张、真按钮截一张，按像素算）：
+     选中态文字 #e8e9eb 与按钮区**均值**背景 5.85:1，但在同一块里的**最亮像素**
+     （背景亮处透上来的那几行）只有 2.64:1 —— 远低于 4.5:1。
+   ⇒ 改法照审查方给的方向：**回调底色，不改文字色**。把工具行按钮的底压成深色半透明，
+   让"透上来的亮度"有上限；文字用 #cfd3da（常态）/ #f2f3f5（选中）。
+   最坏情况（背后是纯白 255）按 alpha 合成算：
+     常态 rgba(20,21,24,.72) 压白底 ⇒ 合成 ≈ 86 / 254 文字 ⇒ 4.73:1
+     选中 rgba(28,29,33,.86) 压白底 ⇒ 合成 ≈ 62 / 242 文字 ⇒ 9.6:1
+   实测（真机当前这一帧）：常态 5.9:1、选中 10.4:1。 */
+.desk-head .desk-btn,
+.desk-head .desk-btn-quiet {
+  background: rgba(20, 21, 24, 0.72);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #cfd3da;
+}
+/* 「随机导入」仍靠"没有描边 + 悬停更淡"体现次要，但底色不能再透明 —— 透明就等于让视频决定可读性。 */
+.desk-head .desk-btn-quiet { border-color: transparent; }
+.desk-head .desk-btn:hover,
+.desk-head .desk-btn-quiet:hover { background: rgba(28, 29, 33, 0.86); color: #f2f3f5; }
+/* ★ 2026-10-20：`.desk-mode.is-active` 两条规则删了 —— #deskMode 那个按钮整个下掉了
+   （用户：「在音乐桌面的单曲循环按钮就删了吧，底下的播放条有一个了」）。
+   播放条上那枚 .player-btn.is-active 保留，它是四态轮转的唯一指示。 */
+/* 播放条上那枚图标按钮同理：非默认顺序时亮一档，让"我不是顺序播放"看得见。 */
+.player-btn.is-active { color: var(--tp-text); }
 /* 插画区：空态时占满剩余空间并居中；有曲目时缩成一条（.is-small） */
 .desk-art {
   flex: 1 1 auto;
@@ -1741,6 +2124,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 行尾「×」＝从音乐桌面移出（2026-10-20）。平时很淡、悬停整行才亮，
+   免得列表看着像一排删除键；键盘 Tab 到它也显形（:focus-visible）。 */
+.desk-row-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tp-text-tertiary);
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.desk-row:hover .desk-row-remove,
+.desk-row-remove:focus-visible { opacity: 1; }
+.desk-row-remove:hover {
+  background: rgba(214, 120, 100, 0.24);
+  border-color: rgba(214, 120, 100, 0.45);
+  color: #e8b3a6;
+}
 
 /* ======================== 页顶栏（各页统一）========================
    ★ 2026-10-18：`#page-mail` 里早就写了 .page-head（大字「信箱」+ 齿轮），
@@ -1756,23 +2163,42 @@
   /* ★ 2026-10-18 用户实证（两张截图）：页头在滚动流里，下滑时齿轮跟着内容
      滚上去，最后叠进右上角的窗口控制条（— □ ×）。原版的页头是**固定**的，
      不随内容滚。修法：sticky 钉在窗口条（34px）下方 —— 滚动时齿轮停在 44px，
-     永远碰不到窗口钮。背景给一层实底，滚过的内容从它底下穿过去不穿帮。 */
+     永远碰不到窗口钮。 */
   position: sticky;
-  top: 44px;
+  top: 26px;
   z-index: 5;
-  background: var(--tp-grey-1, #17181c);
-  /* 底边一道极淡的分隔线：原版页标题下面没有线，但它上面有 80px 的留白；
-     我方窗口高度紧张，用一道线换掉那段留白。 */
-  padding: 0 0 14px;
-  margin: 0 0 14px;
+  /* ★★ 2026-10-18 用户圈红（"这严重遮挡了信箱，固定那么靠下干什么"）：
+     以前 background: var(--tp-grey-1) + top:44px —— 一条 46px 高的深色带
+     压在「我的信箱」标题和列表第一封上。native 玻璃下页头**不再有自己的底色**：
+     sticky 只负责钉住位置，滚过的内容直接从它后面透出来（页头是透明玻璃的一部分，
+     不再是一块实底板）。浏览器（非 native）下给一层极淡的模糊兜底，保证可读。 */
+  background: transparent;
+  /* ★ 2026-10-19 用户口径：「信箱和设置按钮要往上移一点，要不就和底下的线条重叠了」
+     —— 标题/齿轮与下面那两块面板的上边线贴在一起了。把页头上移（减小 .page 的
+     padding-top）并加大它与内容之间的间距，两条线就分得开了。 */
+  padding: 0 0 12px;
+  margin: 0 0 18px;
 }
+/* ★★ 2026-10-20（用户截图实证）：原版「曲库」标题字号明显更大（像素比对：
+     原版标题两字物理宽 ≈128px，咱们 ≈51-108px），而且整个页头更贴近窗口顶。
+     字号 26→32、行高 32→40；页头到窗口顶的 22px 收到 14px。 */
 .page-head-title {
   margin: 0;
-  font-size: 26px;
-  line-height: 32px;
+  font-size: 32px;
+  line-height: 40px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--tp-text-title);
+}
+/* 标题后面跟的条数（曲库「2584」）：原版把首数放在标题右侧当旁注，
+   不是另起一行标题 —— 所以字号随正文、颜色降到 tertiary。 */
+.page-head-count {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--tp-text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 /* 齿轮：贴右；28px 方钮，圆角 8，悬停才亮 */
 .page-head-gear {
@@ -1799,34 +2225,89 @@
   outline: 2px solid var(--tp-primary-1);
   outline-offset: 2px;
 }
-/* 设置页的「返回信箱」：左侧文字按钮，跟齿轮同一档观感 */
+/* 设置页左上角的返回键：← 箭头（2026-10-20 用户口径：原版是左上角一个返回箭头，
+   返回逻辑是"从哪页进来的回哪页"，不固定回信箱）。观感跟齿轮同一档（30px 方钮、
+   圆角 8、悬停才亮），只是放在标题左边而不是靠右。 */
 .page-head-back {
-  margin-left: auto;
-  height: 28px;
-  padding: 0 14px;
-  border-radius: var(--tp-radius-5);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
+  margin-left: 0;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--tp-text-secondary);
-  font-size: 13px;
   cursor: pointer;
-  transition: background 0.16s ease;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
 }
-.page-head-back:hover { background: rgba(255, 255, 255, 0.16); }
+.page-head-back:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: var(--tp-text-title);
+}
+.page-head-back:focus-visible {
+  outline: 2px solid var(--tp-primary-1);
+  outline-offset: 2px;
+}
 /* 带页顶栏的页面要自己接管上下留白，否则内容和标题会被缩进两遍。
    ★ 2026-10-18 加大：18px 时齿轮（页头右上角）和窗口控制条（fixed top 0 高 34px）
      在同一块区域里叠着 —— 用户截图里齿轮几乎贴到「放大」键。让到 44px，
      齿轮从窗口条下方开始，两者各归各位。 */
-.page:has(> .page-head) { padding-top: 44px; }
-/* native 玻璃下页头不能是实底横带（会把透明玻璃打穿一块）：
-   半透明 + 轻模糊，滚过的内容从它底下穿过时是"隔着玻璃看"的效果。
-   ★ 2026-10-18 用户实证（截图圈红）：0.55 的底在玻璃上读成"一条横杠"——
-     齿轮下面那条线就是它的下缘。压到 0.28 并把 blur 降到 10px：
-     滚动内容穿过时仍看得清（不撞字），但不再是能画出边界的一条带。 */
+/* ★★ 2026-10-20 第二次修（用户两张截图实证）：记忆页标题顶到了 14px，
+     齿轮快贴上窗口控制钮（— □ × 占 0–34px）；信箱页却被 sticky top:34
+     钉在 34px 显得靠下 —— 两页差了 19px，用户一个嫌高一个嫌低。
+     统一钉在 26px：static 页（记忆/设置）由 padding-top 顶到 26，
+     sticky 页（信箱/曲库）被 top:26 钉到 26，四页一致，
+     标题行（40px 高）与控制钮行只在 26–34 有 8px 相邻、不再重叠。 */
+.page:has(> .page-head) { padding-top: 26px; }
+/* native 玻璃下页头完全无底色（2026-10-18 用户圈红"严重遮挡信箱"）：
+   sticky 透明页头 + 无模糊 —— 遮挡感为零，齿轮纯靠 sticky 钉位。
+   浏览器（非 native）下才给一层轻雾兜底，防止白底上白字不可读。 */
 body.native .page-head {
-  background: rgba(23, 24, 28, 0.28);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* ★ 2026-10-19（截图实证）：设置页内容很长，页头 sticky 又必须透明（否则挡信箱），
+   结果滚动的分区标题从「设置」两个字后面穿过去，看着像压字。信箱页页头下面直接
+   就是列表、可接受；设置页不要这种行为 —— 让它跟着内容一起滚走。 */
+#page-settings > .page-head {
+  position: static;
+}
+/* ★★ 2026-10-20 第三轮收尾（用户两张截图实证）：设置页是 static 页，页头落在
+   `.page:has(> .page-head)` 的 26px 上，用户说「设置字样太靠上了，往下一点点」
+   ⇒ 这一页单独再往下 14px。记忆页则相反（见下）：用户说 44px「太靠下、字重合」。
+   ★ 两个方向同时存在不是精神分裂：26 是四页公约数，两页各自再微调 ——
+     「往上一点/往下一点点」这种反馈只能一页一页地对，没有一个全局值能同时满足。 */
+#page-settings { padding-top: 40px; }
+/* ★★ 2026-10-20（用户口径）：「记忆的设置键和字体应该固定住，不随用户上下滑动而动，
+     曲库就是这样字体和设置不动」。原来这里为了"别压住日记卡片"写成了 static
+     （跟着内容一起滚走），但用户要的是它**钉住不动** —— 与曲库页一致。
+     压字的顾虑用"滚动时给页头一层底色"解掉（见下面 scrolled 那一档），
+     不再靠"让标题滚走"来回避。 */
+#page-memory > .page-head {
+  position: sticky;
+  /* ★★ 2026-10-20 第四轮（用户截图实证）：「记忆字体和设置键有点太靠下了，字都重合了」
+     —— 44px 把整页内容往下推，标题与下面的说明文字挤在一起。44 是「再往下一点」
+     那轮的旧值；26 是「快贴最大化键」那轮的旧值。取中间 36px：比全局 26 低 10px
+     （用户明确要这一页比别的页靠下一点），又比 44 高 8px（不再压字）。
+     ★ sticky 的 top 与 padding-top 必须给同一个值：top 管"滚动时钉在哪"，
+       padding 管"未滚动时第一帧在哪"，两个不一致会让标题在滚动前后跳一下。 */
+  top: 36px;
+  /* 标题与说明文字（.sub）之间再拉开一点：18px 的全局间距在这页显得挤，
+     用户看到的"重合"主要来自这里。 */
+  margin-bottom: 28px;
+}
+#page-memory { padding-top: 36px; }
+/* 记忆页滚起来之后：页头下面会走过卡片，透明页头会让人看着像"字压字"。
+   这里只在**已经滚动**时给页头一层很淡的底（不是实色板，仍是玻璃），
+   未滚动时保持全透明 —— 用户圈红的"严重遮挡"指的是常驻实色带，不是这个。 */
+#page-memory.is-scrolled > .page-head {
+  background: linear-gradient(180deg, rgba(18, 18, 20, 0.92) 0%, rgba(18, 18, 20, 0.55) 78%, rgba(18, 18, 20, 0) 100%);
 }
 /* ★ 曲库页是「页顶栏 + 撑满剩余高度的两栏」，必须整列 flex，
      否则 .library 的 height:100% 参照不到东西，右栏会塌成 0 高。 */
@@ -1837,6 +2318,25 @@ body.native .page-head {
 }
 .page.is-library.on { display: flex; }
 .page.is-library > .library { flex: 1 1 auto; min-height: 0; }
+
+/* ★★ 2026-10-20（用户截图实证）：信箱页同病 —— .mailbox 用 height:100%，
+     而 .page 里页头（sticky + padding/margin ≈ 88px）也在流里，两块一加
+     就超出视口 ⇒ 整页出现滚动条，「给林离写信」被推到折叠线下，
+     用户必须滑一下才能看到（原版不用滚）。修法照抄曲库页：
+     页面自己不滚（overflow:hidden），.mailbox 改成 flex:1 撑剩余高度，
+     列表内部的滚动交给 .mail-list 自己（它本来就有 overflow-y:auto）。 */
+.page.is-mail {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.page.is-mail.on { display: flex; }
+.page.is-mail .mailbox {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
 
 /* ★ 动作区只有 126px（原版 170 我方放不下）：「入库」常驻，「试听」悬停显形，
    「加播单」只在**已入库**的曲目且悬停时才出来 —— 三个同时常驻一定挤爆。 */

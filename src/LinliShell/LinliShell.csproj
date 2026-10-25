@@ -8,6 +8,18 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>LinliLetters</AssemblyName>
     <RootNamespace>LinliLetters</RootNamespace>
+    <!-- ★ 2026-10-19 用户口径：「把程序名字改为 OliviaSoul-community独立版」。
+         用户看到的"程序名字"来自 exe 的版本资源：任务管理器里的应用名取 FileDescription，
+         属性对话框里的产品名取 Product。不写这几条时它们全都继承 AssemblyName
+         （LinliLetters），于是任务管理器里顶着"LinliLetters"。
+         ★ AssemblyName（也就是 exe 文件名）**故意不动**：改文件名会让已装用户的托盘
+           图标、快捷方式、卸载记录、以及 %APPDATA%\LinliLetters 这个数据目录对不上 ——
+           显示成什么名字，和文件叫什么名字，不必是同一个字符串。 -->
+    <Product>OliviaSoul-community独立版</Product>
+    <AssemblyTitle>OliviaSoul-community独立版</AssemblyTitle>
+    <FileDescription>OliviaSoul-community独立版</FileDescription>
+    <Company>OliviaSoul 社区</Company>
+    <Copyright>OliviaSoul 社区 · 仅供学习交流，24 小时内自行删除</Copyright>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <Version>1.0.0</Version>
@@ -18,9 +30,18 @@
     <ApplicationIcon>..\..\installer\linli.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- ★ 2026-10-19（第十六轮审查 §4.1 第 5 条）：.NET 默认把 PDB 的**绝对路径**
+         写进 PE 头的 CodeView 目录，发行包里就能读到
+         `E:\<作者项目>\src\LinliShell\obj\Release\net10.0-windows\win-x64\LinliLetters.pdb`
+         —— 不含用户名，但把开发机的盘符与项目结构一起发给每个用户。
+         PathMap 把路径映射成相对路径；Release 也不产 pdb（安装包本来就不带它）。 -->
+    <DebugType>none</DebugType>
+    <PathMap>$(MSBuildProjectDirectory)=.</PathMap>
+  </PropertyGroup>
+
   <ItemGroup>
-    <!-- ★ 界面还是 HTML/CSS 画的（玻璃质感只有浏览器引擎能渲染），但窗口是我们自己的：
-           不再是外壳去拉起 Edge 的应用窗口（msedge 的 app 模式）。换来：
+    <!-- ★ 界面还是 HTML/CSS 画的（玻璃质感只有浏览器引擎能渲染），但窗口是我们自己的：           不再是外壳去拉起 Edge 的应用窗口（msedge 的 app 模式）。换来：
              · 任务栏上是这个程序自己的名字和图标（以前是 Edge，图标取网页 favicon）；
              · 能真的收进托盘；
              · 页面能反过来叫窗口拖动、最小化、关闭。

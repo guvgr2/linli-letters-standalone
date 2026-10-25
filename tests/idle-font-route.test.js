@@ -21,6 +21,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cleanupDir, cleanupDirSync } from "./support/cleanup.cjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -57,10 +58,10 @@ async function stopServer(child) {
   clearTimeout(hard);
 }
 
-async function startServer({ dataDir, assetsDir }) {
+async function startServer({ dataDir, assetsDir, env = {} }) {
   const logs = [];
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, LINLI_DATA_DIR: dataDir, LINLI_PORT: "0", LINLI_ASSETS_DIR: assetsDir },
+    env: { ...process.env, LINLI_DATA_DIR: dataDir, LINLI_PORT: "0", LINLI_ASSETS_DIR: assetsDir, ...env },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -132,12 +133,14 @@ describe("待机素材：机器上没有 Wallpaper_Presence 时", () => {
     dataDir = await mkdtemp(join(tmpdir(), "linli-idle-empty-"));
     const assetsDir = join(dataDir, ".no-assets");
     await mkdir(assetsDir, { recursive: true });
-    ({ child, base } = await startServer({ dataDir, assetsDir }));
+    // ★ 2026-10-19：服务现在会自动认本机装的原版素材（detectedGameAssets）。
+    //   这个场景要的就是"没有素材"，所以必须显式关掉自动发现，否则在装着游戏的机器上必然红。
+    ({ child, base } = await startServer({ dataDir, assetsDir, env: { LINLI_NO_GAME_ASSETS: "1" } }));
   });
 
   after(async () => {
     await stopServer(child);
-    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+    if (dataDir) await cleanupDir(dataDir);
   });
 
   test("① /api/idle/next 回 hasAssets:false 且不编一个不存在的文件名", { timeout: 60000 }, async () => {
@@ -154,8 +157,10 @@ describe("待机素材：机器上没有 Wallpaper_Presence 时", () => {
     assert.equal(res.status, 200, "外壳拿不到 200 就不会去播；但这里更不能 5xx，否则与「没有曲子」分不开");
     const body = await res.json();
     assert.ok("url" in body && "dir" in body, `结构不对：${JSON.stringify(body)}`);
-    // 曲库目录在这类环境里通常不存在 ⇒ 「没有曲子」是合法答案，必须带 reason
-    if (!body.url) assert.equal(body.reason, "no-song");
+    // 曲库目录在这类环境里通常不存在 ⇒ 「没有曲子」是合法答案，必须带 reason。
+    // ★ 2026-10-19 语义改了：没有用户点过的曲子时回 reason:"idle"（开机先放待机），
+    //   只有在"点了但这首没片子"时才回 "no-song"。
+    if (!body.url) assert.ok(["idle", "no-song"].includes(body.reason), `reason 不对：${body.reason}`);
   });
 
   test("③ /api/about 说出数据目录与素材目录（「不上传」要有路径才说服人）", { timeout: 60000 }, async () => {
@@ -218,7 +223,7 @@ describe("待机素材与字体：素材齐全时的真链路", () => {
 
   after(async () => {
     await stopServer(child);
-    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+    if (dataDir) await cleanupDir(dataDir);
   });
 
   test("⑤ /api/idle/next 给出一个白名单内的片名，且**连调两次不换片**", { timeout: 60000 }, async () => {

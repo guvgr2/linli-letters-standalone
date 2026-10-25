@@ -11,14 +11,15 @@
 
 import { createServer } from "node:http";
 import { readFile, readdir, writeFile, rename } from "node:fs/promises";
-import { cpSync, copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
+import { cpSync, copyFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname, basename, extname, resolve } from "node:path";
+import { join, dirname, basename, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, randomBytes } from "node:crypto";
+import { portAcceptable } from "./ports.mjs";
 import { spawn } from "node:child_process";
-import { runSecretPipeline } from "./secret-store.mjs";
+import { runSecretPipeline, sweepTempFiles } from "./secret-store.mjs";
 import { ERR, codeMessage, ApiError } from "./error-codes.mjs";
 import { buildImportPlan, PreviewRegistry, PREVIEW_TTL_MS } from "./import-session.mjs";
 import { parseSoulArchive, SOUL_LIMITS } from "./soul-archive.mjs";
@@ -30,12 +31,14 @@ import {
   FONT_DIR_NAME,
   FONT_MAX_BYTES,
   IDLE_SEED_KEY,
+  IDLE_STATES,
   PRESENCE_SUBDIR,
   VIDEO_NAME_RE,
   allFontStatus,
   assetRoot,
   assetsDir,
   fontFile,
+  idleChoice,
   idleFilePath,
   idleNext,
   idleSettingsView,
@@ -43,6 +46,24 @@ import {
   letterFontStatus,
   looksLikeFont,
 } from "./assets.mjs";
+// 封面：只从本机原版缓存读出、流给页面，一张都不拷进包（版权理由写在 covers.mjs 头注释里）。
+import { bundledCoverFile, coverFileFor, coverIndex as coversCoverIndex, imageMime } from "./covers.mjs";
+import { FEEDBACK_REPO, applyMigration, buildDiagnosticPackage, detectCandidates, diagnosticContents, feedbackIssueUrl } from "./maintenance.mjs";
+// 更新检查（抄原版程序）：纯逻辑在 updater.mjs，断点续传在 update-download.mjs。
+// ★ 外联边界：只打 api.github.com / github.com，且只在用户点「检查更新」时才发请求。
+import {
+  DEFAULT_UPDATE_CHANNEL,
+  UPDATE_CHANNELS,
+  buildUpdateFailurePayload,
+  buildUpdatePayload,
+  createUpdateFeed,
+  isNewerRelease,
+  normalizeUpdateChannel,
+} from "./updater.mjs";
+import { createUpdateDownloader } from "./update-download.mjs";
+// 连续写信的连续天数（用户 2026-10-21 拍板的「小激励」）：纯函数，读信件日集合即可。
+import { computeStreak } from "./writing-stats.mjs";
+import { buildTimelineDays } from "./timeline.mjs";
 import {
   PROACTIVE_DEFAULTS,
   evaluateProactive as coreEvaluateProactive,
@@ -53,6 +74,7 @@ import {
   inspectProactive,
   inspectReply,
   parseLedger,
+  LEDGER_FIELDS,
   parseVariant,
   playbackTimeOfDay,
   prettySongName,
@@ -64,8 +86,25 @@ import {
   officialSong,
   songDisplayName,
   songMode,
+  // ★ A1 记忆可更正 / A2 日记 / A3 她的世界（纯函数都在 core.mjs，这里只做落库与路由）
+  ledgerItemsFromText,
+  ledgerItemId,
+  ledgerItemsToText,
+  mergeLedgerItems,
+  decideLedgerWrite,
+  worldAt,
+  WORLD_ACTIVITIES,
+  assertWorldState,
+  diaryFacts,
+  shouldWriteDiary,
+  // ★ 2026-10-20：往来上下文按预算取舍（纯函数，见 core.mjs 里那段注释）。
+  HISTORY_BUDGET_CHARS,
+  pickRecentWithinBudget,
 } from "./core.mjs";
 import * as safety from "./data-safety.mjs";
+// ★ 2026-10-20：「保持她现在的样子」的**默认值**在真源 行为参数.json 的
+//   `nearTerm.userToggle.default` 里，别在设置页那侧再写一份默认口径。
+import { nearTermLimits } from "./behavior-params.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -94,9 +133,26 @@ try {
   console.error(`[data-safety] 检查待恢复时出错：${error.message}`);
 }
 
+// ★ 2026-10-19 修（七轮审查 F3）：旧版把明文 Key 写进 %TEMP%\linli-in-*.bin、用完再删，
+//   正常跑删得掉，但被强杀/断电时会留下明文（审查方在本机真找到过两份）。
+//   新做法已经改成全程走管道、不落盘（见 app\secret-store.mjs）；这里补一次「扫残留」，
+//   兜住历史与异常场景留下的旧命名文件。只删自己的命名模式，删不掉不算错。
+try {
+  const swept = await sweepTempFiles();
+  if (swept.removed) console.error(`[secret-store] 清掉了 ${swept.removed} 个旧临时文件`);
+} catch (error) {
+  console.error(`[secret-store] 清扫临时文件失败：${error.message}`);
+}
+
 const PORT = Number(process.env.LINLI_PORT ?? 0); // 0 = 让系统给端口
 // /health 要报版本：外壳自检失败时把这一行一起给用户，就知道是哪一版出的问题。
 const APP_VERSION = "1.0.0";
+// 更新仓库与反馈仓库**是同一个**（maintenance.mjs 的 FEEDBACK_REPO）：
+//   两处各写一份，换仓库时必有一处忘改 —— 用户就会在「反馈问题」里报新仓库、
+//   在「检查更新」里查旧仓库，表现成「明明发了新版却说已是最新」。
+const UPDATE_REPOSITORY = FEEDBACK_REPO;
+// 通道存 settings（不是 env）：用户切换后立刻生效，服务端每次检查现读。
+const UPDATE_CHANNEL_KEY = "update_channel";
 const STATUS = Object.freeze({ PENDING: 1, LLM_PROCESSING: 3, REPLIED: 4, FAILED: 5 });
 
 // ---------------------------------------------------------------- 访问边界
@@ -170,13 +226,11 @@ const db = (() => {
       added_at INTEGER NOT NULL,
       last_played_at INTEGER NOT NULL DEFAULT 0
     );
-    -- ★ 2026-10-18 歌单：照姊妹项目（E:\olivia-soul-community-kit）的 song_folders +
-    --   song_folder_items 两层结构。姊妹项目那边 item_id 要区分
-    --   PERFORMANCE / PGC_SONG / UGC_SONG 三种来源，还带一整套 video_by_tod_view
-    --   的降级兜底 —— 那是因为它寄生在原版游戏 feapp 里，得跟着游戏的对象走。
-    --   我们是独立版，曲目唯一标识就是曲库里的目录名 songs.dir，所以：
+    -- ★ 2026-10-18 歌单：song_folders + song_folder_items 两层结构。
+    --   item 直接存 songs.dir（曲库里的目录名）而不是独立的 item_id —— 我们是独立版，
+    --   曲目唯一标识就是目录名本身，不需要再分来源类型，也没有跟着别的对象走的降级兜底。
     --   · item 直接存 dir，不需要 item_type；
-    --   · 曲名不冗余存一份（姊妹项目存 name 是为了删歌后还能显示旧条目），
+    --   · 曲名不冗余存一份（冗余存了，删歌之后旧条目还能显示一个已经不存在的名字），
     --     我们这边读的时候 join songs 表取名字，目录不在了就跳过 —— 不留幽灵条目。
     CREATE TABLE IF NOT EXISTS song_folders(
       id TEXT PRIMARY KEY,
@@ -194,6 +248,68 @@ const db = (() => {
     );
     CREATE INDEX IF NOT EXISTS song_folders_order ON song_folders(sort_order, created_at);
     CREATE INDEX IF NOT EXISTS song_folder_items_order ON song_folder_items(folder_id, sort_order, added_at);
+    -- ★ 2026-10-19 A1「记忆可更正」：账本从「一整块文本」升级成「一条条能定位、能改、能撤销」。
+    --   旧 ledger 表**原样保留只读**（迁移出问题能整块回滚），新表存条目。
+    --   status 只有 active / deleted 两态：删除是软删，「误删了她的记忆」在陪伴类产品里
+    --   是不可逆的情感损失，硬删不合适。
+    CREATE TABLE IF NOT EXISTS ledger_items(
+      id          TEXT PRIMARY KEY,
+      field       TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      origin      TEXT NOT NULL,        -- 'model'（预检写入）| 'user'（用户手改）
+      source_letter_id TEXT,            -- 溯源：这值是从哪封信的预检来的
+      status      TEXT NOT NULL,        -- 'active' | 'deleted'
+      supersedes  TEXT,                 -- 被本条纠正掉的旧条 id
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ledger_items_field ON ledger_items(field, status, updated_at DESC);
+    -- 冲突：预检想改、但你亲手改过这一条 ⇒ 不直接覆盖，挂在这里等用户裁决。
+    CREATE TABLE IF NOT EXISTS ledger_conflicts(
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      field      TEXT NOT NULL,
+      mine       TEXT NOT NULL,         -- 你亲手写的值
+      theirs     TEXT NOT NULL,         -- 模型这次想写的值
+      letter_id  TEXT,
+      created_at INTEGER NOT NULL,
+      resolved   TEXT                   -- NULL=待确认 | 'mine' | 'theirs'
+    );
+    CREATE TABLE IF NOT EXISTS world_state(
+      at        INTEGER PRIMARY KEY,    -- 状态生效时间（秒）
+      activity  TEXT NOT NULL,
+      detail    TEXT,
+      reason    TEXT NOT NULL,
+      evidence  TEXT NOT NULL,          -- JSON：只存 id / 目录名，不存正文与音频
+      source    TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS world_plays(
+      -- ★ 2026-10-19：原来把 at（秒）当主键，结果同一秒内的两次播放互相覆盖 ——
+      --   测试里连问三次 /api/world/now 时 practicedThisHour 永远是 1，限频形同虚设；
+      --   真实使用里"她练完一首、用户立刻点一首"也会撞。加自增主键，at 只做索引。
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      at     INTEGER NOT NULL,          -- 秒
+      dir    TEXT NOT NULL,             -- 曲目目录名（不是路径）
+      reason TEXT NOT NULL              -- 'practice' | 'user'
+    );
+    CREATE INDEX IF NOT EXISTS world_plays_at ON world_plays(at);
+    CREATE TABLE IF NOT EXISTS diary(
+      day        TEXT PRIMARY KEY,      -- 'YYYY-MM-DD'（本地时区）
+      body       TEXT NOT NULL,
+      mood       TEXT,
+      song_dir   TEXT,
+      facts      TEXT NOT NULL,         -- 生成时锁定的事实快照 JSON
+      source     TEXT NOT NULL,         -- 'auto' | 'user_regenerate'
+      created_at INTEGER NOT NULL,
+      edited_at  INTEGER
+    );
+    -- 重写过的旧版本留痕：「她当时是根据什么写的」这一问必须永远答得上。
+    CREATE TABLE IF NOT EXISTS diary_history(
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      day         TEXT NOT NULL,
+      body        TEXT NOT NULL,
+      facts       TEXT NOT NULL,
+      replaced_at INTEGER NOT NULL
+    );
   `);
   // ★ 2026-10-18 加列迁移：songs 原本只有 (dir,name,added_at)，
   //   而 `/api/library/played` 只写 settings 的一个全局曲名 ——
@@ -203,7 +319,7 @@ const db = (() => {
   if (!songCols.includes("last_played_at")) {
     conn.exec("ALTER TABLE songs ADD COLUMN last_played_at INTEGER NOT NULL DEFAULT 0");
   }
-  // 姊妹项目在 server.js:866 有一句孤儿清理：folder_id 没有外键，删歌单时若漏删条目
+  // 原版程序在 server.js:866 有一句孤儿清理：folder_id 没有外键，删歌单时若漏删条目
   // 就会留下永远读不到的孤儿行。我们在删歌单的事务里已经一并删条目，这里再兜一道底。
   conn.exec("DELETE FROM song_folder_items WHERE folder_id NOT IN (SELECT id FROM song_folders)");
   return conn;
@@ -216,7 +332,292 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, String(value));
 }
-function nowSeconds() { return Math.floor(Date.now() / 1000); }
+/**
+ * ★ 2026-10-21 补：允许用 `LINLI_FAKE_NOW`（Unix 秒）把"现在"钉到指定时刻 ——
+ *   **仅测试使用**；正常运行时该环境变量不存在，行为与原来逐字节一致。
+ *   为什么需要它：日记写不写取决于"现在几点"（见 `diaryDue` 的 00:05 闸门），
+ *   不钉住时钟就只能等真正的午夜才能碰上那条边界 —— 60 分钟压测才撞到 2 次。
+ */
+function nowSeconds() {
+  const raw = process.env.LINLI_FAKE_NOW;
+  const fake = raw === undefined || raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(fake) ? Math.floor(fake) : Math.floor(Date.now() / 1000);
+}
+
+// ---------------------------------------------------------------- 更新检查与下载
+//
+// 口径（2026-10-20 用户：「咱们程序里有检查更新界面吗，接收 github 仓库 release……
+// 好像还有更新断点续传，你仔细借鉴一下吧」）—— 逻辑照原版程序，边界照本程序红线：
+//
+//   · **只在用户点「检查更新」时**才打外网。开机查、进设置页就查、后台定时查，一律不做 ——
+//     本仓第一条红线是「唯一外联＝用户自填的模型 Key」，多一条外联就得让用户**自己按下**。
+//   · 只打 `api.github.com`（列 Release）与 `github.com`（下安装包），
+//     请求里不带 Cookie / Token / 设备码，不上传任何本机数据。
+//   · 查不到就**降级**：说清原因 + 给发布页链接，绝不说「已是最新」。
+//
+// 下载器在启动时就建起来（不是第一次点下载时）：它要在启动时**恢复上次的进度** ——
+// 用户上回下到 60% 关了程序，这次进来能看到「已保留进度」。要不要接着下仍由用户点。
+function updateChannel() {
+  return normalizeUpdateChannel(getSetting(UPDATE_CHANNEL_KEY, DEFAULT_UPDATE_CHANNEL));
+}
+const updateFeed = createUpdateFeed({ currentTag: APP_VERSION, repository: UPDATE_REPOSITORY });
+const updateDownloads = await createUpdateDownloader({
+  root: join(DATA_DIR, "updates"),
+  // 只有「比本机新」的包才允许安装。下载器内部还会再判一次（canInstall），这是第二道。
+  canInstall: (tag) => isNewerRelease(APP_VERSION, tag),
+  // 下载跟着用户选的通道走：beta 用户看到的是测试版，点「下载安装包」就得拿到那个测试版。
+  fetchRelease: async (signal) => updateFeed.releaseForDownload(signal, updateChannel()),
+  // 只在「拿到的包和记录不符」（撤包 / 重传）时才会走到这里：强制重查发布页。
+  renewRelease: async (signal) => {
+    const release = await updateFeed.renew(signal, updateChannel());
+    if (!isNewerRelease(APP_VERSION, release.latestTag)) throw new Error("当前已经是最新版本");
+    return release;
+  },
+});
+
+// 一次性把旧账本拆成条目（幂等，靠 settings 标记短路）。放在这里是因为
+// `migrateLedgerItems` 里用到的 `ledgerText/getSetting/setSetting` 都是函数声明（已提升）。
+migrateLedgerItems();
+migrateWorldPlays();
+
+/** `world_plays` 早期版本把 `at` 当主键（同秒互相覆盖，限频失效）。旧库在这里重建。
+ *  这张表只有"最近 7 天的播放记录"，丢了不影响任何用户数据 —— 所以直接重建最省事。 */
+function migrateWorldPlays() {
+  try {
+    const cols = db.prepare("PRAGMA table_info(world_plays)").all().map((c) => c.name);
+    if (!cols.length || cols.includes("id")) return;
+    db.exec("DROP TABLE world_plays");
+    db.exec(`CREATE TABLE world_plays(
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      at     INTEGER NOT NULL,
+      dir    TEXT NOT NULL,
+      reason TEXT NOT NULL
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS world_plays_at ON world_plays(at)");
+  } catch { /* 重建失败就当没有播放记录：不能因此让服务起不来 */ }
+}
+
+// ---------------------------------------------------------------- 记忆条目（A1）
+
+/** 一次性迁移：旧 `ledger.body`（一整块「键　值」）→ `ledger_items`。
+ *  ★ 只在第一次启动跑，之后靠 settings 标记短路；**旧表原样保留只读**，
+ *    出问题能拿 `ledger.body` 整块回滚（这是迁移的最小风险方案）。
+ *  ★ 用 `INSERT OR IGNORE` + 内容哈希 id：重复跑不会产生重复条目，
+ *    同一 (字段, 值) 的 id 稳定 ⇒ 「撤销」在重启后仍然指向同一条。 */
+function migrateLedgerItems() {
+  if (getSetting("ledger_items_migrated_at")) return 0;
+  const items = ledgerItemsFromText(ledgerText());
+  const at = nowSeconds();
+  const insert = db.prepare(`INSERT OR IGNORE INTO ledger_items
+    (id, field, value, origin, source_letter_id, status, supersedes, created_at, updated_at)
+    VALUES (?, ?, ?, 'model', NULL, 'active', NULL, ?, ?)`);
+  for (const item of items) insert.run(ledgerItemId(item.field, item.value), item.field, item.value, at, at);
+  setSetting("ledger_items_migrated_at", String(at));
+  return items.length;
+}
+
+/** 每字段最多留几条 active：账本字段是「当前状态」不是流水，
+ *  留一堆历史会让上下文里出现自相矛盾的两条（旧的是"一般朋友"、新的是"密友"）。 */
+const LEDGER_ITEMS_PER_FIELD = 5;
+
+function memoryItems() {
+  return db.prepare("SELECT * FROM ledger_items ORDER BY field, updated_at DESC, rowid DESC").all();
+}
+
+function pendingConflicts() {
+  return db.prepare("SELECT * FROM ledger_conflicts WHERE resolved IS NULL ORDER BY created_at DESC, id DESC").all();
+}
+
+/** 预检回来的账本 → 条目。返回本次产生的冲突（不落进 ledger_items）。 */
+function recordPrecheckItems(ledger, letterId) {
+  const at = nowSeconds();
+  const conflicts = [];
+  for (const [field, value] of Object.entries(ledger)) {
+    if (!LEDGER_FIELDS.includes(field)) continue;
+    const existing = db.prepare("SELECT * FROM ledger_items WHERE field = ? AND status = 'active' ORDER BY updated_at DESC, rowid DESC").all(field);
+    // 判定规则在 core.mjs（纯函数，可单测）：冲突 / 重复 / 正常写。
+    const decision = decideLedgerWrite({ value, existing });
+    if (decision.action === "conflict") {
+      // ★ 用户主权：你亲手改过的这一条，模型不得直接覆盖 —— 挂成待裁决。
+      db.prepare("INSERT INTO ledger_conflicts(field, mine, theirs, letter_id, created_at) VALUES(?,?,?,?,?)")
+        .run(field, decision.mine, value, letterId ?? null, at);
+      conflicts.push({ field, mine: decision.mine, theirs: value });
+      continue;
+    }
+    if (decision.action === "skip") continue;
+    const revision = db.prepare("SELECT COUNT(*) AS n FROM ledger_items WHERE field = ? AND value = ?").get(field, value).n + 1;
+    db.prepare(`INSERT INTO ledger_items
+      (id, field, value, origin, source_letter_id, status, supersedes, created_at, updated_at)
+      VALUES (?, ?, ?, 'model', ?, 'active', ?, ?, ?)`).run(
+      ledgerItemId(field, value, revision), field, value, letterId ?? null, decision.supersedes ?? null, at, at,
+    );
+  }
+  return conflicts;
+}
+
+/** 用户其实不需要"条目全量"——要的是"每字段现在是什么"。 */
+function currentLedgerItems() {
+  const latest = new Map();
+  for (const item of memoryItems()) {
+    if (item.status !== "active") continue;
+    const seen = latest.get(item.field);
+    if (!seen || item.updated_at > seen.updated_at || (item.updated_at === seen.updated_at && item.rowid > seen.rowid)) {
+      latest.set(item.field, item);
+    }
+  }
+  return [...latest.values()];
+}
+
+// ---------------------------------------------------------------- 她的日记（A2）
+
+/** 本地时区的「YYYY-MM-DD」。★ 不能用 toISOString()：那是 UTC，
+ *  在东八区会把每天 00:00–08:00 的事记到前一天，日记的"那天"就对不上了。 */
+function localDay(seconds = nowSeconds()) {
+  const d = new Date(seconds * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function dayRange(day) {
+  const [y, m, d] = String(day).split("-").map(Number);
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0).getTime() / 1000;
+  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime() / 1000;
+  return { start: Math.floor(start), end: Math.floor(end) };
+}
+
+/** 时间轴 / 日历的取数窗口（2026-10-21）。
+ *
+ *  ★ 参数非法一律**回落默认窗口**，不报 4xx —— 与 /api/onthisday 同一条纪律：
+ *    回顾是锦上添花，不该因为一个手滑的 query 把写信主流程打断。
+ *    响应里回 `from`/`to`/`source`/`clamped`，客户端与测试都能看出"实际给了哪一段"。
+ *  ★ 跨度上限 400 天：本地库也架不住有人把 2000 年拉到 2030 年一次全取。 */
+const TIMELINE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/u;
+const TIMELINE_MONTH_RE = /^\d{4}-(?:0[1-9]|1[0-2])$/u;
+const TIMELINE_MAX_SPAN_DAYS = 400;
+
+function timelineWindow(params) {
+  const today = localDay();
+  const month = String(params.get("month") ?? "").trim();
+  const fromRaw = String(params.get("from") ?? "").trim();
+  const toRaw = String(params.get("to") ?? "").trim();
+  let from;
+  let to;
+  let source;
+
+  if (TIMELINE_MONTH_RE.test(month)) {
+    const [y, m] = month.split("-").map(Number);
+    from = `${month}-01`;
+    // 该月最后一天：下个月第 0 天。
+    to = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    source = "month";
+  } else if (TIMELINE_DAY_RE.test(fromRaw) && TIMELINE_DAY_RE.test(toRaw)) {
+    from = fromRaw;
+    to = toRaw;
+    if (from > to) [from, to] = [to, from];   // 传反了就当传对了，别让人对着空结果猜
+    source = "range";
+  } else {
+    // 默认：最近 13 个月（含当月）—— 日历能往回翻满 12 次。
+    const [y, m] = today.split("-").map(Number);
+    from = localDay(new Date(y, m - 1 - 12, 1).getTime() / 1000);
+    to = today;
+    source = "default";
+  }
+
+  const toDate = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const DAY_MS = 86400000;
+  const span = Math.round((toDate(to).getTime() - toDate(from).getTime()) / DAY_MS) + 1;
+  let clamped = false;
+  if (span > TIMELINE_MAX_SPAN_DAYS) {
+    from = localDay((toDate(to).getTime() - (TIMELINE_MAX_SPAN_DAYS - 1) * DAY_MS) / 1000);
+    clamped = true;
+  }
+  return { from, to, source, clamped };
+}
+
+/** ★ 2026-10-21 加：连续写信统计——你连着几天写过信 + 这个月你写过几封。
+ *  · 只数 `origin IS NULL` 的用户来信；她先写的（proactive）不算"你在写"。
+ *  · 纯本机 SQL + 本地日聚合（localDay），不外联；断了不惩罚（算出来是 0 就 0）。
+ *  · 供 /api/writing-stats（信箱淡字）与回信 prompt 的"她自然提一嘴"共用同一口径。 */
+function writingStats() {
+  const rows = db.prepare("SELECT created_at FROM letters WHERE origin IS NULL").all();
+  const days = new Set(rows.map((r) => localDay(r.created_at)));
+  const streak = computeStreak(days);
+  const monthPrefix = localDay().slice(0, 7);   // YYYY-MM
+  const thisMonth = rows.filter((r) => localDay(r.created_at).slice(0, 7) === monthPrefix).length;
+  return { streak, thisMonth };
+}
+
+/** 收集某一天的事实：只取 id / 目录名 / 摘要，**绝不存信件正文副本**。 */
+function collectDiaryFacts(day) {
+  const { start, end } = dayRange(day);
+  const letters = db.prepare(
+    "SELECT id, content, created_at FROM letters WHERE created_at >= ? AND created_at < ? ORDER BY created_at LIMIT 20",
+  ).all(start, end).map((row) => ({ id: row.id, at: row.created_at, excerpt: String(row.content ?? "").replace(/\s+/gu, " ").slice(0, 40) }));
+  const plays = db.prepare(
+    "SELECT dir, COUNT(*) AS n FROM world_plays WHERE at >= ? AND at < ? GROUP BY dir ORDER BY n DESC LIMIT 5",
+  ).all(start, end).map((row) => ({ dir: row.dir, count: row.n }));
+  const worldRow = db.prepare("SELECT * FROM world_state WHERE at < ? ORDER BY at DESC LIMIT 1").get(end);
+  const world = worldRow ? { activity: worldRow.activity, reason: worldRow.reason } : null;
+  return diaryFacts({ day, letters, plays, world });
+}
+
+/** 用事实拼一篇日记（不需要模型，断网/没填 Key 也写得出来）。
+ *  ★ 只写她自己的视角，材料全部来自 facts；没有任何往来就不写空日记。 */
+function composeDiary(facts) {
+  const lines = [];
+  if (facts.world) lines.push(`今天${facts.world.reason ? `，${facts.world.reason}` : ""}。${facts.world.activity === "练琴" ? "练了很久的琴。" : ""}`);
+  if (facts.letters.length) {
+    lines.push(`他来了 ${facts.letters.length} 封信。${facts.letters.length > 1 ? "一封一封拆开看的。" : "拆开看了一遍。"}`);
+  }
+  if (facts.plays.length) {
+    const top = facts.plays[0];
+    lines.push(`一整天都在放 ${top.dir.replace(/_/gu, " ")}，听了 ${top.count} 遍。`);
+  }
+  if (!lines.length) lines.push("今天没什么事，把窗开着，看了一会儿楼下。");
+  return lines.join("\n");
+}
+
+/** 生成/更新一篇日记。`source`：'auto' 由定时器写，'user_regenerate' 由用户手动重写。
+ *  ★ 重写不覆盖旧事实：旧 facts 落进 `diary_history`，这样"她当时的日记是基于什么写的"永远查得到。 */
+async function writeDiary(day, { source = "auto", force = false } = {}) {
+  const existing = db.prepare("SELECT * FROM diary WHERE day = ?").get(day);
+  if (existing && !force) return { skipped: true, day, reason: "already-written" };
+  const facts = collectDiaryFacts(day);
+  if (!shouldWriteDiary({ facts, writeEmptyDay: getSetting("diary_write_empty_day", "0") === "1" })) {
+    return { skipped: true, day, reason: "empty-day" };
+  }
+  const body = composeDiary(facts);
+  const at = nowSeconds();
+  const songDir = facts.plays[0]?.dir ?? null;
+  if (existing) {
+    db.prepare("INSERT INTO diary_history(day, body, facts, replaced_at) VALUES(?,?,?,?)")
+      .run(day, existing.body, existing.facts, at);
+    db.prepare("UPDATE diary SET body = ?, facts = ?, song_dir = ?, source = ?, edited_at = ? WHERE day = ?")
+      .run(body, JSON.stringify(facts), songDir, source, at, day);
+  } else {
+    db.prepare("INSERT INTO diary(day, body, mood, song_dir, facts, source, created_at) VALUES(?,?,?,?,?,?,?)")
+      .run(day, body, null, songDir, JSON.stringify(facts), source, at);
+  }
+  return { ok: true, day, body, facts };
+}
+
+/** 启动/跨天补写"昨天"。★ 只补昨天，不补一整段历史：
+ *  历史日期没有当时的播放记录与世界状态，补出来的只会是编的。 */
+async function catchUpDiary() {
+  const yesterday = localDay(nowSeconds() - 86400);
+  try {
+    return await writeDiary(yesterday);
+  } catch (error) {
+    // ★ 2026-10-21：别再静默吞掉 —— 补写失败必须看得见。
+    //   原来这里 `catch {}` 什么都不做，于是"用户说日记没出现"时完全无从查起
+    //   （排查 2026-10-21 午夜闸门 bug 时，这条静默让定位多绕了一圈）。
+    console.error(`[diary] 补写 ${yesterday} 失败：${error?.message ?? error}`);
+    return { skipped: true, reason: "error" };
+  }
+}
 
 // ---------------------------------------------------------------- 模型配置（Key 用 DPAPI 加密）
 
@@ -286,6 +687,59 @@ async function callModel(messages, { maxTokens = 1200, temperature = 1.0 } = {})
   }
 }
 
+/**
+ * 问接口要模型列表：`GET {baseUrl}/models`（OpenAI 兼容的口径）。
+ *
+ * ★ 抄原版程序（用户 2026-10-20：「模型选择可以学习原版程序……不像咱们还要自己手动输入模型名」）：
+ *   那一边是「先去问接口，再把编号列成下拉」，用户不用去翻控制台抄。
+ * ★ 外联边界没变：只问**你自己填的那一家**，而且**只在你点「查询模型列表」时才发一次**。
+ *   Key 留空就沿用已保存的那个（接口从不回显 Key，前端提交空串是常态）。
+ * ★ 失败一律回 `{ ok:false, error }` + HTTP 200，与 `/api/model/test` 同一套口径：
+ *   它测的是「你那家的账号/模型能不能用」，不是本程序的参数错，不该让界面去翻错误号表。
+ */
+async function listModelIds(patch = {}) {
+  const saved = await readModel();
+  const baseUrl = String(patch.baseUrl ?? saved.baseUrl ?? "")
+    .trim()
+    .replace(/\/+$/u, "")
+    .replace(/\/chat\/completions$/iu, "");
+  const apiKey = String(patch.apiKey ?? "").trim() || saved.apiKey;
+  // ★ 只认 http/https：这条地址会被拼进 fetch，别的协议一律不出门。
+  if (!/^https?:\/\//iu.test(baseUrl)) {
+    return { ok: false, error: "接口地址要以 http:// 或 https:// 开头" };
+  }
+  if (!apiKey) return { ok: false, error: codeMessage("还没有填写模型 API Key", ERR.MODEL_KEY_MISSING) };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    let response;
+    try {
+      response = await fetch(`${baseUrl}/models`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } catch (e) {
+      const why = controller.signal.aborted ? "请求超时（30 秒）" : (e?.cause?.code ?? e?.name ?? "连接失败");
+      throw new Error(codeMessage(`连不上模型接口：${why}`, ERR.MODEL_UNREACHABLE));
+    }
+    if (!response.ok) throw new Error(codeMessage(`模型接口 HTTP ${response.status}`, ERR.MODEL_HTTP_FAILED));
+    const payload = await response.json().catch(() => null);
+    // OpenAI 兼容是 `data[].id`；Ollama 那类本地服务是 `models[].name` —— 两种都认。
+    const list = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+    const ids = [...new Set(
+      list.map((item) => String(item?.id ?? item?.name ?? "").trim()).filter(Boolean),
+    )].sort((a, b) => a.localeCompare(b, "en"));
+    if (!ids.length) return { ok: false, error: "接口没有返回模型列表（可以自己填模型名）" };
+    return { ok: true, models: ids.slice(0, 300), baseUrl };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------- 语料与账本
 
 async function harnessFile(name) {
@@ -293,12 +747,62 @@ async function harnessFile(name) {
 }
 
 // 曲库：只索引目录名以 solo / playsing 开头的那些（用户 2026-10-13 指定）。
-// 实测 E:\linlimusic：474 个 mp4、48.65 GB、127 个曲目目录 —— 这个体量只能指向，不能随包。
-const DEFAULT_LIBRARY_DIR = "E:\\linlimusic";
+// 曲目视频动辄几十 GB —— 这个体量只能指向，不能随包。
+//
+// ★ 2026-10-19（第十六轮审查 P1）：**默认值必须是空的**。原来这里写死
+//   `"E:\\<某人自己的曲库>"`（开发机自己的曲库），打包发给别人之后：新用户第一次点曲库
+//   看到的是"目录不存在"，输入框里还预填着陌生人的 `E:\…`，协议里也照抄了一句。
+//   现在空 ⇒ `scanLibrary()` 回 `needPick: true`，界面走「先选一个曲库目录」的引导。
+//
+// ★ 2026-10-19 第十七轮复核 §3：原来这里还留了一个 `const DEFAULT_LIBRARY_DIR = ""`，
+//   但 `libraryDirSetting()` 里直接写的是空串字面量 ⇒ 那个常量**全文件零引用**。
+//   复核方做变异证明了它的危险：把常量改回作者路径，行为一点不变、三条行为用例全绿
+//   （没人读它），等哪天有人"图方便"写成 `getSetting("library_dir", DEFAULT_LIBRARY_DIR)`，
+//   这个 P1 就原样回来了。所以常量删掉，兜底就地写在下面这一行，
+//   `tests\firstrun-library.test.js` ④ 用源码级断言把这行钉死。
+
+/** 当前曲库目录（用户没选过就是空串，不是开发机的路径）。 */
+function libraryDirSetting() {
+  // ★ 兜底必须是 `""` 字面量：`firstrun-library.test.js` ④ 按这个写法匹配。
+  const raw = getSetting("library_dir", "");
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+// ---- 官方 129 首的封面（**已随包**，见 app/covers.mjs 头注释） -----------------
+// ★ 用户口径（2026-10-19）：「官方120多首歌的封面你也得给对应上，没有封面太难看了」，
+//   随后又拍了「随包，必须随包」。所以最终做法是：129 张 256×256 缩略图随包（1.8 MB，
+//   在 `app/covers/`），版权口径与逐条说明见 THIRD-PARTY-NOTICES.txt 第 5) 条。
+// ★ 本机原版缓存那条路仍然保留（`covers.mjs` 的 `coverFileFor`），只在包里没有这张图时
+//   兜底用一下；两者都是"读用户自己机器上已有的东西"，不联网、不代下。
+//   旧注释写的是"不能随包"，已经与实现不一致（第十六轮审查 §6 抓到的文档漂移）。
+const COVER_META = (() => {
+  try {
+    return JSON.parse(readFileSync(join(HERE, "covers-meta.json"), "utf8"));
+  } catch {
+    return {};   // 没有元数据就只少了「作曲家 · 时长」，曲库照常列
+  }
+})();
+let _coverIndex = null;
+function coverIndex() {
+  if (!_coverIndex) _coverIndex = coversCoverIndex();
+  return _coverIndex;
+}
+
+/** 一首歌的封面文件：随包优先（快、任何机器都有），没有才去查本机原版缓存。
+ *  ★ 为什么要先判 COVER_META：`coverIndex()` 会去解析原版浏览器的 blockfile，
+ *    曲库里 2584 首大多不是官方曲目，逐首触发一次索引构建不值当。 */
+function coverFileOf(songDir) {
+  const bundled = bundledCoverFile(songDir);
+  if (bundled) return bundled;
+  if (!COVER_META[songDir]) return null;      // 用户自己上传的：本来就没有封面
+  return coverFileFor(coverIndex(), songDir, songDisplayName(songDir));
+}
 
 async function scanLibrary() {
-  const dir = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
-  if (!existsSync(dir)) return { dir, songs: [], error: "目录不存在或还没有挂上" };
+  const dir = libraryDirSetting();
+  // ★ 没选过曲库目录：不是错误，是还没开始。`needPick` 让界面给引导而不是报错。
+  if (!dir) return { dir: "", songs: [], error: null, needPick: true };
+  if (!existsSync(dir)) return { dir, songs: [], error: "目录不存在或还没有挂上", needPick: false };
   const entries = await readdir(dir, { withFileTypes: true });
   // ★ 2026-10-18：原来这里只吐 `{name, dir}`，官方曲名/作曲家、时段可用性一个都不给前端。
   //   而 `officialSong()` / `songDisplayName()` / `songMode()` 早在 core.mjs:1092 就写好了，
@@ -306,7 +810,8 @@ async function scanLibrary() {
   //   （`PlaySing The Road Not Taken`），这正是用户截图里"不像原版"的一部分。
   //   现在把官方曲名、作曲家、可用时段一次算出来带上（都是纯计算，读目录不读视频）。
   //
-  // ★ 时段（slots）：只认文件名里的 `_TOD1200/1730/2000_`。实测 `E:\linlimusic` 里
+  // ★ 时段（slots）：只认文件名里的 `_TOD1200/1730/2000_`。实测一台装满官方曲目的
+  //   本机曲库（`<曲库目录>`）里 Solo_ 98 + PlaySing_ 31 这 129 首里 **127 首都有三段**
   //   Solo_ 98 + PlaySing_ 31 这 129 首里 **127 首都有三段**，另 2 首没有 ⇒ 这里必须
   //   如实返回空数组，让界面能标出"这一首没有分时段视频"，而不是假装有。
   const songs = [];
@@ -325,11 +830,20 @@ async function scanLibrary() {
       slots = TIME_SLOTS.filter((t) => set.has(t));
     } catch { slots = []; }   // 单个目录读不了不该让整次扫描失败
     const official = officialSong(entry.name);
+    // 封面 / 作曲家 / 时长：官方 129 首有；用户自己放进来的没有。
+    // ★ 时长的来源是原版曲目表（`app/covers-meta.json`，只有文字没有图），
+    //   不是现场 ffprobe —— 界面上的 `作曲家 · 4:18` 跟原版截图一致就够，
+    //   别为了这一列去扫 48 GB 视频。
+    const meta = COVER_META[entry.name] ?? null;
+    const cover = coverFileOf(entry.name);
     songs.push({
       dir: entry.name,
       // 官方曲目用原版曲名；表外走裸名清洗（两条分支都在 core.mjs 里，可单测）。
       name: songDisplayName(entry.name),
-      composer: official?.composer ?? null,
+      composer: official?.composer ?? meta?.composer ?? null,
+      duration: meta?.duration || null,
+      // 有封面才给 URL；没有就是 null，界面画首字母块。
+      cover: cover ? `/api/cover?dir=${encodeURIComponent(entry.name)}` : null,
       mode: songMode(entry.name),
       genre: classifyGenre(entry.name, songDisplayName(entry.name)),
       slots,
@@ -339,11 +853,53 @@ async function scanLibrary() {
   return { dir, songs, count: songs.length };
 }
 
+/**
+ * 曲目目录名必须是**曲库根下的一级目录名**。
+ *
+ * ★ 2026-10-19 审查 P1：`/api/stage/play` 与 `/api/library/play` 原来把 `dir` 直接
+ *   `join(libraryRoot, dir)`。传 `..\..\..\Windows\temp` 时 join 会跳出曲库，
+ *   只要那个目录里正好有 `*_TOD*_*.mp4`，就能把曲库外面的视频当曲子播
+ *   （审查实测 `GET /api/library/play?dir=..\..\..\Windows\temp` 返回 200 并原样回显）。
+ *
+ * 判据取最严的一条：**单个路径段**（不含 `/`、`\`、`:`，也不是 `.`/`..`）+ 真存在
+ * + **真实路径仍在曲库根下**。
+ * 不做"归一再比对根"那套 —— 只允许一级目录，是这里唯一合法的形态，
+ * 顺带把 UNC、盘符、`..\` 全挡了。
+ *
+ * ★ 2026-10-19 审查第二意见（advisor）：单段校验只挡字面 `..`/绝对路径，挡不住
+ *   **链接**。`existsSync`/`statSync` 会跟随 junction / symbolic link，于是
+ *   `曲库根\link → D:\other` 这种目录：不含 `/ \ :`、stat 也存在，旧判据放行，
+ *   `listVariants` 就会到根外面读 `.mp4`。所以最后一步必须比**真实路径**：
+ *   `realpathSync(candidate)` 解析完链接后，仍要落在 `realpathSync(root)` 之内，
+ *   否则一律当"没有这一首"。
+ *   允许链接的前提是链接目标本身就在曲库里（有人把大曲库分到别的盘、再链回根下，
+ *   这种仍然可用）；指向根外的链接一律拒。根目录自己是指向别处的链接是允许的
+ *   —— 因为比对基准也是解析后的根。
+ */
+function songDirOk(songDir) {
+  if (typeof songDir !== "string" || !songDir) return false;
+  if (songDir === "." || songDir === "..") return false;
+  if (/[\\/:]/.test(songDir)) return false;
+  if (songDir.includes("\0")) return false;
+  const root = libraryDirSetting();
+  try {
+    const realRoot = realpathSync(root);
+    const full = join(realRoot, songDir);
+    if (!existsSync(full) || !statSync(full).isDirectory()) return false;
+    // 链接解析后的真实路径：必须在根之内，且不能就是根本身（那是一级目录的父级）。
+    const real = realpathSync(full);
+    if (real === realRoot) return false;
+    return real.startsWith(realRoot.endsWith(sep) ? realRoot : realRoot + sep);
+  } catch {
+    return false;
+  }
+}
+
 // 变体选择与时段判定在 core.mjs（纯函数，可单测）。
 async function listVariants(songDir) {
-  const root = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
+  if (!songDirOk(songDir)) return [];
+  const root = libraryDirSetting();
   const full = join(root, songDir);
-  if (!existsSync(full)) return [];
   const entries = await readdir(full, { withFileTypes: true });
   return entries
     .filter((e) => e.isFile() && /\.mp4$/iu.test(e.name))
@@ -362,9 +918,9 @@ async function importedSongs() {
 }
 
 // ---------------------------------------------------------------- 歌单
-// 照姊妹项目（E:\olivia-soul-community-kit\repo\source\local-service\server.js:4897-5280）
+// 照原版程序（server.js:4897-5280）
 // 的 song_folders / song_folder_items 两层结构，但按我们的曲目模型简化（见建表处的注释）。
-// 姊妹项目那边要导出的 .osfolder 文件名会带上歌单名，所以它专门过滤了控制字符 ——
+// 原版程序那边要导出的 .osfolder 文件名会带上歌单名，所以它专门过滤了控制字符 ——
 // 我们没有导出功能，但歌单名照样会进 JSON 和 DOM，过滤一样不能省。
 
 /** 歌单名最长多少个字（按字符数算，不按字节）。 */
@@ -372,7 +928,7 @@ const FOLDER_NAME_MAX = 40;
 
 /**
  * 洗歌单名：去掉控制字符（含 NUL/BEL/ESC/DEL）+ 折叠空白 + 首尾 trim。
- * ★ 姊妹项目 server.js:4897 的注释说得很直白：这些字符能原样存进库，
+ * ★ 原版程序 server.js:4897 的注释说得很直白：这些字符能原样存进库，
  *   然后一路跟着进文件名和界面。我们在入口就掐掉，别让它有机会流下去。
  */
 function cleanFolderName(raw) {
@@ -457,64 +1013,324 @@ async function resolvePlayback(songDir, view = "NI", todOverride = null) {
 }
 
 /**
- * 桌面壁纸层（窗口里那层背景）和桌面壁纸共用的一次"挑一首"：
- * 上次播过的 → 已导入的 → 曲库扫描的第一首；都没有就 url:null。
- * ★ 外壳也要问这个接口：没有曲子就**根本不往桌面上铺窗口** —— 铺了就是一块黑。
- *   所以它必须永远回 200 且结构稳定（reason 说明为什么没曲子），不能靠 5xx 表示"没有"。
+ * 桌面壁纸层（窗口里那层背景）和桌面壁纸共用的一次"挑一首"。
+ *
+ * ★★ 2026-10-19 语义改了（用户口径 m01034）：
+ *   「为什么刚打开软件就播放音乐，不应该是播放待机视频和待机音乐吗」
+ *   —— 以前这里是「上次播过的 → 已导入的 → 曲库第一首」，于是开机就自动放一首曲子。
+ *   现在**没有用户点过的曲子就一律返回空**，页面拿到空就去看 `/api/idle/next` 播待机
+ *   （Wallpaper_Presence + Wallpaper_Ambience）；只有用户真的从曲库点了「播放」、
+ *   点了「随机导入」、或点了桌面歌单里的某首（都走 POST /api/stage/play 写
+ *   `stage_forced_dir`）才放曲子。
+ * ★ 外壳也要问这个接口：没有曲子就**根本不往桌面上铺窗口** —— 那就把待机也一起挡掉了，
+ *   所以外壳那侧改判「有曲子 或 有待机素材」才铺（见 Program.HasStageVideo 的注释）。
+ *   这个接口本身必须永远回 200 且结构稳定（reason 说明为什么没曲子）。
  */
+// ★★ 用户点过的那一首**只放在内存里**，不落库：
+//   落了库就等于「开机自动接着放上次那首」，而用户要的正是「开机先放待机」
+//   （m01034 原话「为什么刚打开软件就播放音乐，不应该是播放待机视频和待机音乐吗」）。
+//   放在内存里 ⇒ 这次开着程序就一直放这首，关掉再开就回到待机，正是该有的行为。
+let stageForced = "";
+
+/**
+ * ★★ 暂停/续播（2026-10-20 用户原话：「咱们程序没有暂停后再点播放续播的功能」）。
+ *   语义定案：「暂停 = 画面回待机 + 记住断点；再点播放 = 从断点继续」。
+ *
+ * stagePaused = { dir, t }：暂停那一刻记住「哪首 + 第几秒」。与 stageForced 一样
+ *   **只放内存**：关程序即忘 —— 「开机回待机」是既定特性（m01034），暂停不该例外。
+ * stageResume = { t, until }：续播起点的一次性下发窗口（15 秒 TTL）。为什么要 TTL：
+ *   /api/stage/next 只有壁纸层一个消费者（外壳的 HasStageVideo 只在启动铺壁纸时问一次），
+ *   但 tick 会被 stage:changed 与 30 秒轮询反复触发 —— 起播那一刻消费一次之后，
+ *   窗口一过就自动失效，同一首曲子不会在 30 秒轮询里被反复拽回断点。
+ */
+let stagePaused = null;
+let stageResume = null;
+
 async function stageNext() {
-  // ★ 名字与 dir 都要留着：上面 api /play 传的是 prettySongName 过的名字。
-  const pick = (songs) => {
-    if (!songs || !songs.length) return null;
-    const last = getSetting("last_played_title", "");
-    const hit = last
-      ? songs.find((s) => s.name === last) || songs.find((s) => s.dir === last)
-      : null;
-    return hit || songs[0];
+  // 用户点过的那一首（可能已经不在曲库里了 —— 那就当没点过，回待机）。
+  const forced = stageForced;
+  if (!forced) return { dir: null, tod: null, label: null, url: null, reason: "idle" };
+  const variants = await listVariants(forced);
+  if (!variants.length) return { dir: null, tod: null, label: null, url: null, reason: "no-song" };
+  const now = new Date();
+  const tod = playbackTimeOfDay(now.getHours() * 60 + now.getMinutes());
+  // ★ 2026-10-20：视角跟设置走（弹唱视角，默认 NI = 专注演奏）。
+  const picked = selectVariant(variants, tod, playViewSetting());
+  if (!picked) return { dir: null, label: null, tod, url: null, reason: "no-song" };
+  return {
+    dir: forced,
+    title: songDisplayName(forced),
+    tod,
+    label: TIME_SLOT_LABELS[tod] ?? tod,
+    view: playViewSetting(),
+    file: picked.file,
+    // 界面右栏那行要显示"N 个变体"，跟 /api/library/play 的字段名保持一致。
+    variantCount: variants.length,
+    url: `/api/media?dir=${encodeURIComponent(forced)}&file=${encodeURIComponent(picked.file)}`,
+    // ★ 续播：只在 15 秒下发窗口内随响应带一次断点秒数；壁纸层只在"起播那一刻"
+    //   消费它（见 wallpaper.html crossFade 的 startAt），同曲轮询不会拽回断点。
+    ...(stageResume && Date.now() < stageResume.until ? { resumeT: stageResume.t } : {}),
   };
-  // ★ 只挑**这个时段真有片子**的曲子：曲库里 7788 个 mp4 里，128 个目录是原版
-  //   导出的 TOD 命名，其余是 md5 命名 —— parseVariant 解析不出时段。第一首恰好是
-  //   后者时 url 会算成 null、整首跳过，桌面那层就再也不亮了。
-  const playable = async (songs) => {
-    const out = [];
-    for (const s of songs) {
-      const variants = await listVariants(s.dir);
-      if (variants.length) out.push({ song: s, variants });
-    }
-    return out;
-  };
-  const resolveOne = async (song, variants) => {
-    const now = new Date();
-    const tod = playbackTimeOfDay(now.getHours() * 60 + now.getMinutes());
-    const picked = selectVariant(variants, tod, "NI");
-    return {
-      dir: song.dir,
-      title: song.name,
-      tod,
-      label: TIME_SLOT_LABELS[tod] ?? tod,
-      file: picked?.file ?? null,
-      url: picked
-        ? `/api/media?dir=${encodeURIComponent(song.dir)}&file=${encodeURIComponent(picked.file)}`
-        : null,
-    };
-  };
-  for (const source of [importedSongs, async () => (await scanLibrary()).songs]) {
-    try {
-      const rows = await source();
-      const list = await playable(rows);              // 保持原顺序：上次播过的排第一
-      if (!list.length) continue;
-      const ordered = pick(list.map((x) => ({ name: x.song.name, dir: x.song.dir })));
-      const first = list.find((x) => x.dir === ordered.dir) ?? list[0];
-      const hit = await resolveOne(first.song, first.variants);
-      if (hit.url) return hit;
-      // 那一首这个时段没片子 ⇒ 退而求其次，在同批里找真能播的
-      for (const x of list) {
-        const alt = await resolveOne(x.song, x.variants);
-        if (alt.url) return alt;
-      }
-    } catch { /* 没导入过 / 曲库目录不存在，都往下走 */ }
+}
+
+// ---------------------------------------------------------------- 播放顺序（四种）
+//
+// ★ 2026-10-19：窗口里的 video 播放链删掉之后（片子只在桌面那层放），
+//   「顺序 / 列表循环 / 单曲循环」三种模式对用户就没有任何可观察差异了 ——
+//   手动上一首/下一首在三种模式下走同一条环形逻辑，只有「随机」还有区别。
+//   原版是靠播放条自动走到下一首来体现这三者的，所以"自动走到下一首"这件事
+//   必须由**桌面那层**自己做（窗口关着也得继续走）。桌面页只知道 URL，不知道队列，
+//   于是队列规则挪到这里：桌面页在曲子放完时 POST /api/stage/advance，
+//   服务端按模式算下一首（或在顺序播放到头时回待机）。
+//
+// ★ 队列口径与窗口里 playlist() 保持一致：**音乐桌面里的曲子优先，空的退回整个曲库**。
+//   不一致的话，窗口里看到"下一首"和桌面上真放出来的会是两首。
+
+/** 四种模式（原版 ot 枚举：顺序 / 列表循环 / 单曲循环 / 随机）。 */
+const PLAY_MODE_KEY = "play_mode";
+/** 队列缓存（`stageQueue()` 用）：`{ at, list }`，见那里的注释。 */
+let stageQueueCache = { at: 0, list: null };
+const PLAY_MODES = ["order", "repeat", "single", "shuffle"];
+
+function playModeSetting() {
+  const raw = String(getSetting(PLAY_MODE_KEY, "") ?? "");
+  return PLAY_MODES.includes(raw) ? raw : "order";
+}
+
+/**
+ * 弹唱视角（2026-10-20 用户口径：原版设置里有「弹唱视角 / 状态 / 显示屏幕 / 应用行为」四块，
+ * 咱们也要有）。NI = 专注演奏，WI = 视听交互 —— 这两个值不是我们起的，是曲库视频
+ * 文件名里的视角段（core.mjs 的 parseVariant 解析 `TOD1200_NI_L.mp4` 的 NI/WI），
+ * 所以这个设置是把"默认挑哪一个视角的变体"钉住；某首曲子没有对应视角的片子时，
+ * selectVariant 会按它自己的兜底顺序退回（同 tod 无 view → 同 tod → 兜底），
+ * 不会因为选了 WI 就播不出来。
+ */
+const PLAY_VIEW_KEY = "play_view";
+const PLAY_VIEWS = ["NI", "WI"];
+function playViewSetting() {
+  const raw = String(getSetting(PLAY_VIEW_KEY, "") ?? "").trim().toUpperCase();
+  return PLAY_VIEWS.includes(raw) ? raw : "NI";
+}
+
+/** 关闭时怎么办（应用行为）：ask = 每次关闭提示 / tray = 最小化到托盘 / quit = 直接退出。 */
+const CLOSE_BEHAVIOR_KEY = "close_behavior";
+const CLOSE_BEHAVIORS = ["ask", "tray", "quit"];
+function closeBehaviorSetting() {
+  const raw = String(getSetting(CLOSE_BEHAVIOR_KEY, "") ?? "").trim();
+  return CLOSE_BEHAVIORS.includes(raw) ? raw : "ask";
+}
+
+/**
+ * 桌面播放的队列：只收**真能播**的目录（有变体片子）。
+ * ★ 曲库有 2584 首，逐首 listVariants 太贵 ⇒ 先看 songs 表（音乐桌面），
+ *   表里空的才去扫曲库；两条路都只对候选做 readdir。
+ */
+async function stageQueue() {
+  // ★ 2026-10-19：桌面层每 30 秒问一次"现在放什么"，而这条队列的兜底路径要逐个目录
+  //   `listVariants()`（本机 474 个目录）—— 不加缓存的话每 30 秒白扫一遍盘。
+  //   60 秒缓存 + 入库/改目录时手动清（`invalidateStageQueue()`），代价与正确性都够。
+  if (stageQueueCache.list && Date.now() - stageQueueCache.at < 60000) return stageQueueCache.list;
+  const desk = (await importedSongs()).filter((s) => s.variantCount > 0).map((s) => s.dir);
+  if (desk.length) {
+    stageQueueCache = { at: Date.now(), list: desk };
+    return desk;
   }
-  return { dir: null, tod: null, label: null, url: null, reason: "no-song" };
+  const out = [];
+  for (const song of (await scanLibrary()).songs ?? []) {
+    if ((await listVariants(song.dir)).length) out.push(song.dir);
+  }
+  stageQueueCache = { at: Date.now(), list: out };
+  return out;
+}
+
+/** 曲库/音乐桌面变了就清掉队列缓存（否则刚入库的曲子要等 60 秒才可能被选中）。 */
+function invalidateStageQueue() {
+  stageQueueCache = { at: 0, list: null };
+}
+
+/**
+ * 走到下一首（或上一首）。返回结构与 `/api/stage/next` 同族，外加 `mode` 与 `ended`。
+ * `ended:true` = 顺序播放放到最后一首了 ⇒ 回待机（stageForced 清空），桌面页据此重跑 tick。
+ */
+async function stageAdvance(delta = 1) {
+  const mode = playModeSetting();
+  const forced = stageForced;
+  if (!forced) return { dir: null, url: null, reason: "idle", mode };
+  // 曲子在往前走（换首/到头）就不再有"从断点续播"这回事，续播窗口立刻作废。
+  stageResume = null;
+  // 单曲循环：就是同一首重放（桌面页拿到同一个 url 直接从头再来）。
+  if (mode === "single") return { ...(await stageNext()), mode };
+  const queue = await stageQueue();
+  const at = queue.indexOf(forced);
+  let next = null;
+  if (mode === "shuffle") {
+    // 随机：从"除了当前这首"里挑，跟窗口里 step() 同一口径，避免连点原地打转。
+    const pool = queue.filter((dir) => dir !== forced);
+    next = pool.length ? pool[Math.floor(Math.random() * pool.length)] : forced;
+  } else if (at < 0) {
+    next = queue[0] ?? null;                       // 当前这首不在队列里 ⇒ 从队列头开始
+  } else {
+    const idx = at + (delta >= 0 ? 1 : -1);
+    if (mode === "order") {
+      // 顺序播放：到头就停（回待机），**不绕回去** —— 绕回去就是"列表循环"的意思了。
+      if (idx < 0 || idx >= queue.length) {
+        stageForced = "";
+        return { dir: null, url: null, reason: "idle", mode, ended: true };
+      }
+      next = queue[idx];
+    } else {
+      next = queue[(idx + queue.length) % queue.length];   // 列表循环：环形
+    }
+  }
+  if (!next) {
+    stageForced = "";
+    return { dir: null, url: null, reason: "idle", mode, ended: true };
+  }
+  stageForced = next;
+  return { ...(await stageNext()), mode };
+}
+
+// ---------------------------------------------------------------- 她的世界（A3）
+//
+// ★ 与竞品的区别写在设计文档里：竞品是"时钟驱动的生理模拟器"（22 个模块、疲劳模型、
+//   可回放 reducer），我们是"她的当下由你的行为供料，并且说得清"——一个纯函数 + 两张表。
+//   `worldAt()` 在 core.mjs（纯函数、可单测），这里只负责喂信号、落库、挑她那首曲子。
+
+const WORLD_ENABLED_KEY = "world_stage_enabled";
+const WORLD_ASKED_KEY = "world_stage_asked";
+const WORLD_LAST_KEY = "world_stage_last_at";
+const WORLD_COOLDOWN_SEC = 30 * 60;     // 同一首 30 分钟内不重复
+const WORLD_MAX_PER_HOUR = 2;           // 一小时内最多两次（写死默认，见方案 4.2）
+
+// ★★ 2026-10-20（用户原话：「启动程序后为什么要先播一段歌曲，不应该是先播待机音乐和视频吗，
+//   现在是先播音乐然后过一会再播放待机视频」）：练琴以前在**开机第一拍**就能命中 ——
+//   stageForced 是内存态，刚启动必为空 ⇒ tick 轮到「她的世界」，她马上开始练，
+//   用户一开程序听到的不是待机而是练琴（实测 world_plays 里开机当秒就落了 practice 记录）。
+//   修法 = 给练琴加**开机宽限**：服务端起来后的前几分钟一律不练（先待机），宽限过后
+//   她才"练起来"。宽限可用环境变量 LINLI_WORLD_BOOT_GRACE_MS 调（测试设 0 或几毫秒），
+//   默认 5 分钟 —— 与她练完一曲后的观感冷却（wallpaper 层 5 分钟）同量级。
+const BOOTED_AT = Date.now();
+const WORLD_BOOT_GRACE_MS = Math.max(0, Number(process.env.LINLI_WORLD_BOOT_GRACE_MS ?? 300000) || 0);
+
+function worldEnabled() {
+  return getSetting(WORLD_ENABLED_KEY, "0") === "1";
+}
+
+/** 喂给纯函数的信号。全部来自本机已有数据，不新增采集、不联网。 */
+function worldSignals(now) {
+  const lastLetterAt = db.prepare("SELECT MAX(created_at) AS t FROM letters").get()?.t ?? null;
+  const lastReplyAt = db.prepare("SELECT MAX(replied_at) AS t FROM letters WHERE replied_at IS NOT NULL").get()?.t ?? null;
+  const plays = db.prepare("SELECT dir, at FROM world_plays WHERE at >= ? ORDER BY at DESC LIMIT 60")
+    .all(now - 86400).map((row) => ({ dir: row.dir, at: row.at, count: 1 }));
+  // 惯常时段：从最近 60 封来信的钟点里取出现最多的那一小时（样本不足就不给）。
+  const hours = db.prepare("SELECT created_at FROM letters ORDER BY created_at DESC LIMIT 60").all()
+    .map((row) => new Date(row.created_at * 1000).getHours());
+  const habits = [];
+  if (hours.length >= 3) {
+    const counts = new Map();
+    for (const h of hours) counts.set(h, (counts.get(h) ?? 0) + 1);
+    const [top, n] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (n >= 2) habits.push({ fromHour: top, toHour: (top + 1) % 24 });
+  }
+  return { now, lastLetterAt, lastReplyAt, plays, habits };
+}
+
+function pruneWorldRows() {
+  db.prepare("DELETE FROM world_state WHERE at NOT IN (SELECT at FROM world_state ORDER BY at DESC LIMIT 500)").run();
+  db.prepare("DELETE FROM world_plays WHERE at < ?").run(nowSeconds() - 7 * 86400);
+}
+
+/** 算一次世界状态并落库（同一秒重复算只留一行：`at` 是主键 + INSERT OR REPLACE）。 */
+function worldSnapshot() {
+  const now = nowSeconds();
+  const state = assertWorldState(worldAt(worldSignals(now)));
+  db.prepare("INSERT OR REPLACE INTO world_state(at, activity, detail, reason, evidence, source) VALUES(?,?,?,?,?,?)")
+    .run(now, state.activity, state.detail ?? null, state.reason, JSON.stringify(state.evidence), state.source);
+  pruneWorldRows();
+  return { at: now, ...state };
+}
+
+/** 她此刻在练的那首（没有就是 null）。**这条就是"她让开"的全部实现**：
+ *  用户点过曲子（stageForced 非空）⇒ 一律 null；开关关着 ⇒ null；
+ *  开机宽限期内 ⇒ null（用户开程序要先听到待机，见 BOOTED_AT 注释）；限频命中 ⇒ null。 */
+async function practiceNow() {
+  if (!worldEnabled()) { practiceSession = null; return null; }
+  if (Date.now() - BOOTED_AT < WORLD_BOOT_GRACE_MS) return null;
+  // 用户点播了 ⇒ 她让开（并把没练完的场次作废，别等他关掉点播又"接着上一首"）。
+  if (stageForced) { practiceSession = null; return null; }
+  const now = nowSeconds();
+  // ★★ 2026-10-20（用户：「练琴音乐还没播完就中断了，我也没有切换歌曲之类的」）：
+  //   `/api/world/now` 原来**每被问一次就重新挑一首**并记一笔 world_plays ——
+  //   而壁纸层每 30 秒问一次 ⇒ 两次就烧完 WORLD_MAX_PER_HOUR(2)，第三次 practiceNow 返回 null，
+  //   页面落回待机，**正在放的练琴曲当场被切断**。这正是"没播完就中断"的机制。
+  //   正确形态：练琴是一个"场次"，场次内每一次轮询都返回**同一首**；
+  //   一首放完由播放层 POST /api/world/practice/done 收场，才允许下一次开练。
+  if (practiceSession && now < practiceSession.endsAt) return practiceSession;
+  practiceSession = null;
+  const practicedThisHour = db.prepare("SELECT COUNT(*) AS n FROM world_plays WHERE reason = 'practice' AND at >= ?")
+    .get(now - 3600).n;
+  if (practicedThisHour >= WORLD_MAX_PER_HOUR) return null;
+  const blocked = new Set(db.prepare("SELECT dir FROM world_plays WHERE at >= ?").all(now - WORLD_COOLDOWN_SEC).map((row) => row.dir));
+  const queue = await stageQueue();
+  // 候选顺序稳定（stageQueue 的顺序），取第一个"没被限频挡住"的 —— 不做随机，
+  // 否则同一秒两次调用会给出不同答案，测试与"她此刻"的状态行都会抖。
+  const dir = queue.find((item) => !blocked.has(item));
+  if (!dir) return null;
+  const variants = await listVariants(dir);
+  if (!variants.length) return null;
+  const clock = new Date(now * 1000);
+  const tod = playbackTimeOfDay(clock.getHours() * 60 + clock.getMinutes());
+  // 她练琴也跟用户的弹唱视角设置走（默认 NI）。
+  const picked = selectVariant(variants, tod, playViewSetting());
+  if (!picked) return null;
+  // 服务端记一笔：既是限频依据，也是日记里"今天她在练什么"的来源。
+  db.prepare("INSERT INTO world_plays(at, dir, reason) VALUES(?, ?, 'practice')").run(now, dir);
+  setSetting(WORLD_LAST_KEY, String(now));
+  // 开一场：场次内不再重新挑曲（见函数开头的注释）。上限给足 10 分钟 ——
+  // 单曲通常 3~4 分钟，正常都由"放完"收场，这个上限只是防"客户端没回报"时永远钉着。
+  practiceSession = {
+    dir,
+    title: songDisplayName(dir),
+    tod,
+    file: picked.file,
+    variantCount: variants.length,
+    url: `/api/media?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(picked.file)}`,
+    startedAt: now,
+    endsAt: now + PRACTICE_SESSION_MAX_SEC,
+  };
+  return practiceSession;
+}
+
+/** 一场练琴最多钉多久（秒）。客户端放完会主动收场，这个值只兜底"没人回报"。 */
+const PRACTICE_SESSION_MAX_SEC = 600;
+
+/**
+ * 当前练琴场次（一场之内反复轮询都返回同一首）。null = 现在没在练。
+ * ★ 不导出到 HTTP：外部看到的是 /api/world/now 的 practice 字段。
+ */
+let practiceSession = null;
+
+/** 客户端说"这一首放完了" ⇒ 收场。下一次 /api/world/now 才会重新挑。 */
+function endPracticeSession() {
+  const had = practiceSession;
+  practiceSession = null;
+  return had;
+}
+
+// ★ 2026-10-20 实测的并发竞态：壁纸层 tick 与主窗口状态行在同一秒各问一次 /api/world/now
+//   ⇒ practiceNow 跑了两遍，world_plays 一秒内落两条 practice（1792450146/147 两条实证），
+//   一小时的限额开机就被烧掉一半。修法照「并发缓存必须存 Promise」的老规矩：
+//   在飞的调用共享同一个 Promise，落定即清 —— 不是缓存结果值（那样 N 个并发全 miss）。
+let practiceInflight = null;
+function practiceNowOnce() {
+  practiceInflight ??= practiceNow().finally(() => { practiceInflight = null; });
+  return practiceInflight;
+}
+
+/** 用户点曲子时把它记成 'user' 播放 —— 日记与"你最近常放"都靠这条。 */
+function recordUserPlay(dir) {
+  if (!dir) return;
+  db.prepare("INSERT INTO world_plays(at, dir, reason) VALUES(?, ?, 'user')").run(nowSeconds(), dir);
 }
 
 // ---------------------------------------------------------------- 待机素材与信件字体
@@ -555,6 +1371,14 @@ function recentExchanges(limit = 6) {
   `).all(STATUS.REPLIED, limit).reverse();
 }
 
+/** 送进 prompt 的那一段往来：仍是时间正序，但只留预算内的最近几封。
+ *  ★ 为什么不直接在 `recentExchanges` 里限字数：那个函数还有别的读者（档位、主动来信的
+ *    既定事实），它们要的是"最近 6 封"这个语义，不是"能塞进 prompt 的 6 封"。
+ *    两件事分开，各自的判据才不会被对方改坏。 */
+function promptExchanges(limit = 6) {
+  return pickRecentWithinBudget(recentExchanges(limit), HISTORY_BUDGET_CHARS);
+}
+
 function memoryContext() {
   const rows = recentExchanges(6);
   const settled = [];
@@ -569,13 +1393,48 @@ function memoryContext() {
       pending.push(incoming.slice(0, 160));
     }
   }
+  // ★ A1：你亲手改过的条目必须显式告诉模型"这是他的意思"，否则下一封就被它当作
+  //   "自己记的推断"重新覆盖回去 —— 那正是"改完下次又变回去"这个痛点的根。
+  const corrected = db.prepare(
+    "SELECT field, value FROM ledger_items WHERE status = 'active' AND origin = 'user' ORDER BY updated_at DESC, rowid DESC",
+  ).all();
+  const seenField = new Set();
+  const correctedLines = [];
+  for (const row of corrected) {
+    if (seenField.has(row.field)) continue;
+    seenField.add(row.field);
+    correctedLines.push(`${row.field}　${row.value}（★你亲自更正过，优先级高于模型推断）`);
+  }
+  // ★★ 2026-10-20（T9 近况层的总开关，界面上的「保持她现在的样子」）：
+  //   打开 ⇒ 近况层**完全不参与** —— 「她此刻」那一行进不了提示词，回到没有近况层时的表现。
+  //   ★ 以前这个勾选框在设置页上摆着，但**全仓没有任何消费方**：勾上/取消，提示词一字不差。
+  //     真源 `nearTerm.userToggle.key` 说的就是这个开关，这里才是它该生效的地方。
+  const near = keepCurrentShape() ? "" : worldContext();
   return [
     "【已成立的共同事实】",
     settled.length ? settled.join("\n") : "（暂无）",
     "",
     "【未决：以下只是来信人的设想、疑问或否定，不得写成已经发生的事】",
     pending.length ? pending.join("\n") : "（暂无）",
+    ...(correctedLines.length
+      ? ["", "【你亲自更正过的（优先级高于模型推断）】", correctedLines.join("\n")]
+      : []),
+    ...(near ? ["", "【她此刻（语气参考，**不得当作已经发生的事写进信里**）】", near] : []),
   ].join("\n");
+}
+
+/** 给回信用的「她此刻」一行。★ 为什么不落库：这是每封信都要算一次的瞬时状态，
+ *  写进 `world_state` 会把表刷成"每封信一条"，而那张表是给"依据"弹层看的历史。 */
+function worldContext() {
+  try {
+    const state = worldAt(worldSignals(nowSeconds()));
+    const last = db.prepare("SELECT dir FROM world_plays WHERE reason = 'user' ORDER BY at DESC LIMIT 1").get()?.dir;
+    const lines = [`${state.activity}：${state.detail ?? ""}`.trim()];
+    if (last) lines.push(`你最近放过：${songDisplayName(last)}`);
+    return lines.join("；");
+  } catch {
+    return "";
+  }
 }
 
 // ---------------------------------------------------------------- 写信管线
@@ -624,7 +1483,7 @@ async function runPrecheck(incoming) {
     previous || "（无，首次建立）",
     "",
     "最近往来：",
-    recentExchanges(6).map((row) => `我：${row.content}\n林离：${row.reply_text ?? ""}`).join("\n---\n") || "（暂无）",
+    promptExchanges(6).map((row) => `我：${row.content}\n林离：${row.reply_text ?? ""}`).join("\n---\n") || "（暂无）",
     "",
     "本封来信：",
     incoming,
@@ -658,6 +1517,13 @@ async function generateReply(incoming, ledger) {
     "# 人设",
     persona,
   ].join("\n");
+  // ★ 2026-10-21：连续写信的"她自然提一嘴"（用户拍板：这是她的反应，不是系统奖赏文案）。
+  //   只在连着写了 >=3 天时给一个**软提示**放 user 侧，让模型自己决定要不要提；
+  //   明说"别照抄、别和最近几封重复"，避免天天念叨。不合适她就当没看见。
+  const streak = writingStats().streak;
+  const streakHint = streak >= 3
+    ? `\n# 一个背景（你自己判断要不要自然提一句；别照抄，也别和最近几封里说过的话重复）\n他最近连着 ${streak} 天都在给你写信。若这一封的气氛合适，你可以带一句你在意这份坚持；不合适就当作没看见。`
+    : "";
   const user = [
     hasHistory ? "" : `（这是第一封，可参考的语气：\n${opening}\n）`,
     "",
@@ -665,7 +1531,8 @@ async function generateReply(incoming, ledger) {
     Object.entries(ledger).map(([k, v]) => `${k}　${v}`).join("\n"),
     "",
     "# 最近往来",
-    recentExchanges(6).map((row) => `我：${row.content}\n林离：${row.reply_text ?? ""}`).join("\n---\n") || "（暂无）",
+    promptExchanges(6).map((row) => `我：${row.content}\n林离：${row.reply_text ?? ""}`).join("\n---\n") || "（暂无）",
+    streakHint,
     "",
     "# 本封来信",
     incoming,
@@ -674,6 +1541,30 @@ async function generateReply(incoming, ledger) {
 }
 
 // ---------------------------------------------------------------- 主动来信
+
+/** 「保持她现在的样子」= 近况层不参与（界面上的勾选框，键名来自真源 userToggle.key）。
+ *  ★ 默认值取真源 `nearTerm.userToggle.default`；读不到真源就退回「不保持」（= 有近况层），
+ *    和这个开关出现之前的行为一致，不会因为参数文件坏了就悄悄改口径。 */
+function keepCurrentShape() {
+  let fallback = false;
+  try { fallback = nearTermLimits().userToggle.default; } catch { fallback = false; }
+  return getSetting("proactive_keep_shape", fallback ? "1" : "0") === "1";
+}
+
+/** 她此刻在做什么 —— 读最近一次世界快照（**不重新算、不落库**，GET 不该有副作用）。
+ *  ★ 为什么要这一行：核心判定里 `ctx.herActivity` 是「她自己在忙就不写」那道闸门，
+ *    但生产路径从来没有喂过它（只有单测喂过）⇒ 那道闸门等于不存在。
+ *    这里把世界状态翻成核心认的代号，界面与判定共用同一个来源，说法才不会打架。 */
+const BUSY_BY_WORLD_ACTIVITY = new Map([
+  ["睡了", "sleeping"],
+  ["练琴", "practice"],
+]);
+
+function herActivityNow() {
+  const row = db.prepare("SELECT activity FROM world_state ORDER BY at DESC LIMIT 1").get();
+  const activity = String(row?.activity ?? "");
+  return { label: activity, busy: BUSY_BY_WORLD_ACTIVITY.get(activity) ?? "" };
+}
 
 function proactiveSettings() {
   // 默认值统一从 core.mjs 的 PROACTIVE_DEFAULTS 来（开启 / 7 天 4 封），别在这里再写一份。
@@ -709,6 +1600,8 @@ function evaluateProactive(input = {}) {
   const ctx = {
     nowMinutes: at.getHours() * 60 + at.getMinutes(),
     nowSeconds: ts,
+    // ★ 2026-10-20：她自己在忙（睡觉 / 练琴）时不该有信寄出 —— 这道闸门以前只有单测喂过。
+    herActivity: herActivityNow().busy,
     herLetters,
     busyCount: count("SELECT COUNT(*) value FROM letters WHERE status IN (?, ?)", STATUS.PENDING, STATUS.LLM_PROCESSING),
     unreadProactive: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND is_read = 0"),
@@ -779,7 +1672,62 @@ function startProactiveScheduler() {
   if (proactiveTimer.unref) proactiveTimer.unref();
 }
 
+// ---------------------------------------------------------------- 日记调度
+//
+// ★ 方案 2.3 的触发点：**每天 00:05 写昨天那篇**，外加"启动时补写一次"。
+//   为什么不做成"每天零点整"：零点那一秒机器常常刚醒/刚睡，定时器不一定活着；
+//   用「每 5 分钟看一次，昨天那篇是不是已经写了」这种幂等轮询，睡过去也能补上，
+//   而 `writeDiary()` 自己遇到已存在就不动（只有 force 才重写）。
+let diaryTimer = null;
+
+/** 昨天的日记该不该现在写：已经过了今天 00:05 才写（避免刚过零点那几秒把还没过完的
+ *  昨天当成完整的昨天 —— 其实是防"23:59 最后一封信刚好跨到 00:00"这类边界）。 */
+function diaryDue(now = nowSeconds()) {
+  const clock = new Date(now * 1000);
+  return clock.getHours() > 0 || clock.getMinutes() >= 5;
+}
+
+/**
+ * @param {{ignoreDue?: boolean}} options
+ *   `ignoreDue: true` ⇒ 跳过 `diaryDue()` 的 00:05 闸门。**只有启动那一次用**（见下）。
+ */
+async function diaryTick(options = {}) {
+  if (!options.ignoreDue && !diaryDue()) return { skipped: true, reason: "not-yet" };
+  const yesterday = localDay(nowSeconds() - 86400);
+  const existed = db.prepare("SELECT 1 FROM diary WHERE day = ?").get(yesterday);
+  if (existed) return { skipped: true, reason: "already" };
+  const done = await catchUpDiary();
+  if (!done?.skipped) console.log(`[diary] wrote ${yesterday}${options.ignoreDue ? " (startup)" : ""}`);
+  return done;
+}
+
+function startDiaryScheduler() {
+  if (diaryTimer) return;
+  // ★ 启动先补一次 —— 并且 **ignoreDue: true，不走 00:05 闸门**。
+  //
+  //   2026-10-21 修掉的真实缺陷：以前启动也是裸调 `diaryTick()`，而它首行就是
+  //   `if (!diaryDue()) return` ⇒ 闸门把"启动补写"一起挡了。后果：
+  //   00:00–00:04 之间开程序，昨天那篇**不会立刻写**，要拖到下一个 5 分钟 tick
+  //   （最早 00:09）才出现。60 分钟压测里跨午夜那两轮就是这么红的
+  //   （`diary.test.js` 的 bootWithYesterdayLetter 启动即断言）。
+  //
+  //   闸门本身没错 —— 它的意义是"周期性补写别在刚过零点那几秒，把还没过完的昨天
+  //   当成完整的昨天写"。但**用户开机那一刻就是想立刻看到昨天那篇**，启动这次
+  //   必须无条件补；周期性 tick 继续走闸门。
+  void diaryTick({ ignoreDue: true }).catch((e) => console.error(`[diary] startup tick error: ${e.message}`));
+  diaryTimer = setInterval(() => {
+    diaryTick().catch((e) => console.error(`[diary] tick error: ${e.message}`));
+  }, 5 * 60 * 1000);
+  if (diaryTimer.unref) diaryTimer.unref();
+}
+
 // ---------------------------------------------------------------- HTTP
+
+/** 解析库里存的 JSON 列（`world_state.evidence` / `diary.facts`）。
+ *  ★ 坏数据不抛：这两列是"当时的快照"，宁可让界面少显示一行，也不让记忆页/日记页整块 500。 */
+function safeJson(text, fallback = null) {
+  try { return JSON.parse(text); } catch { return fallback; }
+}
 
 function json(res, code, payload, extraHeaders = null) {
   const body = JSON.stringify(payload);
@@ -789,6 +1737,20 @@ function json(res, code, payload, extraHeaders = null) {
     ...(extraHeaders ?? {}),
   });
   res.end(body);
+}
+
+/**
+ * 用系统资源管理器打开一个目录（数据目录 / 备份目录）。
+ * ★ 为什么抽成一个函数：两处 reveal（`/api/data/reveal` 与 `/api/maintenance/reveal`）
+ *   原来各写一遍 `spawn("explorer.exe", …)`，于是各有各的漏测理由。
+ * ★ 为什么认 `LINLI_NO_SHELL_OPEN`：这条路在测试里会**真的弹一个资源管理器窗口**，
+ *   以前正是因为这个才一条用例都没有（七轮审查 F10 点名）。测试进程给子进程设这个
+ *   环境变量即可把"真开窗"换成"只返回目录"，路由本身（令牌、参数、返回体）照旧能被覆盖。
+ *   生产路径从不设它，行为不变。
+ */
+function openDirectory(dir) {
+  if (process.env.LINLI_NO_SHELL_OPEN === "1") return;
+  spawn("explorer.exe", [dir], { detached: true, stdio: "ignore" }).unref();
 }
 
 /**
@@ -907,8 +1869,19 @@ function safeUnderRoot(root, ...parts) {
   try { target = resolve(root, ...clean); } catch { return null; }
   const base = resolve(root);
   // ★ 必须逐字符比对分隔符，不能只用 `target.startsWith(base)`：
-  //   `E:\linlimusic-别的` 也以 `E:\linlimusic` 开头；`C:\x\y` 也不能被 `C:\x\y..\z` 骗过。
+  //   `<曲库目录>-别的` 也以 `<曲库目录>` 开头；`C:\x\y` 也不能被 `C:\x\y..\z` 骗过。
   if (!target.startsWith(base + "\\") && !target.startsWith(base + "/")) return null;
+  // ★ 2026-10-19 审查第二意见：上面全是**字面**判定，挡不住链接。
+  //   `曲库\Evil` 若是指向 `D:\other` 的 junction，字面上仍在根内，`createReadStream`
+  //   却会跟着链接把根外面的文件读出来。存在的时候再比一次**真实路径**，
+  //   解析后跳出根的一律当"没有"。（根目录自己是链接没问题——基准也解析。）
+  try {
+    if (existsSync(target)) {
+      const realRoot = realpathSync(root);
+      const real = realpathSync(target);
+      if (real !== realRoot && !real.startsWith(realRoot.endsWith(sep) ? realRoot : realRoot + sep)) return null;
+    }
+  } catch { return null; }
   return target;
 }
 
@@ -971,7 +1944,7 @@ function sendFile(req, res, target, type) {
  * 支持 Range，否则浏览器拖动进度条会失效。
  */
 async function serveMedia(req, res, songDir, fileName) {
-  const root = getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR;
+  const root = libraryDirSetting();
   // ★ 走 safeUnderRoot：曲库外的东西一律 404（`?dir=..&file=x.mp4` 这条路就此断掉）。
   const target = safeUnderRoot(root, songDir, fileName);
   if (!target || !/\.mp4$/iu.test(target)) {
@@ -995,7 +1968,7 @@ async function serveIdleFile(req, res, subdir, rawName, pattern, type) {
 //
 // 预览与落库必须分两步：预览**一行用户数据都不写**，用户可以随时抽身；
 // 落库要给正在跑的库动刀，动刀前必先留一份备份 —— 这一步没有撤销键。
-// （ parlance 依据：DSH《UserData 一键导入机制说明》§5「风险不对称」。）
+// （ parlance 依据：原版《UserData 一键导入机制说明》§5「风险不对称」。）
 
 /** 预览登记簿。纯内存 —— 进程重启后预览失效是**正确**表现，届时让用户重选一次文件。 */
 const previewRegistry = new PreviewRegistry();
@@ -1184,7 +2157,7 @@ const server = createServer(async (req, res) => {
     if ((req.method === "GET" || req.method === "HEAD") && path === "/health") {
       return json(res, 200, {
         ok: true,
-        service: "linli-letters",
+        service: "oliviasoul-community",
         version: APP_VERSION,
         dataDirReady: existsSync(DATA_DIR),
         pid: process.pid,
@@ -1205,7 +2178,227 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { letters: rows });
     }
     if (req.method === "GET" && path === "/api/memory") {
-      return json(res, 200, { ledger: parseLedger(ledgerText()), ledgerText: ledgerText(), context: memoryContext() });
+      // ★ 旧字段（ledger / ledgerText / context）**不动**：现有前端与 http-contract 测试都吃这套形状。
+      //   条目化只是"追加字段"，这样迁移期间任何一处没跟上都不会把记忆页整块打空。
+      const url = new URL(req.url, "http://x");
+      const q = String(url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const field = String(url.searchParams.get("field") ?? "").trim();
+      const includeDeleted = url.searchParams.get("include_deleted") === "1";
+      const page = Math.max(1, Number(url.searchParams.get("page") ?? 1) || 1);
+      const limitRaw = Number(url.searchParams.get("limit") ?? 20);
+      const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(100, limitRaw) : 20;
+      const all = memoryItems().filter((item) => {
+        if (!includeDeleted && item.status !== "active") return false;
+        if (field && item.field !== field) return false;
+        if (q && !`${item.field} ${item.value}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      const items = all.slice((page - 1) * limit, page * limit);
+      const conflicts = pendingConflicts();
+      return json(res, 200, {
+        ledger: parseLedger(ledgerText()),
+        ledgerText: ledgerText(),
+        context: memoryContext(),
+        items,
+        page,
+        total: all.length,
+        conflicts,
+        fields: LEDGER_FIELDS,
+      });
+    }
+    // ---- A1 记忆可更正：条目化读写 ------------------------------------
+    if (req.method === "GET" && path === "/api/memory/conflicts") {
+      return json(res, 200, { conflicts: pendingConflicts() });
+    }
+    {
+      const hit = /^\/api\/memory\/([^/]+?)(\/source|\/restore)?$/u.exec(path);
+      if (hit) {
+        const id = decodeURIComponent(hit[1]);
+        const action = hit[2] ?? "";
+        const row = db.prepare("SELECT * FROM ledger_items WHERE id = ?").get(id);
+        if (!row) return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这条记忆");
+        if (req.method === "GET" && action === "/source") {
+          const letter = row.source_letter_id
+            ? db.prepare("SELECT id, content, reply_text, created_at FROM letters WHERE id = ?").get(row.source_letter_id)
+            : null;
+          return json(res, 200, {
+            letter: letter
+              ? {
+                id: letter.id,
+                created_at: letter.created_at,
+                // 只给摘要，不整封回吐：溯源要能"跳到原信"，不是再复制一份正文进记忆页。
+                excerpt: String(letter.content ?? "").slice(0, 80),
+              }
+              : null,
+          });
+        }
+        if (req.method === "PATCH" && !action) {
+          const body = await readJsonBody(req);
+          const value = String(body.value ?? "").trim();
+          if (!value) return fail(res, 400, ERR.COMMON_BODY_NOT_JSON, "记忆的值不能为空");
+          const at = nowSeconds();
+          const revision = db.prepare("SELECT COUNT(*) AS n FROM ledger_items WHERE field = ? AND value = ?").get(row.field, value).n + 1;
+          const nextId = ledgerItemId(row.field, value, revision);
+          db.prepare(`INSERT INTO ledger_items
+            (id, field, value, origin, source_letter_id, status, supersedes, created_at, updated_at)
+            VALUES (?, ?, ?, 'user', NULL, 'active', ?, ?, ?)`).run(nextId, row.field, value, row.id, at, at);
+          // 旧的那条让位（软删，可撤销）—— 但不能删成"改回去也找不到"。
+          db.prepare("UPDATE ledger_items SET status = 'deleted', updated_at = ? WHERE id = ?").run(at, row.id);
+          // 你亲自改过之后，同一字段上待裁决的冲突直接以你为准。
+          db.prepare("UPDATE ledger_conflicts SET resolved = 'mine' WHERE field = ? AND resolved IS NULL").run(row.field);
+          const saved = db.prepare("SELECT * FROM ledger_items WHERE id = ?").get(nextId);
+          saveLedger(ledgerItemsToText(memoryItems()));
+          return json(res, 200, { ok: true, item: saved });
+        }
+        if (req.method === "DELETE" && !action) {
+          db.prepare("UPDATE ledger_items SET status = 'deleted', updated_at = ? WHERE id = ?").run(nowSeconds(), id);
+          saveLedger(ledgerItemsToText(memoryItems()));
+          return json(res, 200, { ok: true, id, status: "deleted" });
+        }
+        if (req.method === "POST" && action === "/restore") {
+          db.prepare("UPDATE ledger_items SET status = 'active', updated_at = ? WHERE id = ?").run(nowSeconds(), id);
+          saveLedger(ledgerItemsToText(memoryItems()));
+          return json(res, 200, { ok: true, id, status: "active" });
+        }
+        return fail(res, 405, ERR.COMMON_ROUTE_NOT_FOUND, "这个方法不支持");
+      }
+    }
+    {
+      const hit = /^\/api\/memory\/conflicts\/(\d+)$/u.exec(path);
+      if (hit && req.method === "POST") {
+        const body = await readJsonBody(req);
+        const keep = body.keep === "theirs" ? "theirs" : "mine";
+        const row = db.prepare("SELECT * FROM ledger_conflicts WHERE id = ?").get(Number(hit[1]));
+        if (!row) return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这条待确认");
+        if (row.resolved) return json(res, 200, { ok: true, conflict: row });
+        const at = nowSeconds();
+        if (keep === "theirs") {
+          const revision = db.prepare("SELECT COUNT(*) AS n FROM ledger_items WHERE field = ? AND value = ?").get(row.field, row.theirs).n + 1;
+          const mine = db.prepare(
+            "SELECT id FROM ledger_items WHERE field = ? AND status = 'active' AND origin = 'user' ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+          ).get(row.field);
+          db.prepare(`INSERT INTO ledger_items
+            (id, field, value, origin, source_letter_id, status, supersedes, created_at, updated_at)
+            VALUES (?, ?, ?, 'model', ?, 'active', ?, ?, ?)`).run(
+            ledgerItemId(row.field, row.theirs, revision), row.field, row.theirs, row.letter_id ?? null, mine?.id ?? null, at, at,
+          );
+          if (mine?.id) db.prepare("UPDATE ledger_items SET status = 'deleted', updated_at = ? WHERE id = ?").run(at, mine.id);
+        }
+        db.prepare("UPDATE ledger_conflicts SET resolved = ? WHERE id = ?").run(keep, row.id);
+        saveLedger(ledgerItemsToText(memoryItems()));
+        return json(res, 200, { ok: true, keep });
+      }
+    }
+
+    // ---- A3 她的世界 --------------------------------------------------
+    // ★ UI 规格 5.3 给的是 `/api/world/now` + `/api/world/stage`（桌面层与设置页各用一个）；
+    //   功能方案 3.6 另给了 `/api/world` 与 `/api/world/:at`（"依据"弹层要单条）。
+    //   四个都实现：它们不冲突，且后者能省掉"为了看一条依据把 20 条都拉下来"。
+    if (req.method === "GET" && path === "/api/world/now") {
+      const state = worldSnapshot();
+      const practice = await practiceNowOnce();
+      return json(res, 200, { state, practice, enabled: worldEnabled() });
+    }
+    // ★ 2026-10-20：练琴"放完了"要收场 —— 否则同一场会一直钉着（十)分钟上限内反复给同一首）。
+    //   由壁纸层在 onEnded 里调一次；令牌闸已经盖住所有非 GET。
+    if (req.method === "POST" && path === "/api/world/practice/done") {
+      const had = endPracticeSession();
+      return json(res, 200, { ok: true, ended: had ? had.dir : null });
+    }
+    if (req.method === "POST" && path === "/api/world/stage") {
+      const body = await readJsonBody(req);
+      if (typeof body.enabled !== "boolean") {
+        return fail(res, 400, ERR.COMMON_BODY_NOT_JSON, "enabled 必须是布尔值");
+      }
+      setSetting(WORLD_ENABLED_KEY, body.enabled ? "1" : "0");
+      if (body.asked === true) setSetting(WORLD_ASKED_KEY, "1");
+      // ★ 关掉开关时正在播：桌面层每 30 秒才 tick 一次，等不到 —— 前端改完这一下
+      //   会顺带发 `stage:changed`，桌面层收到立刻重算并停掉练习（规格 4.3）。
+      return json(res, 200, { ok: true, enabled: worldEnabled(), asked: getSetting(WORLD_ASKED_KEY, "0") === "1" });
+    }
+    if (req.method === "GET" && path === "/api/world") {
+      const now = worldSnapshot();
+      const recent = db.prepare("SELECT * FROM world_state ORDER BY at DESC LIMIT 20").all()
+        .map((row) => ({ ...row, evidence: safeJson(row.evidence) }));
+      return json(res, 200, { now, recent });
+    }
+    {
+      const hit = /^\/api\/world\/(\d+)$/u.exec(path);
+      if (hit && req.method === "GET") {
+        const row = db.prepare("SELECT * FROM world_state WHERE at = ?").get(Number(hit[1]));
+        if (!row) return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这一条状态");
+        return json(res, 200, { ...row, evidence: safeJson(row.evidence) });
+      }
+    }
+
+    // ---- A2 她的日记 --------------------------------------------------
+    if (req.method === "GET" && path === "/api/diary") {
+      const url = new URL(req.url, "http://x");
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 30) || 30));
+      const before = String(url.searchParams.get("before") ?? "").trim();
+      const rows = before
+        ? db.prepare("SELECT day, song_dir, source, created_at, edited_at, substr(body, 1, 80) AS excerpt FROM diary WHERE day < ? ORDER BY day DESC LIMIT ?").all(before, limit)
+        : db.prepare("SELECT day, song_dir, source, created_at, edited_at, substr(body, 1, 80) AS excerpt FROM diary ORDER BY day DESC LIMIT ?").all(limit);
+      return json(res, 200, { items: rows });
+    }
+    // ---------------------------------------------------------- 往年今日
+    // ★ 2026-10-21 加：「回顾」这一块的"往年的今天"。
+    //   纯本机 SQLite 查询（复用现成的 localDay / dayRange），**不新增任何外联**。
+    //   只回摘要（正文截断），跟 /api/diary 列表"只回 excerpt、不许搬全文"同一条口径。
+    //   years=1..5，默认去年。
+    if (req.method === "GET" && path === "/api/onthisday") {
+      const yearsAgo = Math.min(5, Math.max(1, Number(new URL(req.url, "http://x").searchParams.get("years") ?? 1) || 1));
+      const [y, m, d] = localDay().split("-").map(Number);
+      const pad2 = (n) => String(n).padStart(2, "0");
+      const past = `${y - yearsAgo}-${pad2(m)}-${pad2(d)}`;
+      const { start, end } = dayRange(past);
+      const letters = db.prepare(
+        "SELECT id, substr(content, 1, 80) AS excerpt, substr(reply_text, 1, 80) AS replyExcerpt, created_at FROM letters WHERE created_at >= ? AND created_at < ? ORDER BY created_at LIMIT 20",
+      ).all(start, end);
+      const diary = db.prepare("SELECT day, substr(body, 1, 80) AS excerpt FROM diary WHERE day = ?").get(past) ?? null;
+      return json(res, 200, { day: past, yearsAgo, letters, diary });
+    }
+    // ★ 2026-10-21 加：连续写信统计（只读）——信箱那行淡字用。
+    //   只数你写的信；断了不惩罚（streak 归零，安静归零）。纯本机。
+    if (req.method === "GET" && path === "/api/writing-stats") {
+      return json(res, 200, writingStats());
+    }
+    // ---------------------------------------------------------- 时间轴 / 日历
+    // ★ 2026-10-21 加：「回顾」那一块的两种看法，同一份数据（信件 + 她的日记按本地日聚合）。
+    //   · 时间轴：?from=YYYY-MM-DD&to=YYYY-MM-DD（不给就走最近 13 个月）
+    //   · 日历：  ?month=YYYY-MM（整个月）
+    //   纯本机 SQLite，不新增任何外联；只回摘要（正文截断），跟 /api/diary 同一条口径。
+    if (req.method === "GET" && path === "/api/timeline") {
+      const win = timelineWindow(new URL(req.url, "http://x").searchParams);
+      const { start } = dayRange(win.from);
+      const { end } = dayRange(win.to);
+      const letterRows = db.prepare(
+        "SELECT id, content, reply_text, origin, status, error, created_at, replied_at, is_read " +
+        "FROM letters WHERE created_at >= ? AND created_at < ? ORDER BY created_at DESC",
+      ).all(start, end);
+      const diaryRows = db.prepare(
+        "SELECT day, substr(body, 1, 80) AS excerpt, mood, created_at, song_dir " +
+        "FROM diary WHERE day >= ? AND day <= ? ORDER BY day DESC",
+      ).all(win.from, win.to);
+      return json(res, 200, { ...win, days: buildTimelineDays({ letters: letterRows, diary: diaryRows }) });
+    }
+    {
+      const hit = /^\/api\/diary\/(\d{4}-\d{2}-\d{2})(\/regenerate)?$/u.exec(path);
+      if (hit) {
+        const day = hit[1];
+        if (req.method === "GET" && !hit[2]) {
+          const row = db.prepare("SELECT * FROM diary WHERE day = ?").get(day);
+          if (!row) return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "这天还没有日记");
+          return json(res, 200, { ...row, facts: safeJson(row.facts) });
+        }
+        if (req.method === "POST" && hit[2]) {
+          // 手动重写：会把旧版本存进 diary_history，再按**当下**能取到的事实重算
+          //（这是唯一允许"重算"的路径；自动写过的老日记永不改写）。
+          const done = await writeDiary(day, { source: "user_regenerate", force: true });
+          if (done.skipped) return fail(res, 400, ERR.COMMON_INTERNAL, "这天没有可写的内容");
+          return json(res, 200, done);
+        }
+      }
     }
 
     // ---- 曲库：指向本机目录，不随包 ------------------------------------
@@ -1216,12 +2409,17 @@ const server = createServer(async (req, res) => {
       //   （古典/ACG/轻音乐/我的上传）就是按 genre 过滤的。以前这里只回
       //   {name, dir}，于是每一首都落在 undefined 档 ⇒ 四个页签全是"这一档还没有曲目"。
       //   分档判据是 core.mjs 的纯函数 classifyGenre（表内 129 首是真值，表外走关键词兜底）。
+      //
+      // ★ 这里**只补 genre**，不再重算 mode：`scanLibrary()` 内部已经用 `songMode()`
+      //   算过一遍了，早先这里又内联写了一遍 `/^PlaySing_/ → 弹唱 : 独奏`，
+      //   两处口径不同 —— 内联那版会把 `midi_` / `oliviasoul_` 判成「独奏」，
+      //   而 songMode 判的是「个人上传」（曲库 2453 个 midi 目录全都是前者）。
+      //   重复实现的结果就是"改了上面那处、下面那处没动，看起来像变异没生效"。
       return json(res, 200, {
         ...scanned,
         songs: (scanned.songs ?? []).map((s) => ({
           ...s,
           genre: classifyGenre(s.dir, s.name),
-          mode: /^PlaySing_/iu.test(s.dir) ? "弹唱" : "独奏",
         })),
       });
     }
@@ -1230,6 +2428,7 @@ const server = createServer(async (req, res) => {
       const dir = String(body.dir ?? "").trim();
       if (dir && !existsSync(dir)) return fail(res, 400, ERR.LIBRARY_DIR_NOT_FOUND, "目录不存在");
       setSetting("library_dir", dir);
+      invalidateStageQueue();
       return json(res, 200, await scanLibrary());
     }
     if (req.method === "GET" && path === "/api/library/play") {
@@ -1237,14 +2436,134 @@ const server = createServer(async (req, res) => {
       const view = (url.searchParams.get("view") ?? "NI").toUpperCase();
       const todParam = (url.searchParams.get("tod") ?? "").toUpperCase();
       if (!songDir) return fail(res, 400, ERR.LIBRARY_SONG_REQUIRED, "没有指定曲目");
+      // ★ 审查 P1：不许把 `..\` 之类拼进路径（判据见 songDirOk 注释）。
+      if (!songDirOk(songDir)) return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "曲库里没有这一首");
       return json(res, 200, await resolvePlayback(songDir, view, TIME_SLOTS.includes(todParam) ? todParam : null));
     }
     if (req.method === "GET" && path === "/api/media") {
       return serveMedia(req, res, url.searchParams.get("dir"), url.searchParams.get("file"));
     }
+    // 官方曲目的封面：**随包**（`app\covers\`，见 covers.mjs 头注释），
+    // 随包清单里没有时才去本机原版浏览器缓存里只读兜底。
+    if (req.method === "GET" && path === "/api/cover") {
+      const songDir = url.searchParams.get("dir") ?? "";
+      const file = coverFileOf(songDir);
+      if (!file) return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "这首没有本地封面");
+      let head;
+      let size;
+      try {
+        size = statSync(file).size;
+        const fd = openSync(file, "r");
+        try {
+          head = Buffer.alloc(16);
+          readSync(fd, head, 0, 16, 0);
+        } finally { closeSync(fd); }
+      } catch {
+        return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "封面读不出来");
+      }
+      // 缓存里后缀全写 .jpg，但 50 张实际是 PNG、1 张是 WebP ⇒ 按文件头判型。
+      res.writeHead(200, {
+        "Content-Type": imageMime(head),
+        "Content-Length": size,
+        // 同一首的封面永远不变，且它来自本机文件 ⇒ 让页面缓存住，别每次滚列表都重读。
+        "Cache-Control": "private, max-age=86400",
+      });
+      return createReadStream(file).pipe(res);
+    }
     // ★ 外壳（LinliShell）起来之后问这一眼：没有曲子就**根本不往桌面上铺窗口**。
     if (req.method === "GET" && path === "/api/stage/next") {
       return json(res, 200, await stageNext());
+    }
+    // 用户在曲库里点了「播放」/「随机导入」/ 桌面歌单里点了某首 —— 都走这里：
+    // 把这一首钉成"现在要在桌面放的那首"（内存里的 stageForced，不落库），并顺手入库。
+    // ★ 2026-10-19（用户口径 m01034）：「程序内点播放按钮是要把视频播放到桌面，
+    //   不是在程序内播放」——所以窗口里不再有自己的播放器，一切播放都归桌面那层。
+    if (req.method === "POST" && path === "/api/stage/play") {
+      const body = await readJsonBody(req);
+      // 传 idle:true 就是"回到待机"（不看曲子了，播 Wallpaper_Presence/Ambience）。
+      // ★ 2026-10-20：回待机也把暂停断点一并忘掉（这是"不看了"，不是"暂停"；
+      //   暂停走 POST /api/stage/pause，它自己会清 stageForced）。
+      if (body.idle === true) {
+        stageForced = "";
+        stagePaused = null;
+        stageResume = null;
+        return json(res, 200, { ok: true, dir: null, idle: true, ...(await stageNext()) });
+      }
+      const songDir = String(body.dir ?? "").trim();
+      if (!songDir) return fail(res, 400, ERR.LIBRARY_SONG_REQUIRED, "没有指定曲目");
+      // ★ 审查 P1：先过目录名白名单，再谈有没有可播的片子 —— 免得把"目录越界"
+      //   报成"这首没有视频"，两种毛病听起来一样、查起来不一样。
+      if (!songDirOk(songDir)) return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "曲库里没有这一首");
+      const variants = await listVariants(songDir);
+      if (!variants.length) return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "这首曲子没有可播的视频");
+      const title = songDisplayName(songDir);
+      stageForced = songDir;
+      // ★ 2026-10-20 续播：body.resumeT 是"从这一秒接着放"（暂停后的再点播放走这条
+      //   与普通点播同一条路，断点只是它的一个参数）。窗口 15 秒，见 stageResume 注释。
+      //   新点播 / 换曲都把旧断点作废 —— 断点只属于"暂停后原样续播"这一种情形。
+      const resumeT = Number(body.resumeT);
+      stagePaused = null;
+      stageResume = Number.isFinite(resumeT) && resumeT > 0
+        ? { t: resumeT, until: Date.now() + 15000 }
+        : null;
+      setSetting("last_played_title", title);
+      setSetting("last_played_at", nowSeconds());
+      db.prepare("INSERT INTO songs(dir, name, added_at) VALUES(?, ?, ?) ON CONFLICT(dir) DO UPDATE SET name = excluded.name")
+        .run(songDir, title, nowSeconds());
+      db.prepare("UPDATE songs SET last_played_at = ? WHERE dir = ?").run(nowSeconds(), songDir);
+      // ★ A3：用户点播也算一条播放记录（日记里"那天你在放什么"与"你最近常放"都靠它）。
+      recordUserPlay(songDir);
+      return json(res, 200, { ok: true, dir: songDir, title, ...(await stageNext()) });
+    }
+    // ---- 暂停 / 续播（2026-10-20，抄原版程序语义）---------------------------
+    // 暂停 = 画面回待机（前端拿到应答后走 playIdle 的视觉收尾）但**记住断点**；
+    // 续播不走独立端点 —— 就是普通的 POST /api/stage/play {dir, resumeT}，
+    // 与点播同一条路（入库/最近演出/通知外壳全都复用），断点只是它的一个参数。
+    if (req.method === "GET" && path === "/api/stage/pause") {
+      return json(res, 200, stagePaused
+        ? { paused: true, dir: stagePaused.dir, t: stagePaused.t, title: songDisplayName(stagePaused.dir) }
+        : { paused: false, dir: null, t: 0, title: null });
+    }
+    if (req.method === "POST" && path === "/api/stage/pause") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      // 没在放就无从暂停：幂等应答，别让前端为此报错。
+      if (!stageForced) return json(res, 200, { ok: true, paused: false });
+      const t = Number(body.t);
+      stagePaused = { dir: stageForced, t: Number.isFinite(t) && t > 0 ? t : 0 };
+      stageForced = "";        // 清掉点播 ⇒ stageNext 回 idle，桌面那层 30 秒轮询自己会回待机
+      return json(res, 200, { ok: true, paused: true, dir: stagePaused.dir, t: stagePaused.t });
+    }
+    // ---- 播放顺序：查询 / 改 / 自动走下一首 ---------------------------------
+    // 桌面那层在曲子放完时调 advance，服务端按模式算下一首（顺序播放到头就回待机）。
+    if (req.method === "GET" && path === "/api/stage/mode") {
+      return json(res, 200, { mode: playModeSetting() });
+    }
+    if (req.method === "POST" && path === "/api/stage/mode") {
+      const body = await readJsonBody(req);
+      const mode = String(body.mode ?? "").trim();
+      if (!PLAY_MODES.includes(mode)) {
+        return fail(res, 400, ERR.LIBRARY_PLAY_MODE_INVALID, `播放顺序只能是 ${PLAY_MODES.join(" / ")}`);
+      }
+      setSetting(PLAY_MODE_KEY, mode);
+      return json(res, 200, { ok: true, mode });
+    }
+    // ---- 弹唱视角（原版设置项）：NI = 专注演奏 / WI = 视听交互 -------------------
+    // 改完桌面那层要立刻换片：不通知的话要等它自己 30 秒轮询，用户以为选了没反应。
+    if (req.method === "GET" && path === "/api/stage/view") {
+      return json(res, 200, { view: playViewSetting(), views: PLAY_VIEWS });
+    }
+    if (req.method === "POST" && path === "/api/stage/view") {
+      const body = await readJsonBody(req);
+      const view = String(body.view ?? "").trim().toUpperCase();
+      if (!PLAY_VIEWS.includes(view)) {
+        return fail(res, 400, ERR.LIBRARY_PLAY_VIEW_INVALID, `弹唱视角只能是 ${PLAY_VIEWS.join(" / ")}`);
+      }
+      setSetting(PLAY_VIEW_KEY, view);
+      return json(res, 200, { ok: true, view });
+    }
+    if (req.method === "POST" && path === "/api/stage/advance") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      return json(res, 200, await stageAdvance(body.delta === -1 ? -1 : 1));
     }
     // ---- 待机素材：曲库一首都没有时，桌面那层放什么 -------------------------
     // 前端每 30 秒轮询 /api/idle/next；场景/状态与环境音都由落库的种子钉住，所以轮询不换片。
@@ -1269,15 +2588,78 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/api/idle/settings") {
       return json(res, 200, idleSettingsView(idleCtx()));
     }
-    // 待机环境音开关（写操作 ⇒ 上面那道令牌闸已经拦过一遍）。
+    // ---- 桌宠接入接口（★ 预留，2026-10-21）------------------------------------
+    // ★ 这是**接口，不是桌宠本体**：用户决定桌宠单独做成一个独立项目，本仓只留这一帧
+    //   只读状态给外部桌宠进程轮询 —— 林离此刻的时段/场景/待机状态 + 她来信的未读数。
+    //   · 只读、纯本机、不外联；不提供任何写操作。
+    //   · 认证与其它 /api/ 路由相同（X-Linli-Token）；桌宠进程由外壳带 base+token 启动。
+    //   · 契约文档：analysis/桌宠接入契约（预留）-2026-10-21.md
+    //   · 数据源复用现成的 idleNext（时段/场景/状态与环境音都由落库种子钉住，不另算）。
+    if (req.method === "GET" && path === "/api/pet/state") {
+      const idle = idleNext({ ...idleCtx() });
+      const unread = db.prepare(
+        "SELECT COUNT(*) AS n FROM letters WHERE origin = 'proactive' AND is_read = 0",
+      ).get().n;
+      return json(res, 200, {
+        version: 1,
+        tod: idle.tod,
+        slot: idle.slot,
+        scene: idle.scene,
+        state: idle.state,
+        label: idle.label,
+        hasAssets: idle.hasAssets,
+        unread,
+        now: new Date().toISOString(),
+      });
+    }
+    // 待机环境音开关 / 两条音量（写操作 ⇒ 上面那道令牌闸已经拦过一遍）。
     if (req.method === "POST" && path === "/api/idle/settings") {
       const body = await readJsonBody(req);
       // ★ 开关只能收布尔：以前 `? "1" : "0"` 会把字符串 "not-a-bool"（真值）当成"开"。
       if (body.ambience !== undefined && typeof body.ambience !== "boolean") {
         return fail(res, 400, ERR.IDLE_AMBIENCE_NOT_BOOL, "环境音开关只收 true / false");
       }
+      // ★ 2026-10-19：音量只收 0–100 的整数。**不静默夹**——101 能传上来本身就是界面 bug，
+      //   夹成 100 会让用户以为"拖到头了却没效果"。滑块那侧已经把值约束住了。
+      for (const [field, label] of [["ambienceVolume", "环境音音量"], ["songVolume", "演奏音量"]]) {
+        if (body[field] === undefined) continue;
+        const v = body[field];
+        if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 100) {
+          return fail(res, 400, ERR.IDLE_VOLUME_INVALID, `${label}只收 0 到 100 的整数`);
+        }
+      }
+      // ★ 2026-10-20：状态（原版设置项「状态」三选一：日常 / 创作 /思考）。
+      //   ★★ 写 state 必须**同时钉住 scene**：idleChoice 只在 scene 与 state 都合法时
+      //      才用库里的值，否则两个一起回落种子随机 —— 只写 state 的话，用户选的状态
+      //      会被随机值当场盖掉（界面显示"已保存"，桌面下一轮却换成别的）。
+      if (body.state !== undefined) {
+        const state = String(body.state ?? "").trim().toUpperCase();
+        if (!IDLE_STATES.includes(state)) {
+          return fail(res, 400, ERR.IDLE_STATE_INVALID, `状态只能是 ${IDLE_STATES.join(" / ")}`);
+        }
+        const { scene } = idleChoice(idleSeed(), getSetting);
+        setSetting("idle_scene", scene);
+        setSetting("idle_state", state);
+      }
       if (body.ambience !== undefined) setSetting("idle_ambience_on", body.ambience ? "1" : "0");
+      if (body.ambienceVolume !== undefined) setSetting("ambience_volume", String(body.ambienceVolume));
+      if (body.songVolume !== undefined) setSetting("song_volume", String(body.songVolume));
       return json(res, 200, idleSettingsView(idleCtx()));
+    }
+    // ---- 应用行为：点窗口 × 时怎么办 ------------------------------------------
+    // 只存偏好，真正执行在前端（页面点 × → 按这个设置发 close / quit 给外壳）——
+    // 存服务端而不是外壳本地文件，是为了浏览器模式（没有外壳）下设置也能读写一致。
+    if (req.method === "GET" && path === "/api/app/behavior") {
+      return json(res, 200, { closeBehavior: closeBehaviorSetting(), behaviors: CLOSE_BEHAVIORS });
+    }
+    if (req.method === "POST" && path === "/api/app/behavior") {
+      const body = await readJsonBody(req);
+      const closeBehavior = String(body.closeBehavior ?? "").trim();
+      if (!CLOSE_BEHAVIORS.includes(closeBehavior)) {
+        return fail(res, 400, ERR.APP_CLOSE_BEHAVIOR_INVALID, `关闭时的行为只能是 ${CLOSE_BEHAVIORS.join(" / ")}`);
+      }
+      setSetting(CLOSE_BEHAVIOR_KEY, closeBehavior);
+      return json(res, 200, { ok: true, closeBehavior });
     }
     if (req.method === "GET" && path === "/api/library/songs") {
       return json(res, 200, { songs: await importedSongs() });
@@ -1287,7 +2669,21 @@ const server = createServer(async (req, res) => {
     //   我们这边每播一次就 UPDATE 一次 last_played_at，所以"最近"本来就记着 ——
     //   这里只是把它读出来给左栏用。**不新增表**：songs 表已有 last_played_at 列。
     if (req.method === "GET" && path === "/api/library/recent") {
-      const limit = Math.min(50, Math.max(1, Number(new URL(req.url, "http://x").searchParams.get("limit")) || 12));
+      // ★ 2026-10-19 四轮审查 R4-1：这里原来写的是
+      //     `Math.min(50, Math.max(1, Number(param) || 12))`
+      //   —— 只夹了**范围**、没夹**整数**。`?limit=1.9` 落在 [1,50] 里，原样喂给 SQLite 的
+      //   `LIMIT ?` ⇒ `datatype mismatch` ⇒ 500 COMMON_INTERNAL。触发面精确到「(1,50) 内的非整数」：
+      //   0.5 被下界救成 1、50.0 被上界救成 50，只有夹不住的那些漏下去。
+      //   现在的口径：**"取不到"包含非整数** —— 解析不出整数就用默认 12，绝不把可疑值往里送。
+      //   注意不能用 `Number(param)` 一把梭：`Number(null)` 是 0（会被当成合法值夹成 1），
+      //   所以先看 param 在不在。
+      const rawParam = new URL(req.url, "http://x").searchParams.get("limit");
+      const rawLimit = rawParam === null ? Number.NaN : Number(rawParam);
+      //   沿用旧口径「假值一律当没给」：`0`/`""`/`abc`/缺省 ⇒ 12（`0` 在这里是"取不到"，
+      //   不是"要 0 条"—— 要 0 条没有意义，而把它夹成 1 会和历史行为不一致）。
+      const limit = Number.isInteger(rawLimit) && rawLimit !== 0
+        ? Math.min(50, Math.max(1, rawLimit))
+        : 12;
       const rows = db.prepare(
         "SELECT dir, name, added_at, last_played_at FROM songs WHERE last_played_at > 0 ORDER BY last_played_at DESC LIMIT ?"
       ).all(limit);
@@ -1305,7 +2701,26 @@ const server = createServer(async (req, res) => {
       if (!hit) return fail(res, 400, ERR.LIBRARY_SONG_NOT_FOUND, "曲库里没有这一首");
       db.prepare("INSERT INTO songs(dir, name, added_at) VALUES(?, ?, ?) ON CONFLICT(dir) DO UPDATE SET name = excluded.name")
         .run(hit.dir, hit.name, nowSeconds());
+      invalidateStageQueue();
       return json(res, 200, { songs: await importedSongs() });
+    }
+    // ★ 2026-10-20 用户：「音乐桌面的删除按钮呢，我添加进音乐结果删不掉了」。
+    //   入库（POST /api/library/import）一直有，**出库却没有对应路由** —— 界面上那颗
+    //   「已在桌面」的按钮点了只会再 upsert 一次，等于死路。这里补上真正的删除。
+    //   ★ 只删 songs（＝音乐桌面那一份清单）与 song_folder_items 里的引用；
+    //     磁盘上的曲子文件一个字节都不动 —— 用户要的是"从桌面拿走"，不是"删掉我的音乐"。
+    if (req.method === "DELETE" && path === "/api/library/songs") {
+      const dir = String(new URL(req.url, "http://x").searchParams.get("dir") ?? "").trim();
+      if (!dir) return fail(res, 400, ERR.LIBRARY_SONG_REQUIRED, "没有指定曲目");
+      const row = db.prepare("SELECT dir FROM songs WHERE dir = ?").get(dir);
+      if (!row) return fail(res, 404, ERR.LIBRARY_SONG_NOT_FOUND, "这首已经不在音乐桌面上了");
+      db.prepare("DELETE FROM songs WHERE dir = ?").run(dir);
+      // 歌单里引用它的那几条也一起清掉：歌单条目要求曲目在 songs 表里，
+      // 留着只会让歌单里出现一条点了必然 404 的灰行。
+      db.prepare("DELETE FROM song_folder_items WHERE dir = ?").run(dir);
+      // 正在播的队列里可能就有这一首 ⇒ 作废缓存，下一拍重新算。
+      invalidateStageQueue();
+      return json(res, 200, { removed: dir, songs: await importedSongs() });
     }
     if (req.method === "POST" && path === "/api/library/played") {
       const body = await readJsonBody(req);
@@ -1324,8 +2739,8 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { title, at });
     }
 
-    // ---- 歌单（照姊妹项目 song_folders / song_folder_items）----------------
-    // 路径用 /api/folders 而不是姊妹项目的 /toy/folders：我们是独立版，
+    // ---- 歌单（照原版程序 song_folders / song_folder_items）----------------
+    // 路径用 /api/folders 而不是原版程序的 /toy/folders：我们是独立版，
     // 没有"给游戏打补丁"这层，不跟着它改名。
     if (req.method === "GET" && path === "/api/folders") {
       return json(res, 200, { folders: folderList() });
@@ -1338,7 +2753,7 @@ const server = createServer(async (req, res) => {
         return fail(res, 400, ERR.LIBRARY_FOLDER_NAME_TOO_LONG, `歌单名最多 ${FOLDER_NAME_MAX} 个字`);
       }
       const at = nowSeconds();
-      // sort_order 取当前最大值 +1：姊妹项目 server.js:5118 同一套写法
+      // sort_order 取当前最大值 +1：原版程序 server.js:5118 同一套写法
       // （COALESCE(MAX(sort_order), -1) + 1，空表时第一张是 0）。
       const next = Number(
         db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM song_folders").get()?.next ?? 0
@@ -1378,7 +2793,7 @@ const server = createServer(async (req, res) => {
     }
     if (isFolderSelf && req.method === "DELETE") {
       if (!folderDetail(folderId)) return fail(res, 404, ERR.LIBRARY_FOLDER_NOT_FOUND, "这个歌单已经不在了");
-      // 条目没有外键，必须显式删（姊妹项目 server.js:5188 也是这么做的）。
+      // 条目没有外键，必须显式删（原版程序 server.js:5188 也是这么做的）。
       db.prepare("DELETE FROM song_folder_items WHERE folder_id = ?").run(folderId);
       db.prepare("DELETE FROM song_folders WHERE id = ?").run(folderId);
       return json(res, 200, { removed: folderId, folders: folderList() });
@@ -1451,10 +2866,71 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { folder: folderDetail(id) });
     }
 
+    // ---- 维护：数据搬家 / 诊断包 / 反馈入口 ------------------------------
+    // 三条约束（照原版程序「数据搬家」的思路，都是为了不让这套接口变成后门）：
+    //   ① 搬家只认**本进程刚扫出来的候选**：前端传的是「键」不是路径，
+    //      扫描结果之外的目录一律拒绝 —— 否则这就是一个往任意目录写的接口；
+    //   ② 搬家不热执行：源库落到数据目录当暂存，写 pending-restore.json，下次启动才换；
+    //   ③ 诊断包白名单收集、内容全部脱敏（维护模块里做），绝不带信件/记忆/曲库/音视频。
+    // ★ 全部要令牌：搬家能覆盖用户的库、诊断包能读日志，这两件事都不该被本机其它进程白拿。
+    if (path.startsWith("/api/maintenance/")) {
+      if (!tokenOk(req)) return fail(res, 403, ERR.COMMON_TOKEN_MISSING, "缺少会话令牌");
+
+      if (req.method === "GET" && path === "/api/maintenance/migrate") {
+        return json(res, 200, await detectCandidates({ dataDir: DATA_DIR }));
+      }
+      if (req.method === "POST" && path === "/api/maintenance/migrate") {
+        const body = await readJsonBody(req);
+        const done = await applyMigration({ sourcePath: body.path, dataDir: DATA_DIR, dbFile: DB_FILE });
+        if (!done.ok) return fail(res, done.status, ERR[done.code] ?? ERR.COMMON_INTERNAL, done.message);
+        const { ok: _ok, status: _s, code: _c, message: _m, ...rest } = done;
+        return json(res, 200, rest);
+      }
+      if (req.method === "GET" && path === "/api/maintenance/diagnostic") {
+        return json(res, 200, diagnosticContents({ dataDir: DATA_DIR, dbFile: DB_FILE }));
+      }
+      if (req.method === "POST" && path === "/api/maintenance/diagnostic") {
+        try {
+          const made = await buildDiagnosticPackage({
+            dataDir: DATA_DIR,
+            dbFile: DB_FILE,
+            version: APP_VERSION,
+            about: {
+              libraryDir: libraryDirSetting(),
+              assetsDir: assetsDir(),
+            },
+          });
+          return json(res, 200, made);
+        } catch (error) {
+          return fail(res, 500, ERR.COMMON_DIAGNOSTIC_FAILED, `打包诊断包失败：${String(error?.message ?? error).slice(0, 160)}`);
+        }
+      }
+      // 「打开诊断包所在的文件夹」：和备份目录那条一样走系统资源管理器，不经过网页跳转。
+      if (req.method === "POST" && path === "/api/maintenance/reveal") {
+        try {
+          openDirectory(DATA_DIR);
+        } catch (error) {
+          return fail(res, 500, ERR.COMMON_INTERNAL, `打不开目录：${error.message}`);
+        }
+        return json(res, 200, { dir: DATA_DIR });
+      }
+      // 反馈地址由后端给：让前端自己拼 URL 等于把「往哪发用户数据」交给页面。
+      // ★ 没配置就如实回 409，别假装打开了一个页面。
+      if (req.method === "GET" && path === "/api/maintenance/feedback") {
+        const kind = url.searchParams.get("kind") === "idea" ? "idea" : "bug";
+        const target = feedbackIssueUrl(kind);
+        if (!target) {
+          return fail(res, 409, ERR.COMMON_FEEDBACK_NOT_CONFIGURED, "作者还没有公布反馈仓库，暂时只能导出诊断包");
+        }
+        return json(res, 200, { url: target, kind });
+      }
+      return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这个接口");
+    }
+
     // ★ 设置页「关于」里要告诉用户数据到底存在本机哪个目录 —— 「不上传」这句承诺
     //   光靠嘴说没有说服力，给得出路径才算数。只回几个本机目录 + 版本号，不碰任何信件内容。
     // ---- 数据备份与恢复 -------------------------------------------------
-    // 三条约束（照姊妹项目 data-safety.js，都是踩过坑立的）：
+    // 三条约束（照原版程序 data-safety.js，都是踩过坑立的）：
     //   ① 恢复**不热执行**：只写 pending-restore.json，下次启动、开连接之前才应用；
     //   ② 任何恢复/导入之前先把当前库整体留档（applyPendingRestore 里做）；
     //   ③ 导出包一律脱敏（exportUserData 里做）。
@@ -1501,7 +2977,7 @@ const server = createServer(async (req, res) => {
       }
       if (req.method === "POST" && path === "/api/data/export") {
         const { zip, manifest } = await safety.exportUserData(DB_FILE, { version: APP_VERSION });
-        const name = `linli-userdata-${APP_VERSION}-${safety.stamp()}.zip`;
+        const name = `oliviasoul-community-userdata-${APP_VERSION}-${safety.stamp()}.zip`;
         res.writeHead(200, {
           "Content-Type": "application/zip",
           "Content-Length": zip.length,
@@ -1544,7 +3020,7 @@ const server = createServer(async (req, res) => {
       // 目录固定是 DATA_DIR，不接受前端传路径：传什么都会被忽略，没有穿越面。
       if (req.method === "POST" && path === "/api/data/reveal") {
         try {
-          spawn("explorer.exe", [DATA_DIR], { detached: true, stdio: "ignore" }).unref();
+          openDirectory(DATA_DIR);
         } catch (error) {
           return fail(res, 500, ERR.COMMON_INTERNAL, `打不开备份目录：${error.message}`);
         }
@@ -1571,11 +3047,107 @@ const server = createServer(async (req, res) => {
       }
       return fail(res, 404, ERR.COMMON_ROUTE_NOT_FOUND, "没有这个接口");
     }
+
+    // ---- 更新：检查 / 通道 / 下载（断点续传）/ 安装 ------------------------------
+    //
+    // ★ GET /api/update 是**只读**（读外网、不改本机任何东西），所以它不带令牌也能调；
+    //   切通道、下载、暂停、取消、安装都改本机状态 ⇒ 都是 POST，走上面那道令牌闸。
+    // ★ 这些接口一次都没被调过时**不会有任何外网请求** —— 「不点不联网」是设计，不是默认值。
+    if (req.method === "GET" && path === "/api/update") {
+      const channel = updateChannel();
+      // refresh=1 绕过去重窗口：用户连点「检查更新」想强刷时用（20 秒内的重复点击照旧去重）。
+      const force = url.searchParams.get("refresh") === "1";
+      try {
+        const release = force ? await updateFeed.renew(null, channel) : await updateFeed.check(null, channel);
+        return json(res, 200, buildUpdatePayload({ release, channel, currentTag: APP_VERSION, repository: UPDATE_REPOSITORY }));
+      } catch (error) {
+        // ★ 降级仍回 200：界面靠 degraded 分支说话，不能让它变成一条红色报错卡住用户。
+        //   日志留一笔 —— 用户截图「检查更新失败」时，我们得能对上是哪一种原因。
+        console.error(`[update] 检查更新失败（降级为手动下载）：${channel} :: ${error?.message ?? error}`);
+        return json(res, 200, buildUpdateFailurePayload({ error, channel, currentTag: APP_VERSION, repository: UPDATE_REPOSITORY }));
+      }
+    }
+    if (req.method === "POST" && path === "/api/update/channel") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const requested = String(body?.channel ?? "").trim().toLowerCase();
+      if (!UPDATE_CHANNELS.includes(requested)) {
+        return fail(res, 400, ERR.UPDATE_CHANNEL_INVALID,
+          "更新通道只能是 stable（稳定版）或 beta（测试版）");
+      }
+      setSetting(UPDATE_CHANNEL_KEY, requested);
+      // 缓存里那条是**另一个通道**的结果，切完必须让界面重新查一次
+      // （前端会立刻再打 /api/update；服务端这边不用主动清，check 里按 channel 判缓存）。
+      return json(res, 200, { channel: requested, currentTag: APP_VERSION });
+    }
+    if (req.method === "POST" && path === "/api/update/download") {
+      try {
+        return json(res, 200, updateDownloads.start());
+      } catch (error) {
+        return fail(res, 409, ERR.UPDATE_DOWNLOAD_NOT_READY, String(error?.message ?? error));
+      }
+    }
+    if (req.method === "GET" && path === "/api/update/download") {
+      return json(res, 200, updateDownloads.status());
+    }
+    if (req.method === "POST" && path === "/api/update/download/pause") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      // ★ jobId 是「这条下载任务的身份」：界面拿着旧 jobId 来暂停，非但不能停新任务，
+      //   还得如实说「任务已变化」—— 否则用户以为暂停了，实际新任务还在偷偷下。
+      if (!Object.hasOwn(body ?? {}, "jobId")) {
+        return fail(res, 400, ERR.UPDATE_JOB_MISSING, "缺少下载任务标识");
+      }
+      try {
+        return json(res, 200, await updateDownloads.pause(body.jobId));
+      } catch (error) {
+        return fail(res, 409, ERR.UPDATE_JOB_STALE, String(error?.message ?? error));
+      }
+    }
+    if (req.method === "POST" && path === "/api/update/download/cancel") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      if (!Object.hasOwn(body ?? {}, "jobId")) {
+        return fail(res, 400, ERR.UPDATE_JOB_MISSING, "缺少下载任务标识");
+      }
+      try {
+        return json(res, 200, await updateDownloads.cancel(body.jobId));
+      } catch (error) {
+        return fail(res, 409, ERR.UPDATE_JOB_STALE, String(error?.message ?? error));
+      }
+    }
+    if (req.method === "POST" && path === "/api/update/install") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      let ready;
+      try {
+        // ★ 唯一门票：路径必须是本次任务的 target，且**重新算过的** SHA-256 仍然对得上。
+        //   状态文件是可以被改的，只有字节说了算。
+        ready = await updateDownloads.prepareInstall(body?.path);
+      } catch (error) {
+        return fail(res, 409, ERR.UPDATE_INSTALL_NOT_READY, String(error?.message ?? error));
+      }
+      // ★ 先把应答写回去、再起安装程序：安装器会按 AppMutex 关掉本程序，
+      //   反过来的话用户只会看到「连接被重置」，不知道到底装没装。
+      json(res, 200, { ok: true, launched: true, path: ready.path });
+      setTimeout(() => {
+        try {
+          // /SILENT：给进度条但不问问题；/CLOSEAPPLICATIONS 让安装器自己关掉我们；
+          // /NORESTART：不替用户重启系统。per-user 安装（install.iss PrivilegesRequired=lowest）不需要提权。
+          const child = spawn(ready.path, ["/SILENT", "/CLOSEAPPLICATIONS", "/NORESTART"], { detached: true, stdio: "ignore" });
+          child.on("error", (error) => console.error(`[update] 起安装程序失败：${error?.message ?? error}`));
+          child.unref();
+        } catch (error) {
+          console.error(`[update] 起安装程序失败：${error?.message ?? error}`);
+        }
+      }, 400);
+      return;
+    }
+
     if (req.method === "GET" && path === "/api/about") {
       return json(res, 200, {
         version: APP_VERSION,
+        // ★ 发布页地址由后端给：前端那句「降级时打开发布页」的兜底地址不该在前端
+        //   再抄一份仓库名 —— 换仓库时两份必然漂移（与 FEEDBACK_REPO 同一个道理）。
+        releasesUrl: `https://github.com/${UPDATE_REPOSITORY}/releases`,
         dataDir: DATA_DIR,
-        libraryDir: getSetting("library_dir", DEFAULT_LIBRARY_DIR) || DEFAULT_LIBRARY_DIR,
+        libraryDir: libraryDirSetting(),
         // ★ 素材根是"有没有随包"的唯一判据：null 表示这台机器上找不到待机素材。
         assetsDir: assetsDir(),
       });
@@ -1646,15 +3218,40 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: false, error: error.message });
       }
     }
+    if (req.method === "POST" && path === "/api/model/models") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      return json(res, 200, await listModelIds(body));
+    }
     if (req.method === "GET" && path === "/api/proactive") {
       const settings = proactiveSettings();
       const verdict = evaluateProactive();
+      const ts = nowSeconds();
+      const count = (sql, ...args) => db.prepare(sql).get(...args)?.value ?? 0;
+      // ★ 2026-10-20（用户：「主动来信界面设计的还是不够全，依旧学习原版程序」）：
+      //   原版程序那一页把「现在为什么不写」和「她现在在忙什么」都摆在明面上，
+      //   而不是让用户点一下才问一次。这里把这些事实一并吐给界面：
+      //     · stats —— 这一轮已经发了几封，用户自己看得出来离上限还有多远；
+      //     · her   —— 她此刻在哪一档（睡觉 / 练琴时她不会写信）；
+      //     · nearTerm —— 「保持她现在的样子」的真值与真源文案。
+      let near = { on: keepCurrentShape(), label: "", enabled: true };
+      try {
+        const toggle = nearTermLimits().userToggle;
+        near = { on: keepCurrentShape(), label: toggle.label, enabled: true };
+      } catch { /* 真源缺段就只给 on，界面有兜底文案 */ }
       return json(res, 200, {
         settings,
         defaults: PROACTIVE_DEFAULTS,
         // ★ 由头只给界面**人话**（trigger.label），不给内部代号 ——
         //   原来界面直接渲染 trigger.kind，用户会看到「现在可以写（song_played）」。
         verdict: { ...verdict, trigger: withTriggerLabel(verdict.trigger) },
+        stats: {
+          last24h: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND created_at >= ?", ts - 24 * 3600),
+          last7d: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND created_at >= ?", ts - 7 * 24 * 3600),
+          unread: count("SELECT COUNT(*) value FROM letters WHERE origin = 'proactive' AND is_read = 0"),
+          lastAt: db.prepare("SELECT MAX(created_at) value FROM letters WHERE origin = 'proactive'").get()?.value ?? null,
+        },
+        her: herActivityNow(),
+        nearTerm: near,
         // ★ 要不要弹"第一次询问"的窗，判定在 core.mjs（纯函数，可单测），这里不自己写一遍。
         shouldAsk: proactiveIntro(settings).shouldAsk,
       });
@@ -1672,11 +3269,14 @@ const server = createServer(async (req, res) => {
       //   原来布尔判定按 key 名写死成 `["enabled","asked"].includes(key)`，
       //   新增的布尔键会漏进 String(value) 分支 ⇒ `false` 落库成字面量 "false"，
       //   读回来的比较又是 `=== "1"` ⇒ 关不掉。加键时这张表跟着加，别再另开分支。
-      const BOOL = { enabled: true, asked: true };
+      const BOOL = { enabled: true, asked: true, keepCurrentShape: true };
       const map = {
         enabled: "proactive_enabled", windowStart: "proactive_window_start", windowEnd: "proactive_window_end",
         minGapHours: "proactive_min_gap_hours", maxPerDay: "proactive_max_per_day", maxPerWeek: "proactive_max_per_week",
         asked: "proactive_asked",
+        // ★ 2026-10-20：这个勾选框以前**没有落点**（map 里没有它）⇒ 勾了等于没勾。
+        //   现在落成 `proactive_keep_shape`，由 keepCurrentShape() 在拼提示词时消费。
+        keepCurrentShape: "proactive_keep_shape",
       };
       for (const [key, value] of Object.entries(patch ?? {})) {
         const settingKey = map[key];
@@ -1699,6 +3299,24 @@ const server = createServer(async (req, res) => {
       const id = randomUUID();
       db.prepare("INSERT INTO letters(id, content, origin, status, created_at, is_read) VALUES(?, ?, NULL, ?, ?, 1)")
         .run(id, content, STATUS.PENDING, nowSeconds());
+      processQueue();
+      return json(res, 200, { id, status: STATUS.PENDING });
+    }
+    if (req.method === "POST" && path.startsWith("/api/letters/") && path.endsWith("/retry")) {
+      // ★ 失败的信原来是**死路**：卡片印成 postcard_retry（原版那套"失败可重试"的版式），
+      //   可整条链上没有任何重试动作，用户只剩"再写一封"这一条路 —— 于是信箱里躺着
+      //   一封永远回不了的信，而"再写一封"会把同样的内容又说一遍。
+      //   这里只做一件事：把它放回队列。清理工作交给同一条生成链，不在路由里复制一份。
+      const id = path.slice("/api/letters/".length, -"/retry".length);
+      const row = db.prepare("SELECT status, error FROM letters WHERE id = ?").get(id);
+      if (!row) return fail(res, 404, ERR.LETTER_NOT_FOUND, "没有这一封信");
+      // ★ 判据是「真的失败过」＝ status 5 **且** error 有内容。
+      //   只判 5 不行：从旧程序搬进来的信也记 5（那是"未回信"，从来没失败过），
+      //   把它们一起放回队列等于替用户决定"让林离去回一封多年前的信"。
+      if (row.status !== STATUS.FAILED || !row.error) {
+        return fail(res, 409, ERR.LETTER_NOT_RETRYABLE, "这封信不在可重试的状态");
+      }
+      db.prepare("UPDATE letters SET status = ?, error = NULL WHERE id = ?").run(STATUS.PENDING, id);
       processQueue();
       return json(res, 200, { id, status: STATUS.PENDING });
     }
@@ -1769,6 +3387,23 @@ const server = createServer(async (req, res) => {
 
 // ---------------------------------------------------------------- 串行生成队列
 
+/** 启动时把「上次没写完的信」放回队列。
+ *  ★ 为什么必须做：`processQueue()` 只捞 `status = PENDING`，而生成到一半程序被关掉
+ *    （关窗口、崩溃、断电、系统更新重启）的信会停在 `LLM_PROCESSING` —— **没有任何代码
+ *    会再碰它**。前端把它渲染成「她还在写……」，于是这句话可以对着一封永远不会来的回信
+ *    说上几个月，用户也没法重发（重发会多出一封）。
+ *  ★ 为什么是「放回队列」而不是「标成失败」：这封信没写错任何东西，只是当时程序被关掉了。
+ *    标失败等于把一件"还没发生"的事写成"出错了"，还得让用户自己想办法；放回队列的语义
+ *    才是真的：她还没回，打开程序就接着回。
+ *  ★ 不会变成死循环：真正失败（没填 Key / 模型 4xx）会在这一轮就落成 FAILED，不再重排。
+ *    （原版程序的做法是启动时把这类信直接删掉；我们不删用户的信。） */
+function recoverInterruptedLetters() {
+  const changed = db.prepare("UPDATE letters SET status = ?, error = NULL WHERE status = ?")
+    .run(STATUS.PENDING, STATUS.LLM_PROCESSING).changes;
+  if (changed) console.log(`LINLI_RECOVERED=${changed}`);
+  return changed;
+}
+
 let queueRunning = false;
 async function processQueue() {
   if (queueRunning) return;
@@ -1787,14 +3422,34 @@ async function processQueue() {
         if (!Object.keys(ledger).length) {
           throw new Error(codeMessage("安全预检没有给出可读的结论", ERR.REPLY_PRECHECK_UNREADABLE));
         }
-        saveLedger(Object.entries(ledger).map(([k, v]) => `${k}　${v}`).join("\n"));
+        // ★ 2026-10-20：账本的两笔写**挪到回信成功之后**，并且和「把回信写进这封信」
+        //   包在同一个事务里。以前是先记账本、再请模型回信 —— 模型一失败，这封信是
+        //   FAILED，可账本已经照它改完了：一封**没得到任何回答**的信已经改了她的记忆，
+        //   而且重试一次会把条目/待裁决再插一遍。
+        //   原版程序的口径也是这个次序：回信先落库，记忆归档在
+        //   之后单独做，归档失败只记 `memory_error`，绝不把信本身判死。
         const draft = await generateReply(row.content, ledger);
         const checked = inspectReply(draft);
         if (!checked.ok) {
           throw new Error(codeMessage(`回信自检未通过：${checked.reason}`, ERR.REPLY_SELFCHECK_FAILED));
         }
-        db.prepare("UPDATE letters SET status = ?, reply_text = ?, replied_at = ?, error = NULL WHERE id = ?")
-          .run(STATUS.REPLIED, checked.body, nowSeconds(), row.id);
+        db.exec("BEGIN");
+        try {
+          // ★ A1：账本不再"整块覆盖"——条目化写入，且你亲手改过的字段不会被静默覆盖，
+          //   而是挂成待裁决（`ledger_conflicts`）。旧 `ledger.body` 仍然同步一份，
+          //   这样旧字段（/api/memory 的 ledger/ledgerText）与迁移回滚都还有着落。
+          recordPrecheckItems(ledger, row.id);
+          // ★ 旧文本不再照抄模型这次的输出：有冲突的字段要以**你改过的值**为准，
+          //   否则下一次 runPrecheck 读「上一封情感账本」时又会把模型想说回去。
+          saveLedger(ledgerItemsToText(memoryItems()));
+          db.prepare("UPDATE letters SET status = ?, reply_text = ?, replied_at = ?, error = NULL WHERE id = ?")
+            .run(STATUS.REPLIED, checked.body, nowSeconds(), row.id);
+          db.exec("COMMIT");
+        } catch (error) {
+          // ROLLBACK 自己也可能抛（事务已经不在了）—— 以**原始错误**为准，别把真因盖掉。
+          try { db.exec("ROLLBACK"); } catch { /* 已经回滚/已提交，忽略 */ }
+          throw error;
+        }
       } catch (error) {
         // ★ 这里写进库的 error 会**原样显示在明信片卡上**（前端 renderReader 直接用）。
         //   以前存的是裸 error.message ⇒ 用户看到「还没有填写模型 API Key」却没有号，
@@ -1811,13 +3466,37 @@ async function processQueue() {
   }
 }
 
-server.listen(PORT, "127.0.0.1", () => {
-  const port = server.address().port;
-  console.log(`LINLI_PORT=${port}`);
-  console.log(`LINLI_DATA=${DATA_DIR}`);
-  // 待机那组场景/状态的种子在**启动时**钉一次 —— 之后 /api/idle/next 是纯读，一次库都不写。
-  primeIdleSeed();
-  console.log(`LINLI_ASSETS=${assetRoot(PRESENCE_SUBDIR) ?? "（没找到待机素材）"}`);
-  startProactiveScheduler();
-  processQueue();
-});
+// ★ 2026-10-19（间歇红定位）：`LINLI_PORT=0` 时系统随便给端口，而 node 的 `fetch`（undici）
+//   会拒绝一批「浏览器视为不安全」的端口（6000、6665–6669、10080 等）。本机动态端口范围
+//   从 **1024** 起（`netsh int ipv4 show dynamicport tcp` 实测 Start Port 1024），所以随机
+//   撞上这些值是真会发生的 —— 表现为测试随机红一次，报 `TypeError: fetch failed` +
+//   `Error: bad port`（实测 6 次里命中 1 次，且只在并发跑时容易撞到）。
+//   这不是被测行为：在**挑端口这一层**绕开（判据在 `app/ports.mjs`，是纯函数，能确定性测）。
+//   只影响 `LINLI_PORT=0`（随机端口）；显式端口一律照给的值监听。
+//
+// ★ `LINLI_TEST_FORCE_BLOCKED_PORT=<端口>`：测试钩子。把第一次 listen 的结果当作那个端口来判，
+//   好让「撞黑名单 ⇒ 关掉重来 ⇒ 换一个真端口」这条分支在测试里也能**真跑一遍**
+//   （真机上凑一个 6000 端口不可控，只靠"连跑 20 次都没撞上"是没证据的）。
+function listenAndAnnounce(attempt = 0) {
+  server.listen(PORT, "127.0.0.1", () => {
+    const forced = attempt === 0 ? Number(process.env.LINLI_TEST_FORCE_BLOCKED_PORT ?? 0) : 0;
+    const port = forced > 0 ? forced : server.address().port;
+    if (!portAcceptable(port, PORT)) {
+      console.log(`LINLI_PORT_RETRY=${port}`);
+      server.close(() => listenAndAnnounce(attempt + 1));
+      return;
+    }
+    console.log(`LINLI_PORT=${port}`);
+    console.log(`LINLI_DATA=${DATA_DIR}`);
+    // 待机那组场景/状态的种子在**启动时**钉一次 —— 之后 /api/idle/next 是纯读，一次库都不写。
+    primeIdleSeed();
+    console.log(`LINLI_ASSETS=${assetRoot(PRESENCE_SUBDIR) ?? "（没找到待机素材）"}`);
+    startProactiveScheduler();
+    startDiaryScheduler();
+    // ★ 先收尾（把中断的信放回队列），再开始跑队列 —— 顺序反了也没错，只是这一轮白等。
+    recoverInterruptedLetters();
+    processQueue();
+  });
+}
+
+listenAndAnnounce();

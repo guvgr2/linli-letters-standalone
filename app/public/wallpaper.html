@@ -56,82 +56,97 @@
   }
   video.under { opacity: 0; }
 
-  /* 右下角那两个悬浮圆钮 —— 跟原版桌面一样的位置和分量：
-     不抢眼、但一眼能找着。指针穿过它们的空隙时不该被挡住，所以整块容器
-     pointer-events:none，只有按钮自己收事件。 */
-  .dock {
-    position: fixed; right: 78px; bottom: 96px; z-index: 2;
-    display: flex; flex-direction: column; align-items: flex-end; gap: 18px;
-    pointer-events: none; opacity: 0; transition: opacity .6s ease;
-  }
-  body.has-video .dock { opacity: 1; }
-  .dock button {
-    pointer-events: auto; cursor: pointer;
-    width: 58px; height: 58px; border-radius: 50%;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 1px;
-    border: 1px solid rgba(255, 255, 255, .34);
-    background: rgba(255, 255, 255, .14);
-    backdrop-filter: blur(14px) saturate(1.5);
-    -webkit-backdrop-filter: blur(14px) saturate(1.5);
-    box-shadow: 0 10px 26px rgba(0, 0, 0, .40), inset 0 1px 0 rgba(255, 255, 255, .34);
-    color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
-    transition: background .18s ease, transform .18s ease;
-  }
-  .dock button:hover { background: rgba(255, 255, 255, .26); transform: translateY(-2px); }
-  .dock button:active { transform: translateY(0) scale(.97); }
-  .ico { font-size: 19px; line-height: 1; }
-  .lbl { font-size: 11px; letter-spacing: .06em; opacity: .92; }
-  /* 信箱比音乐再往左一点：两个错开，看着不像一排按钮，像桌面上摆着的两样东西 */
-  .dock button.mail { margin-right: 42px; }
+  /* ★ 2026-10-19：这里原来画着右下角那两个悬浮圆钮（音乐 / 信箱）。
+     用户报「桌面的这俩小圆钮点不动」—— 因为这一层是挂在 WorkerW 上的、排在桌面图标层
+     **后面**，鼠标事件先被图标层吃掉，画得出来、点不动。
+     现在圆钮搬到独立的顶层小窗口（app/public/dock.html + src/LinliShell/DesktopDock.cs），
+     这一页只负责画面，不再画按钮。 */
 
   /* 没曲子、也没待机素材的时候整页什么都不画 —— 这里连提示都不放，桌面不该突然多出一行字 */
+
+  /* 「她在练这首」：只在开始练的那一刻出现 3 秒（UI 规格 4.6）。
+     位置放左下角，避开右下角的桌面圆钮；不接收鼠标事件（这一层本来就不收）。 */
+  #practiceHint {
+    position: fixed; left: 36px; bottom: 40px; z-index: 2;
+    padding: 8px 14px; border-radius: 999px;
+    font: 500 13px/1.4 "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+    color: #f2f3f5; background: rgba(18, 18, 20, .62);
+    border: 1px solid rgba(255, 255, 255, .16);
+    backdrop-filter: blur(10px);
+    opacity: 0; transform: translateY(6px);
+    transition: opacity .5s ease, transform .5s ease;
+    pointer-events: none;
+  }
+  #practiceHint.on { opacity: 1; transform: translateY(0); }
 </style>
 </head>
 <body>
   <!-- 模糊延伸的底层：从当前正在播的 video 抓帧缩成小图，交给 CSS 放大 + 模糊。
        ★ 它自己不带 src —— 内容由脚本每 1.2 秒填一次（见 pumpBackdrop）。 -->
   <canvas id="cbg" width="80" height="50"></canvas>
-  <video id="vA" playsinline muted loop autoplay class="under"></video>
-  <video id="vB" playsinline muted loop class="under"></video>
+  <video id="vA" playsinline muted autoplay class="under"></video>
+  <video id="vB" playsinline muted class="under"></video>
   <!-- 待机环境音。★ 音量比视频声音小（0.35）—— 原版里它是**背景**；
-       开关在设置页的「待机」卡片里，关掉时前端根本不给它 src。 -->
-  <audio id="amb" loop preload="none"></audio>
-
-  <div class="dock" id="dock">
-    <button class="music" id="btnMusic" type="button" title="音乐">
-      <span class="ico">♪</span><span class="lbl">音乐</span>
-    </button>
-    <button class="mail" id="btnMail" type="button" title="信箱">
-      <span class="ico">✉</span><span class="lbl">信箱</span>
-    </button>
-  </div>
+       开关在设置页的「待机」卡片里，关掉时前端根本不给它 src。
+       ★★ 2026-10-20（用户「待机音乐一直在重播」）：去掉了 loop ——
+         原版里根本没有无限循环的背景音（原版 exe / app 里都查不到
+         ambience / MediaPlayer / 循环播放的踪迹，待机的声音就是曲库
+         的曲子按时段轮换）。改成播完一遍就停；换时段时若开关还开着
+         会再起一次（idleSwitchSlot 里的 playAmbience）。 -->
+  <audio id="amb" preload="none"></audio>
 
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const host = window.chrome && window.chrome.webview;
   const say = (m) => { try { host && host.postMessage(m); } catch { /* 没有外壳就算了 */ } };
-  // ★ 圆钮上的字是给人看的（音乐/信箱），发回去的是**页面 id** —— 曲库那一页叫 library。
-  //   照着按钮字面写 "open:music"，外壳转发过去页面根本不认，点了没反应。
-  $("btnMusic").addEventListener("click", () => say("open:library"));
-  $("btnMail").addEventListener("click", () => say("open:mail"));
+
+  // 音量。★ 曲子模式下不给 1.0：这是桌面壁纸，不是播放器 —— 用户开着它干别的事。
+  //   ★★ 2026-10-19 改成**可调**（用户：「这个背景音要加个调节背景音音量的条，
+  //   还要加个调节演奏音量的条」）：两个值都从 `/api/idle/settings` 读
+  //   （存 0–100，这里除 100）。写死的常量时代只有一个值，现在设置页说了算。
+  let songVolume = 0.55;
+  let ambienceVolume = 0.35;
+
+  // 窗口播放条上那个静音键发过来（外壳转发）的静音状态。只影响"出声的那一路"。
+  let mutedByShell = false;
 
   let active = "A";                                   // 当前在台前的 video
   let mode = null;                                    // null | "song" | "idle"
   let songTod = null;                                 // 曲库模式当前的时段
-  let idle = { tod: null, slot: null, scene: null };  // 待机模式的时段 / 文件名后缀 / 场景
+  let songDir = null;                                 // ★ 2026-10-20：曲库模式当前是哪一首（点播要立刻换，不能等时段变）
+  let idle = { tod: null, slot: null, scene: null, state: null };  // 待机模式的时段 / 文件名后缀 / 场景 / 状态
   let timer = null;
 
+  // ★ 2026-10-19：`/api/stage/advance` 是写操作，服务端要会话令牌（`x-linli-token`）。
+  //   主窗口那边的 app.js 有 ensureToken()；这一层以前只用 GET（GET 不要令牌），
+  //   所以这里原来没有取令牌的逻辑 —— 不加的话曲子放完那一下会拿到 403，
+  //   表现就是"桌面停在最后一帧不动"，而且只有等了整首曲子才看得见。
+  let sessionToken = "";
+  async function ensureToken() {
+    if (sessionToken) return sessionToken;
+    const r = await fetch("/api/session", { cache: "no-store" });
+    if (!r.ok) throw new Error(`取会话令牌失败：${r.status}`);
+    sessionToken = (await r.json()).token ?? "";
+    return sessionToken;
+  }
+
   async function api(path, options) {
-    const r = await fetch(path, { cache: "no-store", ...options });
+    const opts = { cache: "no-store", ...options };
+    const method = (opts.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+      opts.headers = { ...(opts.headers ?? {}), "x-linli-token": await ensureToken() };
+    }
+    const r = await fetch(path, opts);
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
     return r.json();
   }
 
   /**
    * 换一段画面：两枚 video 交叉淡入（跨时段不硬切，跟曲库播放器同一套做法）。
-   * ★ loop=false + onEnded 是给**过场片**用的：过场片是一次性的，播完就切正片。
+   * ★ loop=false + onEnded 现在有两种用法：**过场片**（一次性，播完切正片）和
+   *   **曲子**（2026-10-19 起曲子不再 loop，播完问服务端要下一首，见 advanceSong()）。
+   *   待机正片仍然 loop —— 待机就该一直放着。
    *   复用同一个元素时先把上一轮挂上的 ended 回调摘掉 —— 否则那枚 once 监听
    *   会串到下一段上，过场片只放一次就再也不放了。
    */
@@ -142,7 +157,35 @@
     if (incoming.__onEnded) { incoming.removeEventListener("ended", incoming.__onEnded); incoming.__onEnded = null; }
     incoming.loop = opts.loop !== false;
     incoming.src = url;
-    incoming.play().then(() => say("state:on")).catch(() => { /* 静音自动播放被拦时下一轮还会再试 */ });
+    // ★ 2026-10-20 续播：opts.startAt = 从这一秒接着放（暂停后用户再点播放）。
+    //   currentTime 要等元数据解出来才能设（过早会抛 InvalidStateError），
+    //   所以挂在 loadedmetadata 上、只挂一次。窗口层轮询同曲时不会再带 startAt
+    //   （服务端只发 15 秒窗口），不会出现"每 30 秒被拽回断点"。
+    if (typeof opts.startAt === "number" && Number.isFinite(opts.startAt) && opts.startAt > 0) {
+      const startAt = opts.startAt;
+      incoming.addEventListener("loadedmetadata", () => {
+        try { incoming.currentTime = startAt; } catch { /* 片子没有时间轴就算了，从头放 */ }
+      }, { once: true });
+    }
+    // ★ 2026-10-19：曲子模式要**出声**（用户：「原版程序打开时会播放待机视频和音乐，
+    //   这个你并没有播」）。待机模式仍然 muted —— 那一路的声音是 #amb 环境音。
+    //   曲库里的演奏视频自带音轨（实测 mp4 里同时有 soun/vide handler），直接解除 muted
+    //   就行，不用另外找音频文件。
+    //   ★ 有声音的自动播放会被 Chromium 的 autoplay 策略拦下，外壳那边已经带了
+    //     --autoplay-policy=no-user-gesture-required（WallpaperHost.cs）；万一还是被拦，
+    //     退回静音播 —— 宁可没声，也别让桌面空着。
+    //   ★ __audio 记的是"这一段本身有没有声音"（曲子有、待机片没有），静音键另算：
+    //     静音只是暂时压住，取消静音后曲子要能自己恢复有声，不能把 muted 全钉死。
+    incoming.__audio = Boolean(opts.audio);
+    incoming.muted = !incoming.__audio || mutedByShell;
+    if (incoming.__audio) incoming.volume = songVolume;
+    incoming.play().then(() => say("state:on")).catch(() => {
+      if (!incoming.muted) {
+        incoming.muted = true;
+        incoming.play().then(() => say("state:on")).catch(() => { /* 下一轮还会再试 */ });
+      }
+    });
+    outgoing.onerror = null;
     incoming.onerror = () => say("state:off");      // 文件读不出来 ⇒ 别在桌面上留一块黑
     if (opts.onEnded) {
       incoming.__onEnded = opts.onEnded;
@@ -179,14 +222,64 @@
 
   // ---- 待机环境音 --------------------------------------------------------
   const amb = $("amb");
+  // ★ 2026-10-20（用户：「待机时播放的音乐还是那一首一直循环，待机音乐可不止那些」）：
+  //   以前只从服务端拿**一个** ambience 地址，一个时段（TOD12 长达 5.5 小时）就只听那一首。
+  //   现在服务端给整条 `ambienceQueue`，这里放完一首接下一首，一圈走完再问一次服务端
+  //   （时段/场景可能已经变了）。
+  let ambQueue = [];
+  let ambIndex = 0;
   function playAmbience(url) {
     if (!url) return stopAmbience();
-    if (amb.getAttribute("src") !== url) { amb.src = url; amb.volume = 0.35; }   // 背景音：压低
+    if (amb.getAttribute("src") !== url) { amb.src = url; }   // 背景音：音量由设置页给
+    amb.volume = ambienceVolume;
     amb.play().catch(() => { /* 自动播放被策略拦住，等一次用户手势 */ });
   }
   function stopAmbience() {
     try { amb.pause(); } catch { /* 没在播 */ }
     amb.removeAttribute("src");
+  }
+
+  /** 一首放完 ⇒ 接下一首。一圈走完回服务端问一次（可能换时段/换场景）。 */
+  async function nextAmbience() {
+    if (mode !== "idle" || !ambQueue.length) return;
+    ambIndex = (ambIndex + 1) % ambQueue.length;
+    if (ambIndex === 0) { await tick().catch(() => {}); return; }
+    playAmbience(ambQueue[ambIndex]);
+  }
+
+  /** 把服务端给的队列同步进来。
+   *  ★ 同一批就**不要动正在放的那一首** —— 上一版 30 秒 tick 用"src 和第一个不同就重放"
+   *    判断，结果每次轮询都把环境音拉回第一首（听着就是"一直同一首"）。 */
+  function syncAmbience(n) {
+    const q = Array.isArray(n.ambienceQueue) && n.ambienceQueue.length
+      ? n.ambienceQueue
+      : (n.ambience ? [n.ambience] : []);
+    const same = q.length === ambQueue.length && q.every((u, i) => u === ambQueue[i]);
+    if (!same) {
+      ambQueue = q;
+      ambIndex = 0;
+      if (q.length) playAmbience(q[0]); else stopAmbience();
+      return;
+    }
+    // 同一批：只有"确实没在放"时才补一手（被自动播放策略拦下的那种）
+    if (q.length && amb.paused && !amb.ended) playAmbience(q[ambIndex] ?? q[0]);
+  }
+  amb.addEventListener("ended", () => { void nextAmbience(); });
+
+  /** 设置页改过音量后立刻生效：不用等下一次 tick，也不用重开程序。 */
+  function applyVolumes() {
+    for (const v of [$("vA"), $("vB")]) if (v.__audio) v.volume = songVolume;
+    try { amb.volume = ambienceVolume; } catch { /* 没在播 */ }
+  }
+
+  /** 从服务端把两条音量读回来（0–100 ⇒ 0–1）。失败就沿用上一次的值。 */
+  async function refreshVolumes() {
+    try {
+      const s = await api("/api/idle/settings");
+      if (typeof s.ambienceVolume === "number") ambienceVolume = Math.min(1, Math.max(0, s.ambienceVolume / 100));
+      if (typeof s.songVolume === "number") songVolume = Math.min(1, Math.max(0, s.songVolume / 100));
+      applyVolumes();
+    } catch { /* 读不到就先用旧值，别把声音弄没 */ }
   }
   // 被自动播放策略拦下的情况：第一次点/按键时再试一次（桌面那层可能一直没手势，那就静音着）。
   const retryAmbience = () => { if (mode === "idle" && amb.getAttribute("src")) amb.play().catch(() => {}); };
@@ -196,10 +289,10 @@
   // ---- 待机：曲库一首都没入库时才走这里 ----------------------------------
   function startIdle(n) {
     mode = "idle";
-    idle = { tod: n.tod, slot: n.slot, scene: n.scene };
+    idle = { tod: n.tod, slot: n.slot, scene: n.scene, state: n.state };
     document.body.classList.add("has-video");
     crossFade(n.video);
-    if (n.ambienceOn && n.ambience) playAmbience(n.ambience); else stopAmbience();
+    if (n.ambienceOn) syncAmbience(n); else { ambQueue = []; stopAmbience(); }
   }
 
   /**
@@ -208,7 +301,7 @@
    */
   async function idleSwitchSlot(n) {
     const from = idle.slot;
-    idle.tod = n.tod; idle.slot = n.slot; idle.scene = n.scene;
+    idle.tod = n.tod; idle.slot = n.slot; idle.scene = n.scene; idle.state = n.state;
     let transUrl = null;
     try {
       const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(n.slot)}&scene=${encodeURIComponent(n.scene)}`;
@@ -216,17 +309,135 @@
     } catch { /* 拿不到过场片就直切 */ }
     if (transUrl) crossFade(transUrl, { loop: false, onEnded: () => crossFade(n.video) });
     else crossFade(n.video);
-    if (n.ambienceOn && n.ambience) playAmbience(n.ambience); else stopAmbience();
+    if (n.ambienceOn) syncAmbience(n); else { ambQueue = []; stopAmbience(); }
   }
 
   // ---- 主循环：30 秒问一次，跟原版"跟着时钟换"的口径一致 ------------------
+  // ★ 2026-10-19：曲子**不再 loop**（loop 属性撤了），播完由这里问服务端要下一首。
+  //   为什么要让桌面层自己做：窗口关掉之后没人替它续播，「顺序 / 列表循环 /
+  //   单曲循环」三种模式就都变成"放完停在最后一帧"。队列规则在服务端
+  //   （POST /api/stage/advance），这边只按回来的 url 换片。
+  let advancing = false;
+  async function advanceSong() {
+    if (advancing) return;           // 上一个还没回来，别叠着发（会连跳好几首）
+    advancing = true;
+    try {
+      const next = await api("/api/stage/advance", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ delta: 1 }),
+      });
+      if (next && next.url) {
+        songTod = next.tod ?? songTod;
+        songDir = next.dir ?? songDir;
+        mode = "song";
+        crossFade(next.url, { audio: true, loop: false, onEnded: () => { void advanceSong(); } });
+        return;
+      }
+      // 顺序播放放到头 / 曲子没了 ⇒ 回待机：交给 tick 去问 /api/idle/next
+      mode = null;
+      await tick();
+    } catch {
+      // 服务端一时没答上来：别停在那儿，下一轮 tick 会重试
+      mode = null;
+    } finally {
+      advancing = false;
+    }
+  }
+
+  /** 她练完一首之后，这一层先安静一会儿再考虑下一首。
+   *  服务端限频是「同一首 30 分钟不重复、一小时最多两次」，如果播完立刻 tick，
+   *  下一轮马上就会挑到"另一首"接上去 —— 观感像自动连播，不像"她自己练一会儿"。
+   *  这里加 5 分钟冷却，纯粹是这一层的观感，不改变服务端的规矩。 */
+  let practiceCooldownUntil = 0;
+
+  /** 桌面左下角那行小字：「她在练这首」。默认 3 秒淡出（UI 规格 4.6）。
+   *  ★ 2026-10-20 练琴预告要用它顶更久（见 PRACTICE_NOTICE_MS），留了时长参数。 */
+  function showPracticeHint(text, ms = 3000) {
+    let el = document.getElementById("practiceHint");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "practiceHint";
+      el.textContent = "";
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.add("on");
+    clearTimeout(showPracticeHint.timer);
+    showPracticeHint.timer = setTimeout(() => el.classList.remove("on"), ms);
+  }
+
+  // ---- 练琴预告期 --------------------------------------------------------
+  // ★ 2026-10-20（用户原话：「练琴在触发前弹个提醒，但弹窗不要干扰到用户的工作，
+  //   练琴不要人家正播着音乐呢突然就开始练，要等正在播放的的歌曲播完了」）：
+  //   ① 「不干扰工作」= 不用模态弹窗，就用桌面左下角那行小字预告（不抢焦点、自动淡出）；
+  //   ② 「等歌播完再练」在结构上本来就成立：练琴只会在 /api/stage/next 没曲子
+  //     （用户没点播、或顺序播放到头回待机）时才被问到，stageForced 非空时服务端
+  //     practiceNow 直接 null —— 这里再补一道 tick 内的先后判据（song 分支先 return）；
+  //   ③ 「突然感」的真凶是"回待机 30 秒内立刻开练、毫无预告" ⇒ 预告几秒再开练，
+  //     预告期间用户点了歌（tick 的 song 分支）就取消这次练琴，她让路。
+  const PRACTICE_NOTICE_MS = 6000;
+  let practicePending = null;
+  function cancelPendingPractice() {
+    if (practicePending) { clearTimeout(practicePending); practicePending = null; }
+  }
+
   async function tick() {
     const info = await api("/api/stage/next");
     if (info && info.url) {
+      // ★ 用户点了歌（含续播）：预告中的练琴立刻让路 ——「等歌播完了再练」由下一次
+      //   冷却后的轮询重新开始。song 分支必须放在练琴分支之前（优先级 user > practice）。
+      cancelPendingPractice();
       // 有曲子 ⇒ 走曲库。从待机切过来时顺手把环境音停掉，别两种声音叠着。
-      if (mode !== "song") { mode = "song"; stopAmbience(); songTod = info.tod; document.body.classList.add("has-video"); crossFade(info.url); }
-      else if (info.tod !== songTod) { songTod = info.tod; crossFade(info.url); }
+      // ★ 2026-10-20 续播：info.resumeT 是暂停断点（只在续播后 15 秒内随响应下发），
+      //   起播那一刻把它交给 crossFade 的 startAt；同曲的后续轮询拿不到它，不受影响。
+      const startSong = () => crossFade(info.url, { audio: true, loop: false, startAt: info.resumeT, onEnded: () => { void advanceSong(); } });
+      // ★ 2026-10-20（用户：「我点了播放他会在播放完当前歌曲后再切换……应该马上切换并立即播放」）：
+      //   换首的判据除了时段，还必须有 **曲目本身**（info.dir）——以前同一时段里换了点播
+      //   这层什么都不做，要等当前那首播完 advance 才换，观感就是"点了没反应"。
+      if (mode !== "song") { mode = "song"; stopAmbience(); songTod = info.tod; songDir = info.dir; document.body.classList.add("has-video"); startSong(); }
+      else if (info.dir !== songDir || info.tod !== songTod) { songTod = info.tod; songDir = info.dir; startSong(); }
       return;
+    }
+    // ---- 她的世界（A3）：用户没点播时，才轮到她练琴 -------------------------
+    // 优先级 user > practice > idle；用户点播在上面已经 return 了。
+    // 开关关着 / 限频命中 / 开机宽限期内 ⇒ practice 为 null，直接落到待机。
+    if (Date.now() >= practiceCooldownUntil) {
+      const world = await api("/api/world/now").catch(() => null);
+      if (world && world.practice && world.practice.url) {
+        if (mode === "practice") return;      // 已经在练了，别重起
+        if (!practicePending) {
+          // 先预告（角落小字，不模态、不抢焦点），预告期满才真正开始练。
+          showPracticeHint(`她要去练琴了：${world.practice.title}`, PRACTICE_NOTICE_MS);
+          practicePending = setTimeout(() => {
+            practicePending = null;
+            mode = "practice";
+            stopAmbience();
+            document.body.classList.add("has-video");
+            showPracticeHint(world.practice.title);
+            crossFade(world.practice.url, {
+              audio: true,
+              loop: false,
+              onEnded: () => {
+                // ★ 只放一次：练完就回待机，不 loop、不自动接下一首。
+                mode = null;
+                practiceCooldownUntil = Date.now() + 5 * 60 * 1000;
+                // ★ 2026-10-20：告诉服务端"这一场练完了"。不回报的话服务端会一直钉着
+                //   这一首（场次最长 10 分钟），下一轮又给你同一首。
+                api("/api/world/practice/done", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: "{}",
+                }).catch(() => { /* 收不了场就等它自己到期 */ });
+                void tick();
+              },
+            });
+          }, PRACTICE_NOTICE_MS);
+        }
+        // ★ 预告期不在这里停：歌刚播完（mode=null）先按无曲子落回待机，
+        //   别冻在末帧干等 6 秒 —— 待机照常起，定时器到点她再上场。
+        if (mode === "idle") return;          // 待机已在放，预告挂着就行
+      }
     }
     const n = await api("/api/idle/next");
     if (!n.hasAssets || !n.video) {
@@ -238,15 +449,74 @@
       return;
     }
     if (mode !== "idle") startIdle(n);
-    else if (n.tod !== idle.tod) await idleSwitchSlot(n);
-    else if (n.ambienceOn && n.ambience && amb.getAttribute("src") !== n.ambience) playAmbience(n.ambience);
+    // ★ 2026-10-20（用户：「我切换这个状态为什么没有用」）：状态卡 / 场景改了会立即
+    //   tellShell("stage:changed") 叫这层重问，但这层以前只认时段变化 ⇒ 状态/场景换了
+    //   画面纹丝不动。现在 scene/state 变了也走换片（同档没有过场片，直接切正片）。
+    else if (n.tod !== idle.tod || n.scene !== idle.scene || n.state !== idle.state) await idleSwitchSlot(n);
+    else if (n.ambienceOn) syncAmbience(n);
+    else if (!n.ambienceOn) { ambQueue = []; stopAmbience(); }
   }
 
   async function start() {
+    await refreshVolumes();
     await tick();
     if (timer) clearInterval(timer);
     timer = setInterval(() => { tick().catch(() => { /* 失败就下一轮再试 */ }); }, 30000);
   }
+
+  // ---- 外壳发来的指令：换片 / 静音 -------------------------------------
+  // ★ 2026-10-19：用户在窗口里点了播放，不能让他等这 30 秒轮询 —— 外壳会把
+  //   {"stage":"changed"} 打进来，这里立刻重跑一次 tick()。
+  // ★ 静音键也在窗口那条播放条上，声音却出在这一层，所以静音状态必须能远程改。
+  function applyMute() {
+    for (const v of [$("vA"), $("vB")]) v.muted = !v.__audio || mutedByShell;
+    try { amb.muted = mutedByShell; } catch { /* 没在播 */ }
+  }
+  if (host && host.addEventListener) {
+    host.addEventListener("message", (e) => {
+      const d = e.data;
+      if (!d) return;
+      if (d.stage === "changed") {
+        // ★ 2026-10-19 用户：「我点了播放以后背景音是过了几秒以后才消失，我要马上消失」。
+        //   以前这里只喊一声 tick()，而 tick 要先 await 一次 /api/stage/next 才轮到
+        //   stopAmbience() —— 中间还有视频起播的时间，耳朵就先听到"两种声音叠着"。
+        //   现在**先掐环境音**（它一旦开始播就是白噪，掐早了没有任何听觉代价），
+        //   再去问服务端要下一段。用户点了"回到待机"也没关系：tick 会把它重新播起来。
+        stopAmbience();
+        tick().catch(() => { /* 下一轮再说 */ });
+        return;
+      }
+      if (d.volume === "changed") { void refreshVolumes(); return; }
+      if (typeof d.mute === "boolean") {
+        mutedByShell = d.mute;
+        applyMute();
+      }
+      // ★ 2026-10-20：曲库底部播放条（用户圈原版截图指定）。这条是遥控器：
+      //   点进度条跳转在这里动手（setCurrentTime）。播放键是「回待机」语义
+      //   （用户明确），**不做画面冻结式暂停** —— 原来{"playback":"toggle"}那条
+      //   指令链路随该决定删除，别留没有发送方的死指令。
+      if (typeof d.seek === "number" && Number.isFinite(d.seek)) {
+        const v = frontVideo();
+        if (v && v.__audio) { try { v.currentTime = Math.max(0, d.seek); } catch { /* 还没解出时间轴 */ } }
+      }
+    });
+  }
+
+  // ---- 播放条上报：每秒把真实进度递给窗口那条 --------------------------
+  // ★ 2026-10-20：窗口里没有 video（都在这层），它那条进度条想画真进度只能靠这层报。
+  //   曲子模式才报（待机环境音没有"进度"这个概念）；外壳再转给主窗口。
+  function frontVideo() {
+    const v = $("v" + active);
+    return v && v.__audio ? v : null;
+  }
+  function reportPlayback() {
+    const v = frontVideo();
+    if (mode !== "song" || !v) return;
+    // ★ 2026-10-20 修：必须带 "playback:" 前缀（与 open: 同一风格）——
+    //   直接发 JSON 原文的话外壳那边的 StartsWith("playback:") 永远匹配不上（实测踩过）。
+    say("playback:" + JSON.stringify({ t: v.currentTime || 0, d: v.duration || 0, playing: !v.paused }));
+  }
+  setInterval(reportPlayback, 1000);
 
   start().catch(() => say("state:off"));
 })();

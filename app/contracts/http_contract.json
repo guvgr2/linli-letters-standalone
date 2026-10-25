@@ -20,302 +20,785 @@
   },
   "routes": {
     "/api/session": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "core.session",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/letters": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "letters.write",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LETTER_EMPTY", "LETTER_TOO_LONG"]
+      "error_codes": [
+        "LETTER_EMPTY",
+        "LETTER_TOO_LONG"
+      ]
     },
     "/api/letters/:id/read": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "letters.read",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LETTER_NOT_FOUND"]
+      "error_codes": [
+        "LETTER_NOT_FOUND"
+      ]
+    },
+    "/api/letters/:id/retry": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "letters.write",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "LETTER_NOT_FOUND",
+        "LETTER_NOT_RETRYABLE"
+      ]
     },
     "/api/memory": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "memory.ledger",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
+    "/api/memory/conflicts": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "memory.conflicts",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/world/now": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "world.now",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/world/stage": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "world.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "COMMON_BODY_NOT_JSON"
+      ]
+    },
+    "/api/world/practice/done": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "world.practice",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/world": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "world.state",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/diary": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "diary.list",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/onthisday": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "memory.onthisday",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/writing-stats": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "letters.writing_stats",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/pet/state": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "pet.state",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/timeline": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "letters.timeline",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
     "/api/library": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "library.scan",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/library/dir": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "library.dir",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_DIR_NOT_FOUND"]
+      "error_codes": [
+        "LIBRARY_DIR_NOT_FOUND"
+      ]
     },
     "/api/library/play": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "library.play",
       "state": "available",
       "read_only": true,
-      "error_codes": ["LIBRARY_SONG_REQUIRED"]
+      "error_codes": [
+        "LIBRARY_SONG_REQUIRED"
+      ]
     },
     "/api/library/songs": {
-      "methods": ["GET"],
+      "methods": [
+        "GET",
+        "DELETE"
+      ],
       "capability": "library.imported",
       "state": "available",
-      "read_only": true,
-      "error_codes": []
+      "read_only": false,
+      "error_codes": [
+        "LIBRARY_SONG_REQUIRED",
+        "LIBRARY_SONG_NOT_FOUND"
+      ]
     },
     "/api/library/import": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "library.import",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_SONG_REQUIRED", "LIBRARY_SONG_NOT_FOUND"]
+      "error_codes": [
+        "LIBRARY_SONG_REQUIRED",
+        "LIBRARY_SONG_NOT_FOUND"
+      ]
     },
     "/api/library/played": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "library.played",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_TITLE_REQUIRED"]
+      "error_codes": [
+        "LIBRARY_TITLE_REQUIRED"
+      ]
     },
     "/api/folders": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "library.folders",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_FOLDER_NAME_REQUIRED", "LIBRARY_FOLDER_NAME_TOO_LONG"]
+      "error_codes": [
+        "LIBRARY_FOLDER_NAME_REQUIRED",
+        "LIBRARY_FOLDER_NAME_TOO_LONG"
+      ]
     },
     "/api/folders/:id": {
-      "methods": ["GET", "PATCH", "DELETE"],
+      "methods": [
+        "GET",
+        "PATCH",
+        "DELETE"
+      ],
       "capability": "library.folder",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_FOLDER_NOT_FOUND", "LIBRARY_FOLDER_NAME_REQUIRED", "LIBRARY_FOLDER_NAME_TOO_LONG"]
+      "error_codes": [
+        "LIBRARY_FOLDER_NOT_FOUND",
+        "LIBRARY_FOLDER_NAME_REQUIRED",
+        "LIBRARY_FOLDER_NAME_TOO_LONG"
+      ]
     },
     "/api/folders/:id/items": {
-      "methods": ["POST", "DELETE", "PATCH"],
+      "methods": [
+        "POST",
+        "DELETE",
+        "PATCH"
+      ],
       "capability": "library.folder_items",
       "state": "available",
       "read_only": false,
-      "error_codes": ["LIBRARY_FOLDER_NOT_FOUND", "LIBRARY_SONG_NOT_FOUND", "LIBRARY_PLAYLIST_ITEM_INCOMPLETE", "LIBRARY_PLAYLIST_ITEM_NOT_FOUND"]
+      "error_codes": [
+        "LIBRARY_FOLDER_NOT_FOUND",
+        "LIBRARY_SONG_NOT_FOUND",
+        "LIBRARY_PLAYLIST_ITEM_INCOMPLETE",
+        "LIBRARY_PLAYLIST_ITEM_NOT_FOUND"
+      ]
     },
     "/api/library/recent": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "library.recent",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/media": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "library.media",
       "state": "binary",
       "read_only": true,
       "error_codes": []
     },
     "/api/stage/next": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "wallpaper.stage",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
+    "/api/stage/play": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "LIBRARY_SONG_REQUIRED",
+        "LIBRARY_SONG_NOT_FOUND"
+      ]
+    },
+    "/api/stage/pause": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/stage/mode": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "LIBRARY_PLAY_MODE_INVALID"
+      ]
+    },
+    "/api/stage/view": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "LIBRARY_PLAY_VIEW_INVALID"
+      ]
+    },
+    "/api/stage/advance": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "wallpaper.stage",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/cover": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "library.cover",
+      "state": "binary",
+      "read_only": true,
+      "error_codes": [
+        "LIBRARY_SONG_NOT_FOUND"
+      ]
+    },
     "/api/idle/next": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "idle.pick",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/idle/video": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "idle.video",
       "state": "binary",
       "read_only": true,
       "error_codes": []
     },
     "/api/idle/ambience": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "idle.ambience",
       "state": "binary",
       "read_only": true,
       "error_codes": []
     },
     "/api/idle/transition": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "idle.transition",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/idle/settings": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "idle.settings",
       "state": "available",
       "read_only": false,
-      "error_codes": ["IDLE_AMBIENCE_NOT_BOOL"]
+      "error_codes": [
+        "IDLE_AMBIENCE_NOT_BOOL",
+        "IDLE_STATE_INVALID",
+        "IDLE_VOLUME_INVALID"
+      ]
+    },
+    "/api/maintenance/migrate": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "maintenance.migrate",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "COMMON_MIGRATE_SOURCE_REQUIRED",
+        "COMMON_MIGRATE_SOURCE_NOT_DETECTED",
+        "COMMON_MIGRATE_SOURCE_IS_CURRENT",
+        "COMMON_MIGRATE_SOURCE_LOCKED",
+        "COMMON_MIGRATE_NOTHING_TO_COPY"
+      ]
+    },
+    "/api/maintenance/diagnostic": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "maintenance.diagnostic",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "COMMON_DIAGNOSTIC_FAILED"
+      ]
+    },
+    "/api/maintenance/reveal": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "maintenance.reveal",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
+    "/api/maintenance/feedback": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "maintenance.feedback",
+      "state": "available",
+      "read_only": true,
+      "error_codes": [
+        "COMMON_FEEDBACK_NOT_CONFIGURED"
+      ]
+    },
+    "/api/update": {
+      "methods": [
+        "GET"
+      ],
+      "capability": "update.check",
+      "state": "available",
+      "read_only": true,
+      "error_codes": []
+    },
+    "/api/update/channel": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "update.channel",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "UPDATE_CHANNEL_INVALID"
+      ]
+    },
+    "/api/update/download": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "update.download",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "UPDATE_DOWNLOAD_NOT_READY"
+      ]
+    },
+    "/api/update/download/pause": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "update.download",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "UPDATE_JOB_MISSING",
+        "UPDATE_JOB_STALE"
+      ]
+    },
+    "/api/update/download/cancel": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "update.download",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "UPDATE_JOB_MISSING",
+        "UPDATE_JOB_STALE"
+      ]
+    },
+    "/api/update/install": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "update.install",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "UPDATE_INSTALL_NOT_READY"
+      ]
     },
     "/api/about": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "core.about",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/font/status": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "font.status",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/font/file": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "font.file",
       "state": "binary",
       "read_only": true,
       "error_codes": []
     },
     "/api/font/import": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "font.import",
       "state": "available",
       "read_only": false,
-      "error_codes": ["FONT_FILE_TOO_LARGE", "FONT_NOT_FONT", "FONT_SAVE_FAILED"]
+      "error_codes": [
+        "FONT_FILE_TOO_LARGE",
+        "FONT_NOT_FONT",
+        "FONT_SAVE_FAILED"
+      ]
     },
     "/api/model": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "model.settings",
       "state": "available",
       "read_only": false,
       "error_codes": []
     },
     "/api/model/test": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "model.test",
       "state": "available",
       "read_only": false,
       "error_codes": []
     },
+    "/api/model/models": {
+      "methods": [
+        "POST"
+      ],
+      "capability": "model.models",
+      "state": "available",
+      "read_only": false,
+      "error_codes": []
+    },
     "/api/proactive": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "proactive.settings",
       "state": "available",
       "read_only": false,
-      "error_codes": ["PROACTIVE_SETTINGS_INVALID"]
+      "error_codes": [
+        "PROACTIVE_SETTINGS_INVALID"
+      ]
     },
     "/api/proactive/check": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "proactive.check",
       "state": "available",
       "read_only": false,
       "error_codes": []
     },
     "/api/import/preview": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "import.preview",
       "state": "available",
       "read_only": false,
-      "error_codes": ["IMPORT_FILE_REQUIRED", "IMPORT_SOUL_TOO_LARGE", "IMPORT_SOUL_UNREADABLE"]
+      "error_codes": [
+        "IMPORT_FILE_REQUIRED",
+        "IMPORT_SOUL_TOO_LARGE",
+        "IMPORT_SOUL_UNREADABLE"
+      ]
     },
     "/api/import/confirm": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "import.confirm",
       "state": "available",
       "read_only": false,
-      "error_codes": ["IMPORT_PREVIEW_REQUIRED", "IMPORT_PREVIEW_STALE", "IMPORT_BACKUP_FAILED"]
+      "error_codes": [
+        "IMPORT_PREVIEW_REQUIRED",
+        "IMPORT_PREVIEW_STALE",
+        "IMPORT_BACKUP_FAILED"
+      ]
     },
     "/api/data/status": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "data.status",
       "state": "available",
       "read_only": true,
       "error_codes": []
     },
     "/api/data/backup": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.backup",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_BACKUP_DATABASE_MISSING"]
+      "error_codes": [
+        "COMMON_BACKUP_DATABASE_MISSING"
+      ]
     },
     "/api/data/inspect": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.inspect",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_NOT_FOUND", "COMMON_BACKUP_INVALID", "COMMON_BACKUP_IS_LIVE"]
+      "error_codes": [
+        "COMMON_BACKUP_NAME_INVALID",
+        "COMMON_BACKUP_NOT_FOUND",
+        "COMMON_BACKUP_INVALID",
+        "COMMON_BACKUP_IS_LIVE"
+      ]
     },
     "/api/data/delete": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.delete",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_BACKUP_DELETE_NOT_CONFIRMED", "COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_IS_LIVE", "COMMON_BACKUP_PENDING_RESTORE", "COMMON_BACKUP_NOT_FOUND"]
+      "error_codes": [
+        "COMMON_BACKUP_DELETE_NOT_CONFIRMED",
+        "COMMON_BACKUP_NAME_INVALID",
+        "COMMON_BACKUP_IS_LIVE",
+        "COMMON_BACKUP_PENDING_RESTORE",
+        "COMMON_BACKUP_NOT_FOUND"
+      ]
     },
     "/api/data/restore": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.restore",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_RESTORE_NOT_CONFIRMED", "COMMON_BACKUP_NAME_INVALID", "COMMON_BACKUP_NOT_FOUND"]
+      "error_codes": [
+        "COMMON_RESTORE_NOT_CONFIRMED",
+        "COMMON_BACKUP_NAME_INVALID",
+        "COMMON_BACKUP_NOT_FOUND"
+      ]
     },
     "/api/data/cancel-restore": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.restore",
       "state": "available",
       "read_only": false,
       "error_codes": []
     },
     "/api/data/export": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.export",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_EXPORT_TOO_LARGE", "COMMON_BACKUP_DATABASE_MISSING"]
+      "error_codes": [
+        "COMMON_EXPORT_TOO_LARGE",
+        "COMMON_BACKUP_DATABASE_MISSING"
+      ]
     },
     "/api/data/import": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.import",
       "state": "available",
       "read_only": false,
-      "error_codes": ["IMPORT_TOO_LARGE", "IMPORT_FILE_REQUIRED", "IMPORT_NAME_INVALID", "IMPORT_ZIP_INVALID", "IMPORT_ZIP_EMPTY", "IMPORT_LAYOUT_INVALID"]
+      "error_codes": [
+        "IMPORT_TOO_LARGE",
+        "IMPORT_FILE_REQUIRED",
+        "IMPORT_NAME_INVALID",
+        "IMPORT_ZIP_INVALID",
+        "IMPORT_ZIP_EMPTY",
+        "IMPORT_LAYOUT_INVALID"
+      ]
     },
     "/api/data/periodic": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.periodic",
       "state": "available",
       "read_only": false,
       "error_codes": []
     },
     "/api/data/periodic-cleanup": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.periodic",
       "state": "available",
       "read_only": false,
-      "error_codes": ["COMMON_BACKUP_DELETE_NOT_CONFIRMED"]
+      "error_codes": [
+        "COMMON_BACKUP_DELETE_NOT_CONFIRMED"
+      ]
     },
     "/api/data/reveal": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "data.reveal",
       "state": "available",
       "read_only": false,
       "error_codes": []
+    },
+    "/api/app/behavior": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "capability": "app.behavior",
+      "state": "available",
+      "read_only": false,
+      "error_codes": [
+        "APP_CLOSE_BEHAVIOR_INVALID"
+      ]
     }
   },
   "privacy": {
-    "leaves_machine": ["/api/model", "/api/model/test", "/api/proactive/check"],
-    "note": "只有这三个会离开本机：/api/model 把密钥写进本机 DPAPI（不代表发包），/api/model/test 发一次测试请求，/api/proactive/check 会请模型判断要不要主动来信。其余接口 —— 信、曲库、壁纸、字体、导入 —— 全部只读写这台机器的磁盘，不上传任何内容。"
+    "leaves_machine": [
+      "/api/model",
+      "/api/model/test",
+      "/api/model/models",
+      "/api/proactive/check",
+      "/api/update",
+      "/api/update/download"
+    ],
+    "note": "会离开本机的分成两类，都由**用户当轮的动作**触发，程序不自己往外发东西：① 模型那一组 —— /api/model 把密钥写进本机 DPAPI（不代表发包），/api/model/test 发一次测试请求，/api/model/models 只在用户点「查询模型列表」时读一次那家的 /models，/api/proactive/check 会请模型判断要不要主动来信；② 更新那一组 —— /api/update 只在用户点「检查更新」时读一次 api.github.com 的 Release 列表，/api/update/download 只在用户点「下载」时从 github.com 取安装包；两处都不带 Cookie/Token/设备码，不上传任何本机数据。其余接口 —— 信、曲库、壁纸、字体、导入、备份 —— 全部只读写这台机器的磁盘，不上传任何内容。"
   }
 }

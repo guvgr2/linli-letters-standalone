@@ -4,7 +4,7 @@
 //   而"预览到底算了几个数""过期怎么判"这些恰恰是最该被钉住的地方 ——
 //   它们错了，用户看到的预览就是假的，而落库会按另一套数去写。
 //
-// 为什么预览与落库要分成两步（照 DSH《UserData 一键导入机制说明》§5）：
+// 为什么预览与落库要分成两步（照原版《UserData 一键导入机制说明》§5）：
 //   **风险不对称** —— 预览没有任何破坏性，落库要给用户的库动刀，而且没有撤销键。
 //   分两步之后，用户在「真的写进去」之前有一次看清楚的机会。
 
@@ -21,7 +21,7 @@ export const PREVIEW_TTL_MS = 30 * 60 * 1000;
  * @param {object}   o.parsed          `parseSoulArchive()` / `parseSoulArchiveFile()` 的结果
  * @param {Iterable<string>} o.existingIds     库里已有的信件 id
  * @param {Iterable<string>} [o.existingHashes] 库里已有的 `content_md5`
- * @param {number|null} [o.archivedAt] 这次落库写进 `archived_at` 的时刻（DSH 口径 = 导入这一刻）
+ * @param {number|null} [o.archivedAt] 这次落库写进 `archived_at` 的时刻（原版口径 = 导入这一刻）
  * @param {number|null} [o.fallbackBase] 信里没有日期时，拿哪一刻当基准（默认"现在"）
  * @returns {{id, rows, counts, skippedIds, conflictIds, total, fallbackIds, videos, note, archivedAt}}
  */
@@ -39,7 +39,7 @@ export function buildImportPlan({
     throw new Error("解析结果里没有信件清单，不该走到这一步");
   }
 
-  // `.soul` 的清单是 **newest-first**（DSH `parseStandardMemoryJson` 直接校验 `order === "newest-first"`）。
+  // `.soul` 的清单是 **newest-first**（原版 `parseStandardMemoryJson` 直接校验 `order === "newest-first"`）。
   // ★ 倒过来落库有两个实际好处：① 时间戳缺省值可以顺着时间递增（最新那封排最后）；
   //   ② 库里 `created_at DESC, rowid DESC` 的排序在任何一封缺日期时都不会被打乱。
   const ordered = [...list].reverse();
