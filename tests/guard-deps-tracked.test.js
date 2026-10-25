@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -78,6 +78,42 @@ function checkIgnore(relPath) {
   return r.status;
 }
 
+/**
+ * 从 .gitignore 自己读出"被忽略的顶层目录名"—— 不手抄清单（手抄会烂）。
+ * 只取 `名字/` 这种裸目录规则；带通配符或路径段的先不认（判起来容易误伤）。
+ */
+function ignoredTopDirs() {
+  const src = readFileSync(join(ROOT, ".gitignore"), "utf8");
+  const names = new Set();
+  for (const raw of src.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    const m = /^([A-Za-z0-9_.\-一-鿿]+)\/?$/u.exec(line);
+    if (!m) continue;
+    if (checkIgnore(m[1] + "/") === 0 || checkIgnore(m[1]) === 0) names.add(m[1]);
+  }
+  return [...names];
+}
+
+/**
+ * 这个被忽略的目录，是不是**能被构建脚本重新造出来**？
+ *
+ * ★ 为什么要分：被忽略不可怕，**不可重建**才可怕。
+ *   · `dist/` 被忽略，但 `build.ps1` 能从受追踪的源码重新产出 ⇒ 清掉再 build 就有了，
+ *     测试引用它并在缺失时 skip，是合理的。
+ *   · `analysis/` 被忽略，且里面的东西**从来只存在于那儿** ⇒ 清一次就永久丢失，
+ *     2026-10-24 就这么丢了一整目录，连带两条护栏变红。
+ * ★ 判据不手抄名单：直接问"构建脚本里有没有产出这个目录"。
+ */
+function regenerable(name) {
+  for (const script of ["build.ps1", "package.ps1"]) {
+    const p = join(ROOT, script);
+    if (!existsSync(p)) continue;
+    if (readFileSync(p, "utf8").includes(name)) return true;
+  }
+  return false;
+}
+
 const MIN_CANDIDATES = 8;
 
 test("① 任何测试读取的仓库相对路径，都不许落在被 .gitignore 忽略的地方", () => {
@@ -105,6 +141,37 @@ test("① 任何测试读取的仓库相对路径，都不许落在被 .gitignor
     ignored,
     [],
     `以下路径被 .gitignore 忽略，护栏不能依赖它们（清空一次就红一次）：\n  ${ignored.join("\n  ")}`,
+  );
+});
+
+test("①b 路径**拼接**出来的也不能落在被忽略的目录里", () => {
+  // ★ ① 只认"整条路径字面量"，而 `join(ROOT, "analysis", "_audit19", "triage-*.json")`
+  //   这种是把目录名拆成片段拼的 —— 扫字面量扫不到（2026-10-25 实测漏过一条：
+  //   web-triage.test.js ① 就是这么写的，analysis/ 被清后它 ENOENT 红）。
+  //   所以这里单独盯"join/resolve 调用里出现的被忽略目录名"。
+  const bad = ignoredTopDirs().filter((n) => !regenerable(n));
+  assert.ok(bad.length >= 1, `.gitignore 里应当读得出"不可重建"的被忽略目录，实际只有 ${JSON.stringify(ignoredTopDirs())}（其中 ${JSON.stringify(ignoredTopDirs().filter(regenerable))} 可由构建脚本重建，已放行）`);
+  const hits = [];
+  for (const f of scanTestFiles()) {
+    const src = readFileSync(f, "utf8");
+    src.split("\n").forEach((line, i) => {
+      const stripped = line.trim();
+      if (stripped.startsWith("//") || stripped.startsWith("*") || stripped.startsWith("/*")) return;
+      // 只看含 join(...) / resolve(...) 这类路径构造的行。
+      // ★ 不要试图匹配"括号里的全部内容"—— 拼接里常带模板串 `` `triage-${Date.now()}.json` ``，
+      //   里面的 `${...()}` 自带圆括号，用 `[^()]*` 会整条漏掉（2026-10-25 变异实测：
+      //   护栏当时是绿的，等于没守）。改成"这一行只要在做路径构造，就把整行字面量都查一遍"，
+      //   宁可多报也不漏。
+      if (!/\b(?:join|resolve)\s*\(/u.test(stripped)) return;
+      for (const lit of stripped.matchAll(/["'`]([^"'`]+)["'`]/gu)) {
+        if (bad.includes(lit[1])) hits.push(`${f.slice(ROOT.length + 1)}:${i + 1} → ${lit[1]}`);
+      }
+    });
+  }
+  assert.deepEqual(
+    hits,
+    [],
+    `以下位置在构造路径时用了被忽略的目录（清空一次就红）：\n  ${hits.join("\n  ")}`,
   );
 });
 

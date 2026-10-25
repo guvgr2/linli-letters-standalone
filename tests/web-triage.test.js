@@ -19,7 +19,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -46,7 +46,12 @@ describe("内核进程出事的分诊与重建预算", () => {
       t.skip(`没有 ${EXE}（先跑 build.ps1）—— 这条用例的价值就是"验真 exe"`);
       return;
     }
-    const out = join(ROOT, "analysis", "_audit19", `triage-${Date.now()}.json`);
+    // ★ 自检输出不许落在 `analysis/`：那个目录被 .gitignore 忽略、从未入库，
+    //   清一次这条用例就 ENOENT 红一次（2026-10-24 清空事件的连带受害者，实测过）。
+    //   而且它本来就该是一次性产物 —— 临时目录才是对的落点。
+    const dir = mkdtempSync(join(tmpdir(), "linli-triage-"));
+    t.after(() => cleanupDirSync(dir));
+    const out = join(dir, `triage-${Date.now()}.json`);
     const run = spawnSync(EXE, ["--check-recovery", out], { timeout: 60000, windowsHide: true });
     assert.equal(run.status, 0, `自检退出码应为 0，实际 ${run.status}`);
     const data = JSON.parse(readFileSync(out, "utf8"));
